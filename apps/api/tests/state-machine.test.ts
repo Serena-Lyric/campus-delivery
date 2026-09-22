@@ -6,6 +6,7 @@ describe('order state machine', () => {
   it('accepts the complete delivery lifecycle', () => {
     const path = [
       OrderStatus.CREATED,
+      OrderStatus.MERCHANT_PENDING,
       OrderStatus.MERCHANT_CONFIRMED,
       OrderStatus.READY_FOR_RIDER,
       OrderStatus.CLAIMED,
@@ -17,10 +18,13 @@ describe('order state machine', () => {
     }
   });
 
+  it('allows pre-pickup rider abandonment back to the order pool', () => {
+    expect(() => assertTransition(OrderStatus.CLAIMED, OrderStatus.READY_FOR_RIDER)).not.toThrow();
+  });
+
   it('rejects skipping states and leaving terminal states', () => {
     expect(() => assertTransition(OrderStatus.CREATED, OrderStatus.DELIVERED)).toThrow(/cannot transition/);
     expect(() => assertTransition(OrderStatus.DELIVERED, OrderStatus.CANCELLED)).toThrow(/cannot transition/);
     expect(() => assertTransition(OrderStatus.CANCELLED, OrderStatus.CREATED)).toThrow(/cannot transition/);
   });
 });
-

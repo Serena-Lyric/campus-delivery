@@ -38,8 +38,26 @@ enum RiderStatus {
   SUSPENDED
 }
 
+enum DeliveryMethod {
+  DESIGNATED_POINT
+  DOOR
+  FACE_TO_FACE
+}
+
+enum DeliveryVerificationMode {
+  DELIVERY_PHOTO
+  HANDOFF_CODE
+}
+
+enum PickupVerificationMode {
+  CONFIRMATION
+  PHOTO
+  PICKUP_CODE
+}
+
 enum OrderStatus {
   CREATED
+  MERCHANT_PENDING
   MERCHANT_CONFIRMED
   READY_FOR_RIDER
   CLAIMED
@@ -47,6 +65,25 @@ enum OrderStatus {
   DELIVERED
   CANCELLED
   EXCEPTION
+}
+
+enum OrderEventType {
+  ORDER_CREATED
+  COOLING_OFF_COMPLETED
+  MERCHANT_CONFIRMED
+  READY_FOR_RIDER
+  RIDER_CLAIMED
+  RIDER_ABANDONED
+  PICKED_UP
+  DELIVERED
+  CANCELLED
+  EXCEPTION_RECORDED
+  STATUS_CHANGED
+}
+
+enum OrderEventActorType {
+  USER
+  SYSTEM
 }
 
 enum DeliveryTaskStatus {
@@ -58,230 +95,388 @@ enum DeliveryTaskStatus {
   EXCEPTION
 }
 
+enum DeliveryAssignmentStatus {
+  ACTIVE
+  ABANDONED
+  COMPLETED
+  EXCEPTION
+}
+
 enum SettlementStatus {
   PENDING
   FINALIZED
 }
 
-model User {
-  id              String       @id @default(uuid()) @db.Uuid
-  displayName     String
-  role            UserRole
-  active          Boolean      @default(true)
-  merchant        Merchant?
-  rider            Rider?
-  customerOrders  Order[]      @relation("CustomerOrders")
-  operatedEvents  OrderEvent[] @relation("OrderEventOperator")
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+enum RiderSettlementStatus {
+  PENDING
+  AVAILABLE
+  HELD
 }
 
-model CampusLocation {
+enum VerificationPurpose {
+  DELIVERY
+  PICKUP
+}
+
+enum EvidenceType {
+  MERCHANT_HANDOFF_PHOTO
+  RIDER_PICKUP_PHOTO
+  DELIVERY_PHOTO
+  HANDOFF_CODE_VERIFICATION
+  PICKUP_CODE_VERIFICATION
+}
+
+enum ExceptionType {
+  CUSTOMER_UNREACHABLE
+  WRONG_ADDRESS
+  MERCHANT_DELAY
+  ITEM_MISSING
+  ITEM_DAMAGED
+  RIDER_DELIVERY_EXCEPTION
+  DELIVERY_DISPUTE
+}
+
+model User {
   id                 String             @id @default(uuid()) @db.Uuid
-  name               String
-  type               CampusLocationType
-  description        String?
-  merchants          Merchant[]
-  destinationOrders  Order[]
+  displayName        String
+  role               UserRole
+  active             Boolean            @default(true)
+  merchant           Merchant?
+  rider              Rider?
+  customerOrders     Order[]            @relation("CustomerOrders")
+  operatedEvents     OrderEvent[]       @relation("OrderEventOperator")
+  evidence           Evidence[]
+  reportedExceptions ExceptionEvent[]   @relation("ExceptionReporter")
+  issuedCodes        VerificationCode[] @relation("VerificationIssuer")
+  verifiedCodes      VerificationCode[] @relation("VerificationVerifier")
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
 }
 
+model CampusLocation {
+  id                       String             @id @default(uuid()) @db.Uuid
+  name                     String
+  type                     CampusLocationType
+  description              String?
+  supportedDeliveryMethods DeliveryMethod[]   @default([DESIGNATED_POINT, DOOR, FACE_TO_FACE])
+  merchants                Merchant[]
+  destinationOrders        Order[]
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+}
+
 model Merchant {
-  id                         String                  @id @default(uuid()) @db.Uuid
-  ownerId                    String                  @unique @db.Uuid
-  owner                      User                    @relation(fields: [ownerId], references: [id])
-  name                       String
-  description                String?
-  campusLocationId           String                  @db.Uuid
-  campusLocation             CampusLocation          @relation(fields: [campusLocationId], references: [id])
-  isOpen                     Boolean                 @default(true)
-  exposureState              MerchantExposureState   @default(NORMAL)
-  maxConcurrentOrders        Int                     @default(0)
-  deliveryContributionMinor  Int                     @default(0)
-  categories                 ProductCategory[]
-  products                   Product[]
-  orders                     Order[]
-  subsidyAccount             MerchantSubsidyAccount?
-  subsidyRecords             SubsidyRecord[]
-  createdAt                  DateTime                 @default(now())
-  updatedAt                  DateTime                 @updatedAt
+  id                        String                  @id @default(uuid()) @db.Uuid
+  ownerId                   String                  @unique @db.Uuid
+  owner                     User                    @relation(fields: [ownerId], references: [id])
+  name                      String
+  description               String?
+  campusLocationId          String                  @db.Uuid
+  campusLocation            CampusLocation          @relation(fields: [campusLocationId], references: [id])
+  isOpen                    Boolean                 @default(true)
+  exposureState             MerchantExposureState   @default(NORMAL)
+  maxConcurrentOrders       Int                     @default(0)
+  deliveryContributionMinor Int                     @default(0)
+  supportedDeliveryMethods  DeliveryMethod[]        @default([DESIGNATED_POINT, DOOR, FACE_TO_FACE])
+  pickupVerificationMode    PickupVerificationMode  @default(CONFIRMATION)
+  categories                ProductCategory[]
+  products                  Product[]
+  orders                    Order[]
+  subsidyAccount            MerchantSubsidyAccount?
+  subsidyRecords            SubsidyRecord[]
+  createdAt                 DateTime                @default(now())
+  updatedAt                 DateTime                @updatedAt
 }
 
 model ProductCategory {
-  id          String    @id @default(uuid()) @db.Uuid
-  merchantId  String    @db.Uuid
-  merchant    Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  name        String
-  sortOrder   Int       @default(0)
-  products    Product[]
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id         String    @id @default(uuid()) @db.Uuid
+  merchantId String    @db.Uuid
+  merchant   Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  name       String
+  sortOrder  Int       @default(0)
+  products   Product[]
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@unique([merchantId, name])
   @@index([merchantId, sortOrder])
 }
 
 model Product {
-  id             String           @id @default(uuid()) @db.Uuid
-  merchantId     String           @db.Uuid
-  merchant       Merchant         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  categoryId     String           @db.Uuid
-  category       ProductCategory  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  name           String
-  description    String?
-  priceMinor     Int
-  isAvailable    Boolean          @default(true)
-  orderItems     OrderItem[]
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  id          String          @id @default(uuid()) @db.Uuid
+  merchantId  String          @db.Uuid
+  merchant    Merchant        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  categoryId  String          @db.Uuid
+  category    ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  name        String
+  description String?
+  priceMinor  Int
+  isAvailable Boolean         @default(true)
+  orderItems  OrderItem[]
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
 
   @@index([merchantId, isAvailable])
   @@index([categoryId])
 }
 
 model Rider {
-  id              String          @id @default(uuid()) @db.Uuid
-  userId          String          @unique @db.Uuid
-  user            User            @relation(fields: [userId], references: [id])
-  status          RiderStatus     @default(OFFLINE)
-  deliveryTasks   DeliveryTask[]
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  id                          String               @id @default(uuid()) @db.Uuid
+  userId                      String               @unique @db.Uuid
+  user                        User                 @relation(fields: [userId], references: [id])
+  status                      RiderStatus          @default(OFFLINE)
+  currentConcurrentOrderLimit Int                  @default(1)
+  deliveryTasks               DeliveryTask[]
+  assignments                 DeliveryAssignment[]
+  settlements                 RiderSettlement[]
+  createdAt                   DateTime             @default(now())
+  updatedAt                   DateTime             @updatedAt
 }
 
 model Order {
-  id                         String           @id @default(uuid()) @db.Uuid
-  customerId                 String           @db.Uuid
-  customer                   User             @relation("CustomerOrders", fields: [customerId], references: [id])
-  merchantId                 String           @db.Uuid
-  merchant                   Merchant         @relation(fields: [merchantId], references: [id])
-  destinationLocationId      String           @db.Uuid
-  destinationLocation        CampusLocation   @relation(fields: [destinationLocationId], references: [id])
-  destinationLabelSnapshot   String
-  status                     OrderStatus      @default(CREATED)
-  items                      OrderItem[]
-  events                     OrderEvent[]
-  deliveryTask               DeliveryTask?
-  pricing                    OrderPricing?
-  settlement                 Settlement?
-  subsidyRecords             SubsidyRecord[]
-  createdAt                  DateTime         @default(now())
-  updatedAt                  DateTime         @updatedAt
+  id                       String                   @id @default(uuid()) @db.Uuid
+  shortCode                String
+  shortCodeDay             DateTime                 @db.Date
+  coolingOffEndsAt         DateTime
+  customerId               String                   @db.Uuid
+  customer                 User                     @relation("CustomerOrders", fields: [customerId], references: [id])
+  merchantId               String                   @db.Uuid
+  merchant                 Merchant                 @relation(fields: [merchantId], references: [id])
+  destinationLocationId    String                   @db.Uuid
+  destinationLocation      CampusLocation           @relation(fields: [destinationLocationId], references: [id])
+  destinationLabelSnapshot String
+  deliveryMethod           DeliveryMethod
+  deliveryVerificationMode DeliveryVerificationMode
+  pickupVerificationMode   PickupVerificationMode
+  status                   OrderStatus              @default(CREATED)
+  items                    OrderItem[]
+  events                   OrderEvent[]
+  deliveryTask             DeliveryTask?
+  pricing                  OrderPricing?
+  settlement               Settlement?
+  riderSettlement          RiderSettlement?
+  subsidyRecords           SubsidyRecord[]
+  evidences                Evidence[]
+  exceptions               ExceptionEvent[]
+  verificationCodes        VerificationCode[]
+  assignments              DeliveryAssignment[]
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @updatedAt
 
+  @@unique([shortCodeDay, shortCode])
   @@index([customerId, createdAt])
   @@index([merchantId, status])
+  @@index([status, coolingOffEndsAt])
 }
 
 model OrderItem {
-  id                   String    @id @default(uuid()) @db.Uuid
-  orderId              String    @db.Uuid
-  order                Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  productId            String    @db.Uuid
-  product              Product   @relation(fields: [productId], references: [id])
-  productNameSnapshot  String
-  unitPriceMinor       Int
-  quantity             Int
-  subtotalMinor        Int
+  id                  String  @id @default(uuid()) @db.Uuid
+  orderId             String  @db.Uuid
+  order               Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId           String  @db.Uuid
+  product             Product @relation(fields: [productId], references: [id])
+  productNameSnapshot String
+  unitPriceMinor      Int
+  quantity            Int
+  subtotalMinor       Int
 
   @@index([orderId])
 }
 
 model OrderEvent {
-  id            String       @id @default(uuid()) @db.Uuid
-  orderId       String       @db.Uuid
-  order         Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  fromStatus    OrderStatus?
-  toStatus      OrderStatus
-  operatorId    String       @db.Uuid
-  operator      User         @relation("OrderEventOperator", fields: [operatorId], references: [id])
-  operatorRole  UserRole
-  reason        String?
-  createdAt     DateTime     @default(now())
+  id           String              @id @default(uuid()) @db.Uuid
+  orderId      String              @db.Uuid
+  order        Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  eventType    OrderEventType      @default(STATUS_CHANGED)
+  actorType    OrderEventActorType @default(USER)
+  fromStatus   OrderStatus?
+  toStatus     OrderStatus
+  operatorId   String?             @db.Uuid
+  operator     User?               @relation("OrderEventOperator", fields: [operatorId], references: [id])
+  operatorRole UserRole?
+  reason       String?
+  metadata     Json?
+  createdAt    DateTime            @default(now())
 
   @@index([orderId, createdAt])
 }
 
 model DeliveryTask {
-  id            String              @id @default(uuid()) @db.Uuid
-  orderId       String              @unique @db.Uuid
-  order         Order               @relation(fields: [orderId], references: [id])
-  status        DeliveryTaskStatus  @default(OPEN)
-  riderId       String?             @db.Uuid
-  rider         Rider?              @relation(fields: [riderId], references: [id])
-  payoutMinor   Int
-  claimedAt     DateTime?
-  pickedUpAt    DateTime?
-  deliveredAt   DateTime?
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
+  id          String               @id @default(uuid()) @db.Uuid
+  orderId     String               @unique @db.Uuid
+  order       Order                @relation(fields: [orderId], references: [id])
+  status      DeliveryTaskStatus   @default(OPEN)
+  riderId     String?              @db.Uuid
+  rider       Rider?               @relation(fields: [riderId], references: [id])
+  payoutMinor Int
+  claimedAt   DateTime?
+  pickedUpAt  DateTime?
+  deliveredAt DateTime?
+  assignments DeliveryAssignment[]
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
 
   @@index([status, createdAt])
   @@index([riderId, status])
 }
 
+model DeliveryAssignment {
+  id        String                   @id @default(uuid()) @db.Uuid
+  taskId    String                   @db.Uuid
+  task      DeliveryTask             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  orderId   String                   @db.Uuid
+  order     Order                    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  riderId   String                   @db.Uuid
+  rider     Rider                    @relation(fields: [riderId], references: [id])
+  status    DeliveryAssignmentStatus @default(ACTIVE)
+  claimedAt DateTime                 @default(now())
+  endedAt   DateTime?
+  reason    String?
+  createdAt DateTime                 @default(now())
+  updatedAt DateTime                 @updatedAt
+
+  @@index([riderId, status])
+  @@index([taskId, status])
+  @@index([orderId, createdAt])
+}
+
 model OrderPricing {
-  id                          String   @id @default(uuid()) @db.Uuid
-  orderId                     String   @unique @db.Uuid
-  order                       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  itemSubtotalMinor           Int
-  customerDeliveryFeeMinor    Int      @default(0)
-  merchantDeliveryContributionMinor Int @default(0)
-  platformSubsidyMinor        Int      @default(0)
-  riderPayoutMinor            Int      @default(0)
-  platformCommissionMinor     Int      @default(0)
-  merchantSettlementMinor     Int      @default(0)
-  customerRefundMinor         Int      @default(0)
-  exceptionCompensationMinor  Int      @default(0)
-  createdAt                   DateTime @default(now())
-  updatedAt                   DateTime @updatedAt
+  id                                String   @id @default(uuid()) @db.Uuid
+  orderId                           String   @unique @db.Uuid
+  order                             Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  itemSubtotalMinor                 Int
+  customerDeliveryFeeMinor          Int      @default(0)
+  merchantDeliveryContributionMinor Int      @default(0)
+  platformSubsidyMinor              Int      @default(0)
+  riderPayoutMinor                  Int      @default(0)
+  platformCommissionMinor           Int      @default(0)
+  merchantSettlementMinor           Int      @default(0)
+  customerRefundMinor               Int      @default(0)
+  exceptionCompensationMinor        Int      @default(0)
+  createdAt                         DateTime @default(now())
+  updatedAt                         DateTime @updatedAt
 }
 
 model Settlement {
-  id                    String            @id @default(uuid()) @db.Uuid
-  orderId               String            @unique @db.Uuid
-  order                 Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  status                SettlementStatus  @default(PENDING)
-  riderPayableMinor     Int               @default(0)
-  merchantPayableMinor  Int               @default(0)
-  platformRevenueMinor  Int               @default(0)
-  finalizedAt           DateTime?
-  createdAt             DateTime          @default(now())
-  updatedAt             DateTime          @updatedAt
+  id                   String           @id @default(uuid()) @db.Uuid
+  orderId              String           @unique @db.Uuid
+  order                Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status               SettlementStatus @default(PENDING)
+  riderPayableMinor    Int              @default(0)
+  merchantPayableMinor Int              @default(0)
+  platformRevenueMinor Int              @default(0)
+  finalizedAt          DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+}
+
+model RiderSettlement {
+  id           String                @id @default(uuid()) @db.Uuid
+  orderId      String                @unique @db.Uuid
+  order        Order                 @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  riderId      String                @db.Uuid
+  rider        Rider                 @relation(fields: [riderId], references: [id])
+  amountMinor  Int
+  status       RiderSettlementStatus @default(PENDING)
+  pendingUntil DateTime
+  availableAt  DateTime?
+  heldAt       DateTime?
+  holdReason   String?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  @@index([riderId, status, pendingUntil])
+}
+
+model VerificationCode {
+  id            String              @id @default(uuid()) @db.Uuid
+  orderId       String              @db.Uuid
+  order         Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  purpose       VerificationPurpose
+  salt          String
+  codeHash      String
+  issuerId      String              @db.Uuid
+  issuer        User                @relation("VerificationIssuer", fields: [issuerId], references: [id])
+  verifierId    String?             @db.Uuid
+  verifier      User?               @relation("VerificationVerifier", fields: [verifierId], references: [id])
+  expiresAt     DateTime
+  verifiedAt    DateTime?
+  invalidatedAt DateTime?
+  createdAt     DateTime            @default(now())
+
+  @@index([orderId, purpose, createdAt])
+}
+
+model Evidence {
+  id               String          @id @default(uuid()) @db.Uuid
+  orderId          String          @db.Uuid
+  order            Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actorId          String          @db.Uuid
+  actor            User            @relation(fields: [actorId], references: [id])
+  actorRole        UserRole
+  evidenceType     EvidenceType
+  orderStage       OrderStatus
+  mediaReference   String?
+  note             String?
+  metadata         Json?
+  exceptionEventId String?         @db.Uuid
+  exceptionEvent   ExceptionEvent? @relation(fields: [exceptionEventId], references: [id], onDelete: SetNull)
+  createdAt        DateTime        @default(now())
+
+  @@index([orderId, createdAt])
+  @@index([exceptionEventId])
+}
+
+model ExceptionEvent {
+  id           String        @id @default(uuid()) @db.Uuid
+  orderId      String        @db.Uuid
+  order        Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  reporterId   String        @db.Uuid
+  reporter     User          @relation("ExceptionReporter", fields: [reporterId], references: [id])
+  reporterRole UserRole
+  orderStatus  OrderStatus
+  type         ExceptionType
+  description  String
+  evidences    Evidence[]
+  resolvedAt   DateTime?
+  createdAt    DateTime      @default(now())
+
+  @@index([orderId, createdAt])
+  @@index([type, resolvedAt])
 }
 
 model MerchantSubsidyAccount {
-  id                  String    @id @default(uuid()) @db.Uuid
-  merchantId          String    @unique @db.Uuid
-  merchant            Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  subsidyUsedMinor    Int       @default(0)
-  subsidyLimitMinor   Int       @default(0)
-  riskScore           Int       @default(0)
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  id                String   @id @default(uuid()) @db.Uuid
+  merchantId        String   @unique @db.Uuid
+  merchant          Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  subsidyUsedMinor  Int      @default(0)
+  subsidyLimitMinor Int      @default(0)
+  riskScore         Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 }
 
 model SubsidyRecord {
-  id              String    @id @default(uuid()) @db.Uuid
-  merchantId      String    @db.Uuid
-  merchant        Merchant  @relation(fields: [merchantId], references: [id])
-  orderId         String    @unique @db.Uuid
-  order           Order     @relation(fields: [orderId], references: [id])
-  amountMinor     Int
-  policyVersion   Int
-  createdAt       DateTime  @default(now())
+  id            String   @id @default(uuid()) @db.Uuid
+  merchantId    String   @db.Uuid
+  merchant      Merchant @relation(fields: [merchantId], references: [id])
+  orderId       String   @unique @db.Uuid
+  order         Order    @relation(fields: [orderId], references: [id])
+  amountMinor   Int
+  policyVersion Int
+  createdAt     DateTime @default(now())
 
   @@index([merchantId, createdAt])
 }
 
 model BusinessConfig {
-  id          String    @id @default(uuid()) @db.Uuid
-  key         String
-  version     Int
-  isActive    Boolean   @default(true)
-  payload     Json
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id        String   @id @default(uuid()) @db.Uuid
+  key       String
+  version   Int
+  isActive  Boolean  @default(true)
+  payload   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([key, version])
   @@index([key, isActive, version])

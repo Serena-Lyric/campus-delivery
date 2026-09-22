@@ -1,4 +1,10 @@
-import { MerchantExposureState, type PrismaClient } from '@prisma/client';
+import {
+  DeliveryMethod,
+  DeliveryVerificationMode,
+  MerchantExposureState,
+  PickupVerificationMode,
+  type PrismaClient,
+} from '@prisma/client';
 import { Type, type Static } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import { AppError } from '../shared/errors.js';
@@ -10,6 +16,14 @@ const PolicyConfigSchema = Type.Object({
   maxSubsidyPerOrderMinor: Type.Integer({ minimum: 0 }),
   platformCommissionBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
   subsidyEnabled: Type.Boolean(),
+  coolingOffSeconds: Type.Integer({ minimum: 0 }),
+  verificationCodeTtlSeconds: Type.Integer({ minimum: 1 }),
+  riderSettlementPendingSeconds: Type.Integer({ minimum: 0 }),
+  platformMaxConcurrentOrdersPerRider: Type.Integer({ minimum: 1 }),
+  customerUnreachableWaitSeconds: Type.Integer({ minimum: 0 }),
+  unattendedDeliveryMethods: Type.Array(Type.Enum(DeliveryMethod), { uniqueItems: true }),
+  handoffCodeDeliveryMethods: Type.Array(Type.Enum(DeliveryMethod), { uniqueItems: true }),
+  requireHandoffCodeForAllOrders: Type.Boolean(),
   exposureThresholds: Type.Array(Type.Object({
     minUsageBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
     state: Type.Enum(MerchantExposureState),
@@ -17,6 +31,7 @@ const PolicyConfigSchema = Type.Object({
 });
 
 export type PolicyConfig = Static<typeof PolicyConfigSchema>;
+export type DeliveryRiskResult = 'NORMAL' | 'REQUIRE_HANDOFF_CODE';
 
 export async function loadPolicyConfig(prisma: PrismaClient): Promise<{ version: number; config: PolicyConfig }> {
   const row = await prisma.businessConfig.findFirst({
@@ -32,6 +47,38 @@ export async function loadPolicyConfig(prisma: PrismaClient): Promise<{ version:
     throw new AppError(500, 'INVALID_BUSINESS_CONFIG', 'Exposure thresholds must start at 0 basis points');
   }
   return { version: row.version, config: { ...config, exposureThresholds: thresholds } };
+}
+
+export function deliveryVerificationFor(
+  config: PolicyConfig,
+  method: DeliveryMethod,
+  risk: DeliveryRiskResult = 'NORMAL',
+): DeliveryVerificationMode {
+  if (
+    risk === 'REQUIRE_HANDOFF_CODE'
+    || config.requireHandoffCodeForAllOrders
+    || config.handoffCodeDeliveryMethods.includes(method)
+  ) {
+    return DeliveryVerificationMode.HANDOFF_CODE;
+  }
+  return DeliveryVerificationMode.DELIVERY_PHOTO;
+}
+
+export type MerchantHandoffRiskResult = 'NORMAL' | 'REQUIRE_PHOTO' | 'REQUIRE_PICKUP_CODE';
+
+export function pickupVerificationFor(
+  configuredMode: PickupVerificationMode,
+  risk: MerchantHandoffRiskResult = 'NORMAL',
+): PickupVerificationMode {
+  if (risk === 'REQUIRE_PICKUP_CODE') return PickupVerificationMode.PICKUP_CODE;
+  if (risk === 'REQUIRE_PHOTO' && configuredMode === PickupVerificationMode.CONFIRMATION) {
+    return PickupVerificationMode.PHOTO;
+  }
+  return configuredMode;
+}
+
+export function allowsUnattendedDelivery(config: PolicyConfig, method: DeliveryMethod): boolean {
+  return config.unattendedDeliveryMethods.includes(method);
 }
 
 export function calculateSubsidy(input: {

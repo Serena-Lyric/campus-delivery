@@ -10,6 +10,19 @@ const IdParams = Type.Object({ merchantId: Type.String({ format: 'uuid' }) });
 export async function registerCatalogRoutes(app: FastifyInstance, prisma: PrismaClient, config: AppConfig) {
   const authenticate = authGuard(prisma, config);
 
+  app.get('/campus-locations', { preHandler: authenticate, schema: { tags: ['catalog'] } }, async () => {
+    return prisma.campusLocation.findMany({
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        description: true,
+        supportedDeliveryMethods: true,
+      },
+      orderBy: { name: 'asc' },
+    });
+  });
+
   app.get('/merchants', { preHandler: authenticate, schema: { tags: ['catalog'] } }, async () => {
     return prisma.merchant.findMany({
       where: { exposureState: { notIn: [MerchantExposureState.HIDDEN, MerchantExposureState.SUSPENDED] } },
@@ -19,6 +32,7 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
         description: true,
         isOpen: true,
         exposureState: true,
+        supportedDeliveryMethods: true,
         campusLocation: { select: { id: true, name: true, type: true } },
       },
       orderBy: { createdAt: 'asc' },

@@ -1,4 +1,4 @@
-import type { PrismaClient } from '@prisma/client';
+import { DeliveryMethod, type PrismaClient } from '@prisma/client';
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
 import { actorOf, authGuard } from '../auth/auth.js';
@@ -26,20 +26,33 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   const merchant = authGuard(prisma, config, ['MERCHANT']);
   const admin = authGuard(prisma, config, ['ADMIN']);
 
-  app.post<{ Body: { merchantId: string; destinationLocationId: string; items: Array<{ productId: string; quantity: number }> } }>('/orders', {
+  app.post<{
+    Body: {
+      merchantId: string;
+      destinationLocationId: string;
+      deliveryMethod: DeliveryMethod;
+      items: Array<{ productId: string; quantity: number }>;
+    };
+  }>('/orders', {
     preHandler: customer,
     schema: {
       tags: ['orders'],
       body: Type.Object({
         merchantId: Type.String({ format: 'uuid' }),
         destinationLocationId: Type.String({ format: 'uuid' }),
+        deliveryMethod: Type.Enum(DeliveryMethod),
         items: Type.Array(Type.Object({
           productId: Type.String({ format: 'uuid' }),
           quantity: Type.Integer({ minimum: 1, maximum: 99 }),
         }), { minItems: 1, maxItems: 50 }),
       }),
     },
-  }, async (request, reply) => reply.status(201).send(await createOrder(prisma, actorOf(request), request.body)));
+  }, async (request, reply) => reply.status(201).send(await createOrder(
+    prisma,
+    actorOf(request),
+    request.body,
+    config.campusTimeZone,
+  )));
 
   app.get<{ Querystring: { limit?: number; offset?: number } }>('/orders/my', {
     preHandler: customer,
@@ -52,7 +65,7 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   }, async (request) => getOrder(prisma, actorOf(request), request.params.orderId));
 
   app.post<{ Params: { orderId: string }; Body: { reason?: string } }>('/orders/:orderId/cancel', {
-    preHandler: anyUser,
+    preHandler: customer,
     schema: { tags: ['orders'], params: OrderIdParams, body: ReasonBody },
   }, async (request) => cancelOrder(prisma, actorOf(request), request.params.orderId, request.body.reason));
 
@@ -76,4 +89,3 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
     request.body.reason ?? 'Marked as exception by administrator',
   ));
 }
-

@@ -2,11 +2,18 @@ import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import type { PrismaClient } from '@prisma/client';
 import Fastify from 'fastify';
-import type { AppConfig } from './config.js';
+import { startLifecycleProcessor } from './background.js';
 import { registerCatalogRoutes } from './catalog/routes.js';
+import type { AppConfig } from './config.js';
 import { registerDeliveryRoutes } from './delivery/routes.js';
+import { registerEvidenceRoutes } from './evidence/routes.js';
+import { MockMediaStorage } from './evidence/media-storage.js';
+import { registerExceptionRoutes } from './exceptions/routes.js';
 import { registerOrderRoutes } from './orders/routes.js';
+import { registerSettlementRoutes } from './settlements/routes.js';
 import { installErrorHandler } from './shared/errors.js';
+import { registerTimelineRoutes } from './timeline/routes.js';
+import { registerVerificationRoutes } from './verification/routes.js';
 
 export async function buildApp(config: AppConfig, prisma: PrismaClient) {
   const app = Fastify({
@@ -22,8 +29,8 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
     openapi: {
       info: {
         title: 'campus-delivery API',
-        description: 'Phase-one API for a campus delivery order pool',
-        version: '0.1.0',
+        description: 'Campus order lifecycle, handoff evidence, delivery pool, and pending settlement API',
+        version: '0.2.0',
       },
       components: {
         securitySchemes: {
@@ -35,10 +42,19 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
   });
   await app.register(swaggerUi, { routePrefix: '/docs' });
 
+  const mediaStorage = new MockMediaStorage();
   app.get('/health', { schema: { tags: ['system'], security: [] } }, async () => ({ status: 'ok' }));
   await registerCatalogRoutes(app, prisma, config);
   await registerOrderRoutes(app, prisma, config);
   await registerDeliveryRoutes(app, prisma, config);
+  await registerEvidenceRoutes(app, prisma, config, mediaStorage);
+  await registerExceptionRoutes(app, prisma, config);
+  await registerVerificationRoutes(app, prisma, config);
+  await registerTimelineRoutes(app, prisma, config);
+  await registerSettlementRoutes(app, prisma, config);
+
+  const stopLifecycleProcessor = startLifecycleProcessor(prisma, config, app.log);
+  app.addHook('onClose', async () => stopLifecycleProcessor());
 
   return app;
 }
