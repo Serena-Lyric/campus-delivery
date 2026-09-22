@@ -1,0 +1,17 @@
+{
+  "name": "campus-delivery-platform",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.5.1",
+  "scripts": {
+    "build": "pnpm --filter @campus/api build",
+    "dev": "pnpm --filter @campus/api dev",
+    "start": "pnpm --filter @campus/api start",
+    "db:generate": "pnpm --filter @campus/api db:generate",
+    "db:migrate": "pnpm --filter @campus/api db:migrate",
+    "db:seed": "pnpm --filter @campus/api db:seed",
+    "test": "pnpm --filter @campus/api test",
+    "test:integration": "pnpm --filter @campus/api test:integration",
+    "typecheck": "pnpm --filter @campus/api typecheck"
+  }
+}
