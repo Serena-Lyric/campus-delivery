@@ -1,5 +1,5 @@
 {
-  "name": "@campus/api",
+  "name": "@campus-delivery/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",

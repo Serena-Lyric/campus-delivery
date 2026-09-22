@@ -1,20 +1,21 @@
+name: campus-delivery
+
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: campus
       POSTGRES_PASSWORD: campus
-      POSTGRES_DB: campus_delivery
+      POSTGRES_DB: campus-delivery
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U campus -d campus_delivery"]
+      test: ["CMD-SHELL", "pg_isready -U campus -d campus-delivery"]
       interval: 2s
       timeout: 3s
       retries: 20
     volumes:
-      - campus-postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
 
 volumes:
-  campus-postgres-data:
-
+  postgres-data:

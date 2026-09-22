@@ -21,7 +21,7 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
   await app.register(swagger, {
     openapi: {
       info: {
-        title: 'Campus Delivery API',
+        title: 'campus-delivery API',
         description: 'Phase-one API for a campus delivery order pool',
         version: '0.1.0',
       },
@@ -42,4 +42,3 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
 
   return app;
 }
-
