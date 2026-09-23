@@ -4,7 +4,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 ## 当前阶段
 
-本阶段仍是模块化单体 REST API。重点是保存履约事实并保证状态、并发和资金状态正确，不实现评分、自动判责、自动处罚、自动派单或真实支付。
+本阶段仍是模块化单体 REST API。当前重点是市场报价、接单时限、用户骑手激励、逐步平台补贴和配置审计，同时继续保存履约事实并保证状态、并发和资金状态正确。
 
 ## 技术栈
 
@@ -52,7 +52,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 - ENABLE_BACKGROUND_JOBS：是否运行冷静期和结算扫描。
 - BACKGROUND_SWEEP_INTERVAL_MS：扫描频率。
-- CAMPUS_TIME_ZONE：短订单码日期分区时区。
+- CAMPUS_TIME_ZONE：短订单码日期分区时区，国内校园默认 Asia/Shanghai。
 
 版本化 BusinessConfig 保存演示业务参数：
 
@@ -61,6 +61,14 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 - platformMaxConcurrentOrdersPerRider：Seed 为 3。
 - verificationCodeTtlSeconds：Seed 为 10 分钟。
 - customerUnreachableWaitSeconds：只预留，不用于自动判责。
+- merchantRepriceCooldownSeconds：Seed 演示为 15 秒。
+- orderClaimWindowSeconds：Seed 演示为 2400 秒。
+- defaultNaturalClaimBaselineSeconds：自然接单样本不足时的演示基线。
+- finalUserWarningSecondsBeforeClaimDeadline：Seed 演示为截止前 300 秒。
+- platformSubsidyStepMinor / platformSubsidyMaxStepMinor：演示补贴步长和单次上限。
+- platformSubsidyMaxPerOrderMinor：演示单订单累计补贴上限。
+- platformSubsidyMinIntervalSeconds：演示补贴最短间隔。
+- merchantSubsidyBudgetMaxUsageBpsPerOrder：单订单商家风险预算占用比例上限。
 - unattendedDeliveryMethods：允许无人接触投递的方式。
 - handoffCodeDeliveryMethods：正常情况下要求交付码的方式。
 
@@ -90,9 +98,14 @@ Seed 包含正常订单、冷静期订单、等待骑手订单、配送中订单
       → PICKED_UP
       → DELIVERED
 
+    READY_FOR_RIDER
+      → NO_RIDER_ACCEPTED
+
 CREATED 表示冷静期。后台处理器在 coolingOffEndsAt 到期后原子推进到 MERCHANT_PENDING。用户无责取消只允许在 CREATED 且截止时间尚未到达时执行。取消和自动推进使用互斥条件更新。
 
-骑手在取餐前可以放弃任务。订单从 CLAIMED 返回 READY_FOR_RIDER，任务重新开放，同时保留 DeliveryAssignment 事实记录。
+商家确认后订单立即进入骑手池并固定 firstPublishedAt 与 claimDeadline。商家“备餐中/可取”只是自报市场信号，真实商家到骑手交接以 pickup 为准。
+
+正常流程不提供骑手接单后主动 abandon。接单即形成履约承诺。到达固定 claimDeadline 仍无人接单时进入 NO_RIDER_ACCEPTED，原始截止时间不会刷新，用户已记录支付金额和未锁定骑手激励进入退款记录边界。
 
 ## 短订单码
 
@@ -112,7 +125,7 @@ Evidence 独立保存订单、操作者、角色、类型、订单阶段、媒�
 
 照片使用 MockMediaStorage 生成 mock 引用。当前后端不存储真实图片，也不能证明图片一定来自现场相机。微信小程序相机和对象存储留待后续实现。
 
-Evidence 只提供争议事实，不自动代表任何一方有责。
+Evidence 只提供争议事实，不自动代表任何一方有责。普通低风险订单的照片默认可选；风险订单、配置明确要求照片或用户失联无人接触投递时才强制。
 
 ## 异常与用户失联
 
@@ -121,6 +134,32 @@ Evidence 只提供争议事实，不自动代表任何一方有责。
 允许无人接触投递时，用户失联订单可在骑手提交 DELIVERY_PHOTO 后完成。不允许无人接触投递时，订单进入 EXCEPTION。系统不自动判责或扣款。
 
 DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除历史余额。
+
+## 市场报价与价格快照
+
+商家确认订单时，订单使用商家当前默认配送报价进入骑手池。商家可在未接单前修改订单级报价；每次修改记录版本、旧值、新值、操作者、时间和原因，并受配置化冷却时间限制。
+
+骑手接单事务锁定 DeliveryTask，并把当时的商家报价、用户激励、平台补贴、报价版本和总收益原子写入 DeliveryAssignment。接单后商家和平台不能向下修改已接受的金额。
+
+角色价格视图彼此隔离：商家只看自己的报价历史；用户只看自己的费用、激励和退款；骑手主要看保证总收益；管理员看完整资金来源和快照。
+
+## 用户骑手激励
+
+用户激励与商家报价、平台补贴独立记账。接单前用户可以增加、减少或撤回；接单后只能追加。接单后新增部分更新当前责任骑手的收益和结算金额，100% 归骑手，不增加平台收入。
+
+无人承接失败时，尚未锁定的用户骑手激励记录为全额退款。
+
+## 平台逐步补贴
+
+平台不再使用 targetRiderPayout 自动补足，也不在商家 ready 时自动补贴。补贴只能通过受控服务逐步追加，每次记录旧补贴、增量、新总额、策略版本、时间和触发原因。
+
+服务端同时限制单次步长、单次绝对上限、单订单累计上限、最短间隔和商家风险预算占用比例。补贴资格、时点和增量是三个独立策略接口。
+
+自然接单样本只包含补贴介入前接单的 DeliveryAssignment；补贴后接单记录为 SUBSIDIZED，不进入自然接单基线。
+
+## 管理员业务配置
+
+管理员可通过后端 API 读取和更新版本化 BusinessConfig。每次修改记录操作者、前后版本、前后 payload、时间和原因。订单接单窗口、报价冷却和结算等待等会形成数据库时间或价格快照，后续配置修改不追溯改变既有承诺。
 
 ## 骑手持单限制
 
@@ -151,17 +190,22 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 | POST | /orders/:orderId/exceptions | 订单相关方 | 报告结构化异常 |
 | POST | /orders/:orderId/delivery-code | 用户 | 签发交付码 |
 | POST | /orders/:orderId/pickup-code | 商家 | 签发取餐码 |
-| POST | /merchant/orders/:orderId/confirm | 商家 | 确认正式订单 |
-| POST | /merchant/orders/:orderId/ready | 商家 | 备妥并进入订单池 |
+| GET | /orders/:orderId/pricing | 订单相关方 | 角色隔离价格视图 |
+| POST | /orders/:orderId/rider-tip-adjustments | 用户 | 调整或追加骑手激励 |
+| POST | /merchant/orders/:orderId/confirm | 商家 | 确认并立即发布到骑手池 |
+| PATCH | /merchant/orders/:orderId/delivery-quote | 商家 | 未接单前修改订单报价 |
+| POST | /merchant/orders/:orderId/ready | 商家 | 更新可取自报信号 |
 | GET | /delivery-tasks/available | 骑手 | 查看公开任务 |
 | GET | /delivery-tasks/mine | 骑手 | 查看参与过的任务 |
 | POST | /delivery-tasks/:taskId/claim | 骑手 | 原子抢单 |
-| POST | /delivery-tasks/:taskId/abandon | 骑手 | 取餐前放弃 |
 | POST | /delivery-tasks/:taskId/verify-pickup-code | 骑手 | 验证取餐码 |
 | POST | /delivery-tasks/:taskId/pick-up | 骑手 | 验证并取餐 |
 | POST | /delivery-tasks/:taskId/deliver | 骑手 | 验证并送达 |
 | GET | /riders/me/settlements | 骑手 | 查看待结算资金 |
 | POST | /admin/orders/:orderId/exception | 管理员 | 标记订单异常 |
+| POST | /admin/orders/:orderId/platform-subsidies | 管理员 | 逐步追加平台补贴 |
+| GET | /admin/business-configs/:key | 管理员 | 查看配置和审计 |
+| PUT | /admin/business-configs/:key | 管理员 | 创建新配置版本 |
 
 ## 测试与构建
 
@@ -170,7 +214,7 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
     pnpm test:integration
     pnpm build
 
-集成测试使用真实 PostgreSQL，覆盖冷静期竞态、短码、双骑手抢单、个人与平台持单上限、并发占单、放弃任务、取餐码、交付码、Evidence、用户失联、待结算释放、争议冻结、权限和时间线过滤。
+集成测试使用真实 PostgreSQL，覆盖冷静期竞态、商家确认即发布、报价历史与冷却、改价和接单并发快照、用户激励、固定接单截止时间、无人承接退款边界、逐步补贴约束、自然/补贴样本隔离、角色价格视图、配置审计、双骑手抢单、持单上限、验证码、Evidence、用户失联、待结算和时间线过滤。
 
 ## 已实现
 
@@ -182,6 +226,15 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 - 独立 Evidence 与 MockMediaStorage
 - 结构化异常事实
 - 角色化订单时间线
+- 商家订单级报价、版本历史和改价冷却
+- 用户骑手激励独立账本
+- 骑手接单原子价格快照
+- 固定首次发布时间和接单截止时间
+- NO_RIDER_ACCEPTED 与退款记录边界
+- 平台逐步补贴和三类策略接口
+- 自然接单与补贴后接单样本隔离
+- 管理员配置版本和审计
+- 角色隔离价格视图
 - 骑手个人额度与平台绝对上限
 - DeliveryAssignment 责任记录
 - RiderSettlement PENDING、AVAILABLE、HELD
@@ -194,6 +247,10 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 - 骑手待结算最终天数
 - 骑手具体并发额度
 - 骑手额度升级规则
+- 商家配送报价默认值来源
+- 平台补贴正式步长、间隔、单订单上限和预算比例
+- 40 分钟窗口内更细的提醒与补贴顺序
+- 接单后激励在异常争议下的退款边界
 - 用户风险判定机制
 - 商家风险判定机制
 - 商家何时必须取餐验证

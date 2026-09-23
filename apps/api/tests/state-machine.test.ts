@@ -18,8 +18,9 @@ describe('order state machine', () => {
     }
   });
 
-  it('allows pre-pickup rider abandonment back to the order pool', () => {
-    expect(() => assertTransition(OrderStatus.CLAIMED, OrderStatus.READY_FOR_RIDER)).not.toThrow();
+  it('treats rider claim as a commitment and allows the no-rider terminal outcome', () => {
+    expect(() => assertTransition(OrderStatus.CLAIMED, OrderStatus.READY_FOR_RIDER)).toThrow(/cannot transition/);
+    expect(() => assertTransition(OrderStatus.READY_FOR_RIDER, OrderStatus.NO_RIDER_ACCEPTED)).not.toThrow();
   });
 
   it('rejects skipping states and leaving terminal states', () => {

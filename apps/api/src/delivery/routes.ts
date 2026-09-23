@@ -4,7 +4,6 @@ import type { FastifyInstance } from 'fastify';
 import { actorOf, authGuard } from '../auth/auth.js';
 import type { AppConfig } from '../config.js';
 import {
-  abandonTask,
   claimTask,
   deliverTask,
   listAvailableTasks,
@@ -22,7 +21,6 @@ const DeliverBody = Type.Object({
   evidenceId: Type.Optional(Type.String({ format: 'uuid' })),
   code: Type.Optional(Type.String({ pattern: '^[0-9]{6}$' })),
 });
-const AbandonBody = Type.Object({ reason: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })) });
 
 export async function registerDeliveryRoutes(app: FastifyInstance, prisma: PrismaClient, config: AppConfig) {
   const rider = authGuard(prisma, config, ['RIDER']);
@@ -41,11 +39,6 @@ export async function registerDeliveryRoutes(app: FastifyInstance, prisma: Prism
     preHandler: rider,
     schema: { tags: ['delivery'], params: TaskIdParams },
   }, async (request) => claimTask(prisma, actorOf(request), request.params.taskId));
-
-  app.post<{ Params: { taskId: string }; Body: { reason?: string } }>('/delivery-tasks/:taskId/abandon', {
-    preHandler: rider,
-    schema: { tags: ['delivery'], params: TaskIdParams, body: AbandonBody },
-  }, async (request) => abandonTask(prisma, actorOf(request), request.params.taskId, request.body.reason));
 
   app.post<{ Params: { taskId: string }; Body: { evidenceId?: string } }>('/delivery-tasks/:taskId/pick-up', {
     preHandler: rider,

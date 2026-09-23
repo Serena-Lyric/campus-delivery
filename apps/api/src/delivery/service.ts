@@ -1,4 +1,5 @@
 import {
+  ClaimSampleType,
   DeliveryAssignmentStatus,
   DeliveryTaskStatus,
   EvidenceType,
@@ -23,7 +24,6 @@ const taskInclude = {
     include: {
       merchant: { select: { id: true, name: true } },
       destinationLocation: { select: { id: true, name: true, type: true } },
-      pricing: true,
     },
   },
 };
@@ -52,7 +52,11 @@ async function requireEvidence(
 
 export function listAvailableTasks(prisma: PrismaClient, limit: number, offset: number) {
   return prisma.deliveryTask.findMany({
-    where: { status: DeliveryTaskStatus.OPEN, riderId: null },
+    where: {
+      status: DeliveryTaskStatus.OPEN,
+      riderId: null,
+      claimDeadline: { gt: new Date() },
+    },
     include: taskInclude,
     orderBy: { createdAt: 'asc' },
     take: limit,
@@ -71,13 +75,24 @@ export function listRiderTasks(prisma: PrismaClient, actor: Actor, limit: number
   });
 }
 
-export async function claimTask(prisma: PrismaClient, actor: Actor, taskId: string) {
+export async function claimTask(
+  prisma: PrismaClient,
+  actor: Actor,
+  taskId: string,
+  now = new Date(),
+) {
   if (!actor.riderId) throw forbidden();
   const riderId = actor.riderId;
   const { config } = await loadPolicyConfig(prisma);
 
   return prisma.$transaction(async (tx) => {
+    const taskIdentity = await tx.deliveryTask.findUnique({
+      where: { id: taskId },
+      select: { orderId: true },
+    });
+    if (!taskIdentity) throw notFound('Delivery task');
     await tx.$queryRaw`SELECT "id" FROM "Rider" WHERE "id" = ${riderId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${taskIdentity.orderId}::uuid FOR UPDATE`;
     const rider = await tx.rider.findUnique({ where: { id: riderId } });
     if (!rider || rider.status !== 'AVAILABLE') throw conflict('RIDER_UNAVAILABLE', 'Rider is not available to claim tasks');
 
@@ -95,52 +110,60 @@ export async function claimTask(prisma: PrismaClient, actor: Actor, taskId: stri
       throw conflict('RIDER_ORDER_LIMIT', 'Rider has reached the current concurrent order limit');
     }
 
+    await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${taskId}::uuid FOR UPDATE`;
+    const task = await tx.deliveryTask.findUnique({
+      where: { id: taskId },
+      include: { order: { include: { pricing: true } } },
+    });
+    if (!task) throw notFound('Delivery task');
+    if (
+      task.status !== DeliveryTaskStatus.OPEN
+      || task.riderId
+      || !task.firstPublishedAt
+      || !task.claimDeadline
+      || now >= task.claimDeadline
+    ) {
+      throw conflict('TASK_NOT_CLAIMABLE', 'Delivery task is no longer claimable');
+    }
+    if (!task.order.pricing) throw notFound('Order pricing');
+
     const claimed = await tx.deliveryTask.updateMany({
-      where: { id: taskId, status: DeliveryTaskStatus.OPEN, riderId: null },
-      data: { status: DeliveryTaskStatus.CLAIMED, riderId, claimedAt: new Date() },
+      where: {
+        id: taskId,
+        status: DeliveryTaskStatus.OPEN,
+        riderId: null,
+        claimDeadline: { gt: now },
+      },
+      data: { status: DeliveryTaskStatus.CLAIMED, riderId, claimedAt: now },
     });
     if (claimed.count !== 1) throw conflict('TASK_ALREADY_CLAIMED', 'Delivery task is no longer available');
 
-    const task = await tx.deliveryTask.findUnique({ where: { id: taskId }, include: { order: true } });
-    if (!task) throw notFound('Delivery task');
     await transitionOrder(tx, task.orderId, task.order.status, OrderStatus.CLAIMED, actor, {
       eventType: OrderEventType.RIDER_CLAIMED,
     });
+    const pricing = task.order.pricing;
+    const claimLatencySeconds = Math.max(
+      0,
+      Math.floor((now.getTime() - task.firstPublishedAt.getTime()) / 1000),
+    );
     await tx.deliveryAssignment.create({
-      data: { taskId: task.id, orderId: task.orderId, riderId },
+      data: {
+        taskId: task.id,
+        orderId: task.orderId,
+        riderId,
+        claimedAt: now,
+        merchantQuoteMinorAtClaim: pricing.merchantDeliveryContributionMinor,
+        customerTipMinorAtClaim: pricing.customerRiderTipMinor,
+        platformSubsidyMinorAtClaim: pricing.platformSubsidyMinor,
+        riderPayoutMinorAtClaim: pricing.riderPayoutMinor,
+        quoteVersionAtClaim: pricing.merchantQuoteVersion,
+        claimSampleType: pricing.platformSubsidyMinor > 0
+          ? ClaimSampleType.SUBSIDIZED
+          : ClaimSampleType.NATURAL,
+        claimLatencySeconds,
+      },
     });
     return tx.deliveryTask.findUniqueOrThrow({ where: { id: taskId }, include: taskInclude });
-  });
-}
-
-export async function abandonTask(
-  prisma: PrismaClient,
-  actor: Actor,
-  taskId: string,
-  reason?: string,
-) {
-  if (!actor.riderId) throw forbidden();
-  return prisma.$transaction(async (tx) => {
-    const task = await tx.deliveryTask.findUnique({ where: { id: taskId }, include: { order: true } });
-    if (!task) throw notFound('Delivery task');
-    if (task.riderId !== actor.riderId) throw forbidden();
-    if (task.status !== DeliveryTaskStatus.CLAIMED || task.order.status !== OrderStatus.CLAIMED) {
-      throw conflict('TASK_STATE_CONFLICT', 'Only a claimed task can be abandoned before pickup');
-    }
-
-    await transitionOrder(tx, task.orderId, task.order.status, OrderStatus.READY_FOR_RIDER, actor, {
-      eventType: OrderEventType.RIDER_ABANDONED,
-      ...(reason ? { reason } : {}),
-    });
-    await tx.deliveryAssignment.updateMany({
-      where: { taskId: task.id, riderId: actor.riderId, status: DeliveryAssignmentStatus.ACTIVE },
-      data: { status: DeliveryAssignmentStatus.ABANDONED, endedAt: new Date(), ...(reason ? { reason } : {}) },
-    });
-    await tx.deliveryTask.update({
-      where: { id: task.id },
-      data: { status: DeliveryTaskStatus.OPEN, riderId: null, claimedAt: null },
-    });
-    return tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, include: taskInclude });
   });
 }
 
@@ -152,6 +175,10 @@ export async function pickUpTask(
 ) {
   if (!actor.riderId) throw forbidden();
   return prisma.$transaction(async (tx) => {
+    const taskIdentity = await tx.deliveryTask.findUnique({ where: { id: taskId }, select: { orderId: true } });
+    if (!taskIdentity) throw notFound('Delivery task');
+    await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${taskIdentity.orderId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${taskId}::uuid FOR UPDATE`;
     const task = await tx.deliveryTask.findUnique({ where: { id: taskId }, include: { order: true } });
     if (!task) throw notFound('Delivery task');
     if (task.riderId !== actor.riderId) throw forbidden();
@@ -199,6 +226,10 @@ export async function deliverTask(
   const { config } = await loadPolicyConfig(prisma);
 
   return prisma.$transaction(async (tx) => {
+    const taskIdentity = await tx.deliveryTask.findUnique({ where: { id: taskId }, select: { orderId: true } });
+    if (!taskIdentity) throw notFound('Delivery task');
+    await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${taskIdentity.orderId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${taskId}::uuid FOR UPDATE`;
     const task = await tx.deliveryTask.findUnique({
       where: { id: taskId },
       include: { order: { include: { pricing: true } } },
@@ -218,7 +249,10 @@ export async function deliverTask(
     const unattendedFallback = customerUnreachable > 0
       && allowsUnattendedDelivery(config, task.order.deliveryMethod);
 
-    if (task.order.deliveryVerificationMode === 'DELIVERY_PHOTO' || unattendedFallback) {
+    if (task.order.deliveryVerificationMode === 'HANDOFF_CODE' && !unattendedFallback) {
+      if (!input.code) throw conflict('VERIFICATION_CODE_REQUIRED', 'Delivery handoff code is required');
+      await verifyOrderCode(tx, task.order, VerificationPurpose.DELIVERY, actor, input.code, now);
+    } else if (task.order.deliveryEvidenceRequired || unattendedFallback) {
       await requireEvidence(
         tx,
         input.evidenceId,
@@ -227,9 +261,15 @@ export async function deliverTask(
         EvidenceType.DELIVERY_PHOTO,
         OrderStatus.PICKED_UP,
       );
-    } else {
-      if (!input.code) throw conflict('VERIFICATION_CODE_REQUIRED', 'Delivery handoff code is required');
-      await verifyOrderCode(tx, task.order, VerificationPurpose.DELIVERY, actor, input.code, now);
+    } else if (input.evidenceId) {
+      await requireEvidence(
+        tx,
+        input.evidenceId,
+        task.orderId,
+        actor,
+        EvidenceType.DELIVERY_PHOTO,
+        OrderStatus.PICKED_UP,
+      );
     }
 
     await transitionOrder(tx, task.orderId, task.order.status, OrderStatus.DELIVERED, actor, {
@@ -239,15 +279,21 @@ export async function deliverTask(
       where: { id: task.id },
       data: { status: DeliveryTaskStatus.COMPLETED, deliveredAt: now },
     });
-    await tx.deliveryAssignment.updateMany({
+    const assignment = await tx.deliveryAssignment.findFirst({
       where: { taskId: task.id, riderId: actor.riderId, status: DeliveryAssignmentStatus.ACTIVE },
+      orderBy: { claimedAt: 'desc' },
+    });
+    if (!assignment) throw notFound('Delivery assignment');
+    const finalRiderPayoutMinor = assignment.riderPayoutMinorAtClaim + assignment.postClaimTipMinor;
+    await tx.deliveryAssignment.update({
+      where: { id: assignment.id },
       data: { status: DeliveryAssignmentStatus.COMPLETED, endedAt: now },
     });
     await tx.settlement.update({
       where: { orderId: task.orderId },
       data: {
         status: SettlementStatus.FINALIZED,
-        riderPayableMinor: task.order.pricing.riderPayoutMinor,
+        riderPayableMinor: finalRiderPayoutMinor,
         merchantPayableMinor: task.order.pricing.merchantSettlementMinor,
         platformRevenueMinor: task.order.pricing.platformCommissionMinor - task.order.pricing.platformSubsidyMinor,
         finalizedAt: now,
@@ -257,9 +303,12 @@ export async function deliverTask(
       data: {
         orderId: task.orderId,
         riderId: actor.riderId,
-        amountMinor: task.order.pricing.riderPayoutMinor,
+        amountMinor: finalRiderPayoutMinor,
         status: RiderSettlementStatus.PENDING,
-        pendingUntil: new Date(now.getTime() + config.riderSettlementPendingSeconds * 1000),
+        pendingUntil: new Date(
+          now.getTime()
+          + (task.riderSettlementPendingSeconds ?? config.riderSettlementPendingSeconds) * 1000,
+        ),
       },
     });
     return tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, include: taskInclude });

@@ -47,7 +47,7 @@ export function loadConfig(): AppConfig {
     enableDevAuth,
     enableBackgroundJobs: booleanEnv('ENABLE_BACKGROUND_JOBS', true),
     backgroundSweepIntervalMs: positiveIntegerEnv('BACKGROUND_SWEEP_INTERVAL_MS', 5000),
-    campusTimeZone: process.env.CAMPUS_TIME_ZONE ?? 'Asia/Singapore',
+    campusTimeZone: process.env.CAMPUS_TIME_ZONE ?? 'Asia/Shanghai',
     logLevel: process.env.LOG_LEVEL ?? 'info',
   };
 }

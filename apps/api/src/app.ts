@@ -2,6 +2,7 @@ import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import type { PrismaClient } from '@prisma/client';
 import Fastify from 'fastify';
+import { registerAdminConfigRoutes } from './admin/config-routes.js';
 import { startLifecycleProcessor } from './background.js';
 import { registerCatalogRoutes } from './catalog/routes.js';
 import type { AppConfig } from './config.js';
@@ -10,8 +11,11 @@ import { registerEvidenceRoutes } from './evidence/routes.js';
 import { MockMediaStorage } from './evidence/media-storage.js';
 import { registerExceptionRoutes } from './exceptions/routes.js';
 import { registerOrderRoutes } from './orders/routes.js';
+import { registerMarketPricingRoutes } from './pricing/routes.js';
+import { registerPricingViewRoutes } from './pricing/view-routes.js';
 import { registerSettlementRoutes } from './settlements/routes.js';
 import { installErrorHandler } from './shared/errors.js';
+import { registerSubsidyRoutes } from './subsidy/routes.js';
 import { registerTimelineRoutes } from './timeline/routes.js';
 import { registerVerificationRoutes } from './verification/routes.js';
 
@@ -29,8 +33,8 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
     openapi: {
       info: {
         title: 'campus-delivery API',
-        description: 'Campus order lifecycle, handoff evidence, delivery pool, and pending settlement API',
-        version: '0.2.0',
+        description: 'Campus market pricing, claim deadlines, evidence, delivery pool, and settlement API',
+        version: '0.3.0',
       },
       components: {
         securitySchemes: {
@@ -46,7 +50,11 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
   app.get('/health', { schema: { tags: ['system'], security: [] } }, async () => ({ status: 'ok' }));
   await registerCatalogRoutes(app, prisma, config);
   await registerOrderRoutes(app, prisma, config);
+  await registerMarketPricingRoutes(app, prisma, config);
+  await registerPricingViewRoutes(app, prisma, config);
   await registerDeliveryRoutes(app, prisma, config);
+  await registerSubsidyRoutes(app, prisma, config);
+  await registerAdminConfigRoutes(app, prisma, config);
   await registerEvidenceRoutes(app, prisma, config, mediaStorage);
   await registerExceptionRoutes(app, prisma, config);
   await registerVerificationRoutes(app, prisma, config);

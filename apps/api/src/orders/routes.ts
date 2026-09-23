@@ -47,12 +47,11 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
         }), { minItems: 1, maxItems: 50 }),
       }),
     },
-  }, async (request, reply) => reply.status(201).send(await createOrder(
-    prisma,
-    actorOf(request),
-    request.body,
-    config.campusTimeZone,
-  )));
+  }, async (request, reply) => {
+    const actor = actorOf(request);
+    const created = await createOrder(prisma, actor, request.body, config.campusTimeZone);
+    return reply.status(201).send(await getOrder(prisma, actor, created.id));
+  });
 
   app.get<{ Querystring: { limit?: number; offset?: number } }>('/orders/my', {
     preHandler: customer,
@@ -67,12 +66,20 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   app.post<{ Params: { orderId: string }; Body: { reason?: string } }>('/orders/:orderId/cancel', {
     preHandler: customer,
     schema: { tags: ['orders'], params: OrderIdParams, body: ReasonBody },
-  }, async (request) => cancelOrder(prisma, actorOf(request), request.params.orderId, request.body.reason));
+  }, async (request) => {
+    const actor = actorOf(request);
+    await cancelOrder(prisma, actor, request.params.orderId, request.body.reason);
+    return getOrder(prisma, actor, request.params.orderId);
+  });
 
   app.post<{ Params: { orderId: string } }>('/merchant/orders/:orderId/confirm', {
     preHandler: merchant,
     schema: { tags: ['merchant'], params: OrderIdParams },
-  }, async (request) => confirmOrder(prisma, actorOf(request), request.params.orderId));
+  }, async (request) => {
+    const actor = actorOf(request);
+    await confirmOrder(prisma, actor, request.params.orderId);
+    return getOrder(prisma, actor, request.params.orderId);
+  });
 
   app.post<{ Params: { orderId: string } }>('/merchant/orders/:orderId/ready', {
     preHandler: merchant,
@@ -82,10 +89,14 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   app.post<{ Params: { orderId: string }; Body: { reason?: string } }>('/admin/orders/:orderId/exception', {
     preHandler: admin,
     schema: { tags: ['admin'], params: OrderIdParams, body: ReasonBody },
-  }, async (request) => markOrderException(
-    prisma,
-    actorOf(request),
-    request.params.orderId,
-    request.body.reason ?? 'Marked as exception by administrator',
-  ));
+  }, async (request) => {
+    const actor = actorOf(request);
+    await markOrderException(
+      prisma,
+      actor,
+      request.params.orderId,
+      request.body.reason ?? 'Marked as exception by administrator',
+    );
+    return getOrder(prisma, actor, request.params.orderId);
+  });
 }

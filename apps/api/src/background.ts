@@ -1,7 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
 import type { FastifyBaseLogger } from 'fastify';
 import type { AppConfig } from './config.js';
-import { releaseExpiredCoolingOrders } from './orders/lifecycle.js';
+import { expireUnclaimedDeliveryTasks, releaseExpiredCoolingOrders } from './orders/lifecycle.js';
 import { releaseAvailableRiderSettlements } from './settlements/service.js';
 
 export function startLifecycleProcessor(

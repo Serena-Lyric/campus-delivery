@@ -11,10 +11,11 @@ const transitions: Readonly<Record<OrderStatus, readonly OrderStatus[]>> = {
   CREATED: [OrderStatus.MERCHANT_PENDING, OrderStatus.CANCELLED, OrderStatus.EXCEPTION],
   MERCHANT_PENDING: [OrderStatus.MERCHANT_CONFIRMED, OrderStatus.CANCELLED, OrderStatus.EXCEPTION],
   MERCHANT_CONFIRMED: [OrderStatus.READY_FOR_RIDER, OrderStatus.CANCELLED, OrderStatus.EXCEPTION],
-  READY_FOR_RIDER: [OrderStatus.CLAIMED, OrderStatus.CANCELLED, OrderStatus.EXCEPTION],
-  CLAIMED: [OrderStatus.READY_FOR_RIDER, OrderStatus.PICKED_UP, OrderStatus.CANCELLED, OrderStatus.EXCEPTION],
+  READY_FOR_RIDER: [OrderStatus.CLAIMED, OrderStatus.NO_RIDER_ACCEPTED, OrderStatus.CANCELLED, OrderStatus.EXCEPTION],
+  CLAIMED: [OrderStatus.PICKED_UP, OrderStatus.CANCELLED, OrderStatus.EXCEPTION],
   PICKED_UP: [OrderStatus.DELIVERED, OrderStatus.EXCEPTION],
   DELIVERED: [],
+  NO_RIDER_ACCEPTED: [],
   CANCELLED: [],
   EXCEPTION: [],
 };

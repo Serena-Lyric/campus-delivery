@@ -6,18 +6,19 @@ import {
   OrderEventType,
   OrderStatus,
   Prisma,
+  RiderTipEventType,
   type PrismaClient,
 } from '@prisma/client';
 import type { Actor } from '../auth/auth.js';
 import {
-  calculateSubsidy,
   deliveryVerificationFor,
-  exposureForUsage,
   loadPolicyConfig,
   pickupVerificationFor,
 } from '../merchant-policy/policies.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
-import { addMinor, basisPoints, multiplyMinor } from '../shared/money.js';
+import { multiplyMinor } from '../shared/money.js';
+import { initializeMerchantQuote } from '../pricing/service.js';
+import { getOrderPricingView } from '../pricing/views.js';
 import { assertOrderAccess } from './access.js';
 import { generateShortCode, shortCodeDay } from './short-code.js';
 import { transitionOrder } from './state-machine.js';
@@ -40,6 +41,40 @@ const orderInclude = {
   merchant: { select: { id: true, name: true } },
   destinationLocation: { select: { id: true, name: true, type: true } },
 } satisfies Prisma.OrderInclude;
+
+type IncludedOrder = Prisma.OrderGetPayload<{ include: typeof orderInclude }>;
+
+function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown) {
+  const { assignments: _assignments, deliveryTask, settlement, riderSettlement, ...rest } = order;
+  const task = deliveryTask
+    ? {
+      id: deliveryTask.id,
+      orderId: deliveryTask.orderId,
+      status: deliveryTask.status,
+      riderId: actor.role === 'RIDER' || actor.role === 'ADMIN' ? deliveryTask.riderId : undefined,
+      payoutMinor: actor.role === 'RIDER' || actor.role === 'ADMIN' ? deliveryTask.payoutMinor : undefined,
+      firstPublishedAt: deliveryTask.firstPublishedAt,
+      claimDeadline: deliveryTask.claimDeadline,
+      claimedAt: deliveryTask.claimedAt,
+      pickedUpAt: deliveryTask.pickedUpAt,
+      deliveredAt: deliveryTask.deliveredAt,
+    }
+    : null;
+  const settlementView = actor.role === 'ADMIN'
+    ? settlement
+    : actor.role === 'MERCHANT'
+      ? settlement && { status: settlement.status, merchantPayableMinor: settlement.merchantPayableMinor }
+      : actor.role === 'RIDER'
+        ? settlement && { status: settlement.status, riderPayableMinor: settlement.riderPayableMinor }
+        : settlement && { status: settlement.status };
+  return {
+    ...rest,
+    pricing,
+    deliveryTask: task,
+    settlement: settlementView,
+    riderSettlement: actor.role === 'RIDER' || actor.role === 'ADMIN' ? riderSettlement : undefined,
+  };
+}
 
 export async function createOrder(
   prisma: PrismaClient,
@@ -115,7 +150,10 @@ export async function createOrder(
             subtotalMinor: multiplyMinor(product.priceMinor, quantity),
           };
         });
-        const itemSubtotalMinor = addMinor(...itemData.map((item) => item.subtotalMinor));
+        const itemSubtotalMinor = itemData.reduce((sum, item) => sum + item.subtotalMinor, 0);
+    if (!Number.isSafeInteger(itemSubtotalMinor)) {
+      throw badRequest('MONEY_OVERFLOW', 'Money calculation overflowed');
+    }
 
         return tx.order.create({
           data: {
@@ -159,103 +197,125 @@ export async function getOrder(prisma: PrismaClient, actor: Actor, orderId: stri
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: orderInclude });
   if (!order) throw notFound('Order');
   assertOrderAccess(actor, order);
-  return order;
+  return presentOrder(
+    actor,
+    order,
+    await getOrderPricingView(prisma, actor, order.id),
+  );
 }
 
 export async function listCustomerOrders(prisma: PrismaClient, actor: Actor, limit: number, offset: number) {
   if (actor.role !== 'CUSTOMER') throw forbidden();
-  return prisma.order.findMany({
+  const orders = await prisma.order.findMany({
     where: { customerId: actor.id },
     include: orderInclude,
     orderBy: { createdAt: 'desc' },
     take: limit,
     skip: offset,
   });
+  return Promise.all(orders.map(async (order) => presentOrder(
+    actor,
+    order,
+    await getOrderPricingView(prisma, actor, order.id),
+  )));
 }
 
-export async function confirmOrder(prisma: PrismaClient, actor: Actor, orderId: string) {
+export async function confirmOrder(
+  prisma: PrismaClient,
+  actor: Actor,
+  orderId: string,
+  now = new Date(),
+) {
   if (!actor.merchantId) throw forbidden();
+  const { version: policyVersion, config } = await loadPolicyConfig(prisma);
+
   return prisma.$transaction(async (tx) => {
-    const order = await tx.order.findUnique({ where: { id: orderId } });
+    await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${orderId}::uuid FOR UPDATE`;
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      include: { merchant: true, deliveryTask: true },
+    });
     if (!order) throw notFound('Order');
     if (order.merchantId !== actor.merchantId) throw forbidden();
+    if (order.deliveryTask) throw conflict('ORDER_ALREADY_PUBLISHED', 'Order already has a delivery task');
+
     await transitionOrder(tx, order.id, order.status, OrderStatus.MERCHANT_CONFIRMED, actor, {
       eventType: OrderEventType.MERCHANT_CONFIRMED,
+    });
+    const pricing = await initializeMerchantQuote(
+      tx,
+      order.id,
+      order.merchantId,
+      actor.id,
+      order.merchant.deliveryContributionMinor,
+      config,
+      now,
+    );
+    await transitionOrder(tx, order.id, OrderStatus.MERCHANT_CONFIRMED, OrderStatus.READY_FOR_RIDER, actor, {
+      eventType: OrderEventType.READY_FOR_RIDER,
+      metadata: { firstPublishedAt: now.toISOString() },
+    });
+    await tx.order.update({
+      where: { id: order.id },
+      data: {
+        merchantPreparationStatus: 'PREPARING',
+        merchantPreparationUpdatedAt: now,
+      },
+    });
+    await tx.deliveryTask.create({
+      data: {
+        orderId: order.id,
+        payoutMinor: pricing.riderPayoutMinor,
+        firstPublishedAt: now,
+        claimDeadline: new Date(now.getTime() + config.orderClaimWindowSeconds * 1000),
+        finalUserWarningAt: new Date(
+          now.getTime()
+          + (config.orderClaimWindowSeconds - config.finalUserWarningSecondsBeforeClaimDeadline) * 1000,
+        ),
+        marketPolicyVersion: policyVersion,
+        merchantRepriceCooldownSeconds: config.merchantRepriceCooldownSeconds,
+        riderSettlementPendingSeconds: config.riderSettlementPendingSeconds,
+      },
     });
     return tx.order.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
   });
 }
 
-export async function markOrderReady(prisma: PrismaClient, actor: Actor, orderId: string) {
+export async function markOrderReady(
+  prisma: PrismaClient,
+  actor: Actor,
+  orderId: string,
+  now = new Date(),
+) {
   if (!actor.merchantId) throw forbidden();
-  const { version, config } = await loadPolicyConfig(prisma);
-
   return prisma.$transaction(async (tx) => {
-    const order = await tx.order.findUnique({
-      where: { id: orderId },
-      include: { merchant: { include: { subsidyAccount: true } }, pricing: true },
-    });
+    const order = await tx.order.findUnique({ where: { id: orderId } });
     if (!order) throw notFound('Order');
     if (order.merchantId !== actor.merchantId) throw forbidden();
-    if (!order.pricing) throw new AppError(500, 'MISSING_PRICING', 'Order pricing is missing');
-
-    await transitionOrder(tx, order.id, order.status, OrderStatus.READY_FOR_RIDER, actor, {
-      eventType: OrderEventType.READY_FOR_RIDER,
-    });
-
-    if (order.merchant.subsidyAccount) {
-      await tx.$queryRaw`SELECT "id" FROM "MerchantSubsidyAccount" WHERE "merchantId" = ${order.merchantId}::uuid FOR UPDATE`;
+    if (order.status !== OrderStatus.READY_FOR_RIDER && order.status !== OrderStatus.CLAIMED) {
+      throw conflict('ORDER_STATE_CONFLICT', 'Preparation status can only be updated for a published order before pickup');
     }
-    const account = await tx.merchantSubsidyAccount.findUnique({ where: { merchantId: order.merchantId } });
-    const remainingSubsidyMinor = account ? Math.max(0, account.subsidyLimitMinor - account.subsidyUsedMinor) : 0;
-    const platformSubsidyMinor = calculateSubsidy({
-      enabled: config.subsidyEnabled,
-      targetRiderPayoutMinor: config.targetRiderPayoutMinor,
-      customerDeliveryFeeMinor: config.customerDeliveryFeeMinor,
-      merchantContributionMinor: order.merchant.deliveryContributionMinor,
-      maxSubsidyPerOrderMinor: config.maxSubsidyPerOrderMinor,
-      remainingSubsidyMinor,
-    });
-    const riderPayoutMinor = addMinor(
-      config.customerDeliveryFeeMinor,
-      order.merchant.deliveryContributionMinor,
-      platformSubsidyMinor,
-    );
-    const platformCommissionMinor = basisPoints(order.pricing.itemSubtotalMinor, config.platformCommissionBps);
-    const merchantSettlementMinor = order.pricing.itemSubtotalMinor
-      - platformCommissionMinor
-      - order.merchant.deliveryContributionMinor;
-    if (merchantSettlementMinor < 0) {
-      throw new AppError(500, 'INVALID_BUSINESS_CONFIG', 'Configured merchant charges exceed the order subtotal');
-    }
-
-    await tx.orderPricing.update({
-      where: { orderId: order.id },
+    const updated = await tx.order.update({
+      where: { id: order.id },
       data: {
-        customerDeliveryFeeMinor: config.customerDeliveryFeeMinor,
-        merchantDeliveryContributionMinor: order.merchant.deliveryContributionMinor,
-        platformSubsidyMinor,
-        riderPayoutMinor,
-        platformCommissionMinor,
-        merchantSettlementMinor,
+        merchantPreparationStatus: 'READY_FOR_PICKUP',
+        merchantPreparationUpdatedAt: now,
       },
     });
-    await tx.deliveryTask.create({ data: { orderId: order.id, payoutMinor: riderPayoutMinor } });
-
-    if (platformSubsidyMinor > 0 && account) {
-      const usedMinor = addMinor(account.subsidyUsedMinor, platformSubsidyMinor);
-      const exposure = exposureForUsage(usedMinor, account.subsidyLimitMinor, config.exposureThresholds);
-      await tx.subsidyRecord.create({
-        data: { merchantId: order.merchantId, orderId: order.id, amountMinor: platformSubsidyMinor, policyVersion: version },
-      });
-      await tx.merchantSubsidyAccount.update({
-        where: { id: account.id },
-        data: { subsidyUsedMinor: usedMinor, riskScore: exposure.usageBps },
-      });
-      await tx.merchant.update({ where: { id: order.merchantId }, data: { exposureState: exposure.state } });
-    }
-
-    return tx.order.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
+    await tx.orderEvent.create({
+      data: {
+        orderId: order.id,
+        eventType: OrderEventType.MERCHANT_PREPARATION_UPDATED,
+        actorType: OrderEventActorType.USER,
+        fromStatus: order.status,
+        toStatus: order.status,
+        operatorId: actor.id,
+        operatorRole: actor.role,
+        metadata: { preparationStatus: 'READY_FOR_PICKUP', selfReported: true },
+        createdAt: now,
+      },
+    });
+    return updated;
   });
 }
 
@@ -283,6 +343,32 @@ export async function cancelOrder(
       if (!order) throw notFound('Order');
       if (order.customerId !== actor.id) throw forbidden();
       throw conflict('COOLING_OFF_ENDED', 'The cooling-off period has ended; use the exception process');
+    }
+    const pricing = await tx.orderPricing.findUniqueOrThrow({ where: { orderId } });
+    const refundableTipMinor = pricing.customerRiderTipMinor;
+    await tx.orderPricing.update({
+      where: { orderId },
+      data: {
+        customerRefundMinor: pricing.itemSubtotalMinor
+          + pricing.customerDeliveryFeeMinor
+          + refundableTipMinor,
+        customerRiderTipRefundMinor: { increment: refundableTipMinor },
+        customerRiderTipMinor: 0,
+        riderPayoutMinor: pricing.riderPayoutMinor - refundableTipMinor,
+      },
+    });
+    if (refundableTipMinor > 0) {
+      await tx.riderTipEvent.create({
+        data: {
+          orderId,
+          customerId: actor.id,
+          type: RiderTipEventType.ORDER_CANCELLATION_REFUND,
+          deltaMinor: -refundableTipMinor,
+          balanceAfterMinor: 0,
+          reason: 'COOLING_OFF_CANCELLATION',
+          createdAt: now,
+        },
+      });
     }
     await tx.orderEvent.create({
       data: {

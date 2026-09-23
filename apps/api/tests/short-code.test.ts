@@ -9,7 +9,7 @@ describe('short order code', () => {
   });
 
   it('uses the configured campus time zone for the uniqueness day', () => {
-    const day = shortCodeDay(new Date('2026-09-21T16:30:00.000Z'), 'Asia/Singapore');
+    const day = shortCodeDay(new Date('2026-09-21T16:30:00.000Z'), 'Asia/Shanghai');
     expect(day.toISOString()).toBe('2026-09-22T00:00:00.000Z');
   });
 });

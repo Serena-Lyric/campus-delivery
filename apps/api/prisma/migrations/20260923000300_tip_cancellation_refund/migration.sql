@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "RiderTipEventType" ADD VALUE 'ORDER_CANCELLATION_REFUND';

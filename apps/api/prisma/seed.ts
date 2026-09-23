@@ -53,8 +53,6 @@ const scenarioIds = {
 
 export const demoPolicy = {
   customerDeliveryFeeMinor: 0,
-  targetRiderPayoutMinor: 300,
-  maxSubsidyPerOrderMinor: 200,
   platformCommissionBps: 500,
   subsidyEnabled: true,
   coolingOffSeconds: 60,
@@ -62,6 +60,15 @@ export const demoPolicy = {
   riderSettlementPendingSeconds: 432000,
   platformMaxConcurrentOrdersPerRider: 3,
   customerUnreachableWaitSeconds: 300,
+  merchantRepriceCooldownSeconds: 15,
+  orderClaimWindowSeconds: 2400,
+  defaultNaturalClaimBaselineSeconds: 600,
+  finalUserWarningSecondsBeforeClaimDeadline: 300,
+  platformSubsidyStepMinor: 50,
+  platformSubsidyMaxStepMinor: 100,
+  platformSubsidyMaxPerOrderMinor: 300,
+  platformSubsidyMinIntervalSeconds: 300,
+  merchantSubsidyBudgetMaxUsageBpsPerOrder: 2000,
   unattendedDeliveryMethods: ['DESIGNATED_POINT', 'DOOR'],
   handoffCodeDeliveryMethods: ['FACE_TO_FACE'],
   requireHandoffCodeForAllOrders: false,
@@ -116,19 +123,50 @@ async function seedScenarioOrders(client: PrismaClient) {
         pickupVerificationMode: PickupVerificationMode.CONFIRMATION,
       },
     });
+    const seededPlatformSubsidyMinor = id === scenarioIds.requiresCode ? 50 : 0;
+    const seededCustomerTipMinor = id === scenarioIds.delivering ? 20 : 0;
+    const seededPayoutMinor = 100 + seededPlatformSubsidyMinor + seededCustomerTipMinor;
+    const quoteVersion = status === OrderStatus.CREATED || status === OrderStatus.MERCHANT_PENDING ? 0 : 1;
     await client.orderPricing.upsert({
       where: { orderId: id },
-      update: {},
+      update: {
+        merchantDeliveryContributionMinor: quoteVersion > 0 ? 100 : 0,
+        customerRiderTipMinor: seededCustomerTipMinor,
+        platformSubsidyMinor: seededPlatformSubsidyMinor,
+        riderPayoutMinor: quoteVersion > 0 ? seededPayoutMinor : seededCustomerTipMinor,
+        platformCommissionMinor: 75,
+        merchantSettlementMinor: quoteVersion > 0 ? 1325 : 0,
+        merchantQuoteVersion: quoteVersion,
+        merchantQuoteUpdatedAt: quoteVersion > 0 ? now : null,
+      },
       create: {
         orderId: id,
         itemSubtotalMinor: 1500,
-        merchantDeliveryContributionMinor: 100,
-        platformSubsidyMinor: 200,
-        riderPayoutMinor: 300,
+        merchantDeliveryContributionMinor: quoteVersion > 0 ? 100 : 0,
+        customerRiderTipMinor: seededCustomerTipMinor,
+        platformSubsidyMinor: seededPlatformSubsidyMinor,
+        riderPayoutMinor: quoteVersion > 0 ? seededPayoutMinor : seededCustomerTipMinor,
         platformCommissionMinor: 75,
-        merchantSettlementMinor: 1325,
+        merchantSettlementMinor: quoteVersion > 0 ? 1325 : 0,
+        merchantQuoteVersion: quoteVersion,
+        merchantQuoteUpdatedAt: quoteVersion > 0 ? now : null,
       },
     });
+    if (quoteVersion > 0) {
+      await client.merchantDeliveryQuote.upsert({
+        where: { orderId_version: { orderId: id, version: 1 } },
+        update: { newMinor: 100 },
+        create: {
+          orderId: id,
+          version: 1,
+          previousMinor: 0,
+          newMinor: 100,
+          operatorId: seedIds.merchantUser,
+          reason: 'SEED_DEMO_QUOTE',
+          createdAt: now,
+        },
+      });
+    }
     await client.settlement.upsert({
       where: { orderId: id },
       update: {},
@@ -159,15 +197,36 @@ async function seedScenarioOrders(client: PrismaClient) {
   ] as const;
 
   for (const [orderId, taskId, status, riderId] of taskScenarios) {
+    const firstPublishedAt = new Date(now.getTime() - 600_000);
+    const claimDeadline = new Date(firstPublishedAt.getTime() + demoPolicy.orderClaimWindowSeconds * 1000);
+    const platformSubsidyMinor = orderId === scenarioIds.requiresCode ? 50 : 0;
+    const customerTipMinor = orderId === scenarioIds.delivering ? 20 : 0;
+    const payoutMinor = 100 + platformSubsidyMinor + customerTipMinor;
     await client.deliveryTask.upsert({
       where: { id: taskId },
-      update: { status, riderId, payoutMinor: 300 },
+      update: {
+        status,
+        riderId,
+        payoutMinor,
+        firstPublishedAt,
+        claimDeadline,
+        finalUserWarningAt: new Date(claimDeadline.getTime() - demoPolicy.finalUserWarningSecondsBeforeClaimDeadline * 1000),
+        marketPolicyVersion: 1,
+        merchantRepriceCooldownSeconds: demoPolicy.merchantRepriceCooldownSeconds,
+        riderSettlementPendingSeconds: demoPolicy.riderSettlementPendingSeconds,
+      },
       create: {
         id: taskId,
         orderId,
         status,
         riderId,
-        payoutMinor: 300,
+        payoutMinor,
+        firstPublishedAt,
+        claimDeadline,
+        finalUserWarningAt: new Date(claimDeadline.getTime() - demoPolicy.finalUserWarningSecondsBeforeClaimDeadline * 1000),
+        marketPolicyVersion: 1,
+        merchantRepriceCooldownSeconds: demoPolicy.merchantRepriceCooldownSeconds,
+        riderSettlementPendingSeconds: demoPolicy.riderSettlementPendingSeconds,
         claimedAt: riderId ? now : null,
         pickedUpAt: status === DeliveryTaskStatus.PICKED_UP || status === DeliveryTaskStatus.COMPLETED ? now : null,
         deliveredAt: status === DeliveryTaskStatus.COMPLETED ? now : null,
@@ -179,6 +238,13 @@ async function seedScenarioOrders(client: PrismaClient) {
         where: { id: assignmentId },
         update: {
           status: status === DeliveryTaskStatus.COMPLETED ? DeliveryAssignmentStatus.COMPLETED : DeliveryAssignmentStatus.ACTIVE,
+          merchantQuoteMinorAtClaim: 100,
+          customerTipMinorAtClaim: customerTipMinor,
+          platformSubsidyMinorAtClaim: platformSubsidyMinor,
+          riderPayoutMinorAtClaim: payoutMinor,
+          quoteVersionAtClaim: 1,
+          claimSampleType: platformSubsidyMinor > 0 ? 'SUBSIDIZED' : 'NATURAL',
+          claimLatencySeconds: 600,
         },
         create: {
           id: assignmentId,
@@ -188,10 +254,38 @@ async function seedScenarioOrders(client: PrismaClient) {
           status: status === DeliveryTaskStatus.COMPLETED ? DeliveryAssignmentStatus.COMPLETED : DeliveryAssignmentStatus.ACTIVE,
           claimedAt: now,
           endedAt: status === DeliveryTaskStatus.COMPLETED ? now : null,
+          merchantQuoteMinorAtClaim: 100,
+          customerTipMinorAtClaim: customerTipMinor,
+          platformSubsidyMinorAtClaim: platformSubsidyMinor,
+          riderPayoutMinorAtClaim: payoutMinor,
+          quoteVersionAtClaim: 1,
+          claimSampleType: platformSubsidyMinor > 0 ? 'SUBSIDIZED' : 'NATURAL',
+          claimLatencySeconds: 600,
         },
       });
     }
   }
+
+  await client.subsidyRecord.upsert({
+    where: { id: '61000000-0000-4000-8000-000000000005' },
+    update: {
+      previousPlatformSubsidyMinor: 0,
+      addedMinor: 50,
+      newPlatformSubsidyMinor: 50,
+      trigger: 'SEED_DEMO_INCREMENT',
+    },
+    create: {
+      id: '61000000-0000-4000-8000-000000000005',
+      merchantId: seedIds.merchant,
+      orderId: scenarioIds.requiresCode,
+      previousPlatformSubsidyMinor: 0,
+      addedMinor: 50,
+      newPlatformSubsidyMinor: 50,
+      policyVersion: 1,
+      trigger: 'SEED_DEMO_INCREMENT',
+      createdAt: now,
+    },
+  });
 
   await client.evidence.upsert({
     where: { id: 'c0000000-0000-4000-8000-000000000007' },
@@ -370,8 +464,17 @@ export async function seedDatabase(client: PrismaClient) {
   });
   await client.merchantSubsidyAccount.upsert({
     where: { id: seedIds.subsidyAccount },
-    update: { merchantId: seedIds.merchant, subsidyLimitMinor: 1000 },
-    create: { id: seedIds.subsidyAccount, merchantId: seedIds.merchant, subsidyLimitMinor: 1000 },
+    update: { merchantId: seedIds.merchant, subsidyUsedMinor: 50, subsidyLimitMinor: 1000 },
+    create: {
+      id: seedIds.subsidyAccount,
+      merchantId: seedIds.merchant,
+      subsidyUsedMinor: 50,
+      subsidyLimitMinor: 1000,
+    },
+  });
+  await client.businessConfig.updateMany({
+    where: { key: 'ORDER_POLICY' },
+    data: { isActive: false },
   });
   await client.businessConfig.upsert({
     where: { id: seedIds.policyConfig },

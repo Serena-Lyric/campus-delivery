@@ -3,6 +3,7 @@ import {
   DeliveryVerificationMode,
   MerchantExposureState,
   PickupVerificationMode,
+  type Prisma,
   type PrismaClient,
 } from '@prisma/client';
 import { Type, type Static } from '@sinclair/typebox';
@@ -10,10 +11,8 @@ import { Value } from '@sinclair/typebox/value';
 import { AppError } from '../shared/errors.js';
 import { assertMinor } from '../shared/money.js';
 
-const PolicyConfigSchema = Type.Object({
+export const PolicyConfigSchema = Type.Object({
   customerDeliveryFeeMinor: Type.Integer({ minimum: 0 }),
-  targetRiderPayoutMinor: Type.Integer({ minimum: 0 }),
-  maxSubsidyPerOrderMinor: Type.Integer({ minimum: 0 }),
   platformCommissionBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
   subsidyEnabled: Type.Boolean(),
   coolingOffSeconds: Type.Integer({ minimum: 0 }),
@@ -21,6 +20,15 @@ const PolicyConfigSchema = Type.Object({
   riderSettlementPendingSeconds: Type.Integer({ minimum: 0 }),
   platformMaxConcurrentOrdersPerRider: Type.Integer({ minimum: 1 }),
   customerUnreachableWaitSeconds: Type.Integer({ minimum: 0 }),
+  merchantRepriceCooldownSeconds: Type.Integer({ minimum: 0 }),
+  orderClaimWindowSeconds: Type.Integer({ minimum: 1 }),
+  defaultNaturalClaimBaselineSeconds: Type.Integer({ minimum: 0 }),
+  finalUserWarningSecondsBeforeClaimDeadline: Type.Integer({ minimum: 0 }),
+  platformSubsidyStepMinor: Type.Integer({ minimum: 1 }),
+  platformSubsidyMaxStepMinor: Type.Integer({ minimum: 1 }),
+  platformSubsidyMaxPerOrderMinor: Type.Integer({ minimum: 1 }),
+  platformSubsidyMinIntervalSeconds: Type.Integer({ minimum: 0 }),
+  merchantSubsidyBudgetMaxUsageBpsPerOrder: Type.Integer({ minimum: 0, maximum: 10_000 }),
   unattendedDeliveryMethods: Type.Array(Type.Enum(DeliveryMethod), { uniqueItems: true }),
   handoffCodeDeliveryMethods: Type.Array(Type.Enum(DeliveryMethod), { uniqueItems: true }),
   requireHandoffCodeForAllOrders: Type.Boolean(),
@@ -28,25 +36,48 @@ const PolicyConfigSchema = Type.Object({
     minUsageBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
     state: Type.Enum(MerchantExposureState),
   }), { minItems: 1 }),
-});
+}, { additionalProperties: false });
 
 export type PolicyConfig = Static<typeof PolicyConfigSchema>;
 export type DeliveryRiskResult = 'NORMAL' | 'REQUIRE_HANDOFF_CODE';
+
+export function validatePolicyPayload(payload: Prisma.JsonValue): PolicyConfig {
+  if (!Value.Check(PolicyConfigSchema, payload)) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'ORDER_POLICY payload is invalid');
+  }
+  const config = payload as PolicyConfig;
+  if (config.platformSubsidyStepMinor > config.platformSubsidyMaxStepMinor) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Subsidy step cannot exceed the maximum step');
+  }
+  if (config.platformSubsidyMaxStepMinor > config.platformSubsidyMaxPerOrderMinor) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Maximum subsidy step cannot exceed the per-order cap');
+  }
+  if (config.finalUserWarningSecondsBeforeClaimDeadline > config.orderClaimWindowSeconds) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Final warning must fit within the claim window');
+  }
+  const thresholds = [...config.exposureThresholds].sort((a, b) => a.minUsageBps - b.minUsageBps);
+  if (thresholds[0]?.minUsageBps !== 0) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Exposure thresholds must start at 0 basis points');
+  }
+  return { ...config, exposureThresholds: thresholds };
+}
 
 export async function loadPolicyConfig(prisma: PrismaClient): Promise<{ version: number; config: PolicyConfig }> {
   const row = await prisma.businessConfig.findFirst({
     where: { key: 'ORDER_POLICY', isActive: true },
     orderBy: { version: 'desc' },
   });
-  if (!row || !Value.Check(PolicyConfigSchema, row.payload)) {
-    throw new AppError(500, 'INVALID_BUSINESS_CONFIG', 'Active ORDER_POLICY configuration is missing or invalid');
+  if (!row) {
+    throw new AppError(500, 'INVALID_BUSINESS_CONFIG', 'Active ORDER_POLICY configuration is missing');
   }
-  const config = row.payload as PolicyConfig;
-  const thresholds = [...config.exposureThresholds].sort((a, b) => a.minUsageBps - b.minUsageBps);
-  if (thresholds[0]?.minUsageBps !== 0) {
-    throw new AppError(500, 'INVALID_BUSINESS_CONFIG', 'Exposure thresholds must start at 0 basis points');
+  try {
+    return { version: row.version, config: validatePolicyPayload(row.payload) };
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw new AppError(500, 'INVALID_BUSINESS_CONFIG', error.message);
+    }
+    throw error;
   }
-  return { version: row.version, config: { ...config, exposureThresholds: thresholds } };
 }
 
 export function deliveryVerificationFor(
@@ -79,20 +110,6 @@ export function pickupVerificationFor(
 
 export function allowsUnattendedDelivery(config: PolicyConfig, method: DeliveryMethod): boolean {
   return config.unattendedDeliveryMethods.includes(method);
-}
-
-export function calculateSubsidy(input: {
-  enabled: boolean;
-  targetRiderPayoutMinor: number;
-  customerDeliveryFeeMinor: number;
-  merchantContributionMinor: number;
-  maxSubsidyPerOrderMinor: number;
-  remainingSubsidyMinor: number;
-}): number {
-  Object.entries(input).forEach(([key, value]) => key === 'enabled' || assertMinor(value as number, key));
-  if (!input.enabled) return 0;
-  const gap = Math.max(0, input.targetRiderPayoutMinor - input.customerDeliveryFeeMinor - input.merchantContributionMinor);
-  return Math.min(gap, input.maxSubsidyPerOrderMinor, input.remainingSubsidyMinor);
 }
 
 export function exposureForUsage(
