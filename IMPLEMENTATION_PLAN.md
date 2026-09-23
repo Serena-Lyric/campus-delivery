@@ -1,187 +1,209 @@
 # IMPLEMENTATION_PLAN
 
 > 本文件记录下一轮 Codex 的实现计划与第一版工程默认值。
-> 它不等同于 PRODUCT_DECISIONS.md：这里的默认值允许在实现和验证后调整，不能自动升级为长期产品规则。
+> `PRODUCT_DECISIONS.md` 是产品规则最高依据；本文件不得创造未确认的产品规则。
+> Seed、测试夹具和第一版阈值都只是演示/工程默认值，不能自动升级为正式商业参数。
 
-## 下一轮：市场报价、接单时限与策略纠偏
+## 下一轮：商家履约风险、曝光策略与 24 小时骑手激励
 
 ### 目标
 
-在不继续扩展 UI 的前提下，纠正当前后端中与已确认产品方向不一致的实现，并为后续无人接单生命周期、用户激励、管理员控制台打基础。
+在保持上一轮市场报价、增量补贴、40 分钟接单窗口和结算模型不变的前提下：
 
-### 1. 商家配送报价
+1. 落实订单创建后 24 小时骑手激励窗口；
+2. 移除“补贴使用率直接决定商家曝光”的过度简化；
+3. 建立可审计的商家履约事实指标；
+4. 将用户时间风险提示与订单完成风险提示分离；
+5. 建立可配置、带最低样本量和滞后的商家曝光状态策略基础；
+6. 不在本轮擅自完成订单失败责任归因。
 
-- 不再依赖统一 targetRiderPayout 自动补到目标价。
-- 订单进入骑手池时保存当前商家配送报价。
-- 商家在订单未被骑手接取前允许修改本单报价。
-- 每次改价必须记录历史/版本，不能只覆盖一个不可追溯字段。
-- 骑手接单时，以其接单瞬间看到的商家报价原子冻结为该次 DeliveryAssignment 的收益组成之一。
-- 接单后商家不得降低该骑手已接受的金额。
+### 1. 24 小时骑手激励窗口
 
-### 2. 商家改价冷却
+- 用户骑手激励操作窗口从 Order.createdAt 开始计算 24 小时。
+- 24 小时内：
+  - 骑手接单前允许正向追加和减少/撤回未锁定激励；
+  - 骑手接单后只允许正向追加；
+  - 正常送达后只要仍在 24 小时内，仍允许继续追加，作为事后打赏。
+- 超过 24 小时后，任何新增/调整 RiderTip 都必须由服务端拒绝。
+- 时间判断必须在服务端执行，不依赖前端隐藏按钮。
+- 将 tip window 时长设计为 BusinessConfig 参数，例如 `riderTipWindowSeconds`，第一版 Seed 演示值为 86400。
+- 订单创建时是否需要快照该时长由实现选择，但必须保证管理员修改配置不会意外追溯改变已经明确承诺给用户的交易条件；优先考虑在订单上保存 tipDeadline。
+- 接单后异常退款规则仍未决定，本轮不得自行补自动退款逻辑。
+- 补充边界测试：刚好截止前、截止时、送达后追加、接单前负向调整、接单后负向调整、NO_RIDER_ACCEPTED/CANCELLED/EXCEPTION 等终态。
 
-- 增加商家订单报价修改冷却机制。
-- 第一版默认：15 秒。
-- 该值进入 BusinessConfig/管理员控制参数，不硬编码在业务逻辑。
-- 修改报价时服务端校验上次成功改价时间；冷却期内拒绝再次修改。
-- 并发改价与骑手接单必须通过数据库事务/条件更新保证最终价格快照唯一明确。
-- 记录每次报价变化：旧值、新值、时间、操作者、报价版本。
+### 2. 移除“补贴使用率直接改变曝光状态”
 
-### 3A. 平台逐步补贴
+当前 `addPlatformSubsidy` 会通过 `exposureForUsage(...)` 根据 MerchantSubsidyAccount 的使用率直接更新 Merchant.exposureState。该行为与最新产品设计不一致。
 
-- 平台补贴必须建模为独立于商家报价、用户激励的金额来源。
-- 不允许一次性把商家可用补贴预算全部加到单个订单。
-- 平台补贴采用逐步追加：
-  - 每次只增加一个受控的小额增量；
-  - 每次追加后记录新的平台补贴总额；
-  - 继续观察是否成交，满足后续条件才允许再次追加。
-- 至少需要以下可配置参数：
-  - platformSubsidyStepMinor：单次默认追加额度/基础步长；
-  - platformSubsidyMaxStepMinor：单次绝对最大追加额度；
-  - platformSubsidyMaxPerOrderMinor：单订单累计补贴上限；
-  - platformSubsidyMinIntervalSeconds：同一订单两次平台补贴之间的最短间隔；
-  - merchantSubsidyBudgetMaxUsageBpsPerOrder：单个订单最多可消耗商家当前可用风险预算的比例上限。
-- 第一版具体数值不要由 Codex 自行决定；如现有 Seed 需要演示值，必须标注为演示配置。
-- 每次补贴必须形成不可变历史记录，至少包含：
-  - orderId；
-  - merchantId；
-  - previousPlatformSubsidyMinor；
-  - addedMinor；
-  - newPlatformSubsidyMinor；
-  - occurredAt；
-  - policyVersion；
-  - trigger/reason。
-- 骑手看到的是当前保证可获得的总收益，不要求向骑手公开资金来源拆分。
-- 商家端不展示平台替该订单补了多少，避免形成主动压低自身报价等待平台兜底的激励。
-- 用户端也不需要展示平台补贴构成，只展示用户自己承担的基础费用和自行追加的骑手激励。
-- 管理员端必须能够看到完整资金构成和每次平台补贴历史。
-- 本轮不要自动实现复杂动态补贴算法；先把增量补贴、上限、间隔、历史和策略接口实现正确，为后续规则接入留出稳定边界。
+本轮要求：
 
-### 3B. 补贴资格、时点与样本隔离
+- 平台补贴写入仍更新商家补贴预算使用事实，但不得因为“补贴额度用了多少”直接修改 Merchant.exposureState。
+- `riskScore` 如果实质上只是 subsidy usage BPS，不得继续把它表达成“风险评分”；可以迁移为语义准确的字段/统计值，或者停止把它用于风险结论。
+- 保留补贴使用率作为事实指标。
+- 旧 `exposureForUsage` 如果仍用于其他兼容路径，必须明确隔离；不能继续作为商家曝光决策的主入口。
+- 不要因为本轮重构而改变已确认的补贴步长、预算和价格承诺规则。
 
-- 动态补贴逻辑拆成三个独立策略接口，不要揉成一个不可替换函数：
-  - SubsidyEligibilityPolicy：该商家/订单是否有资格获得平台补贴，以及允许使用多少风险预算；
-  - SubsidyTimingPolicy：当前订单何时允许出现第一笔平台补贴；
-  - SubsidyIncrementPolicy：每次允许追加多少平台补贴。
-- “订单完成率”主要用于补贴资格、风险预算和长期商家价值判断，不直接作为唯一补贴计时器。
-- 第一笔补贴时点优先依据该商家的自然接单时间基线：
-  - 只统计在平台补贴介入前自然被骑手接取的订单；
-  - 不得把平台补贴后才被接取的订单混入自然接单样本；
-  - 样本不足时使用管理员配置的全局默认接单基线。
-- 必须区分：
-  - natural-claim sample：未发生平台补贴前即完成接单；
-  - subsidized-claim sample：平台补贴介入后才完成接单。
-- 防止自我污染：补贴越早导致接单越快，不能反过来让系统误判商家“天然接单更快”并继续提前补贴。
-- 完成率高不自动代表必须更早补贴；只有当当前订单相对该商家正常自然接单速度明显偏慢，且仍满足补贴资格时，才考虑介入。
-- 平台补贴介入前还应检查商家当前报价是否明显低于其自身历史正常成交报价/可接受市场水平；第一版只保留策略接口和必要数据，不要求实现复杂自动判断。
-- 平台已开始补贴后，商家降低自己报价不得触发平台自动补差；平台补贴是独立增量，不是“保证总收益达到目标值”的差额补足。
-- 商家在平台补贴已经介入后主动降低报价，应至少被记录，并可影响后续补贴资格；本轮不实现自动处罚。
-- 40 分钟窗口仍是最终止损边界；临近最后 5 分钟可作为固定用户风险提醒阶段，但具体提醒时点应配置化。
+### 3. 商家履约事实统计
 
-### 3. 用户骑手激励/红包
+建立独立、可测试的 MerchantFulfillmentMetrics / MerchantPerformanceSnapshot（名称可调整）计算层，不把统计逻辑散落在路由中。
 
-- 建立独立于商家报价、平台补贴的 RiderTip / RiderIncentive 概念。
-- 骑手接单前：
-  - 用户可以追加；
-  - 可以减少/撤回尚未锁定部分；
-  - 无人承接失败时全额退回。
-- 骑手接单时，将当时可见的用户激励纳入接单收益快照。
-- 骑手接单后：
-  - 用户仍允许继续追加；
-  - 新增部分 100% 归当前骑手；
-  - 平台不抽成；
-  - 正常情况下用户不能任意撤回已追加给当前骑手的激励。
-- 暂不实现异常争议下的自动退款/扣回规则，只记录资金事实并保留人工处理能力。
+至少支持：
 
-### 4. 接单时限
+- publishedOrderCount
+- deliveredOrderCount
+- noRiderAcceptedCount
+- observableCompletionRateBps
+- average / percentile-ready claim latency（首次入池→接单）
+- average claim-to-pickup seconds
+- average pickup-to-delivery seconds
+- average total fulfillment seconds
+- naturalClaimCount
+- subsidizedClaimCount
+- subsidyDependencyBps
+- subsidizedClaimConversion / rescue related facts
+- platformSubsidyUsedMinor
+- completedOrderSubsidyMinor 或可用于计算“每完成订单补贴消耗”的数据
+- structured exception counts，按 ExceptionEvent.type 分组或保留可扩展结构
 
-- 第一版默认接单窗口：40 分钟。
-- 从订单第一次正式进入骑手池时开始计时。
-- 保存固定的 claimDeadline / firstPublishedAt。
-- 正常流程不提供骑手接单后主动放弃/取消并回池的能力；现有 abandon API/状态回退应按产品决策移除、禁用或仅保留为不对外的迁移兼容能力。
-- 如果未来异常流程需要重新开放订单池，必须保留原 firstPublishedAt / claimDeadline，不能通过重新创建任务获得新的 40 分钟。
-- 到达截止时间仍没有有效骑手承接时，订单进入明确的 NO_RIDER_ACCEPTED / 等价失败结果。
-- 用户应获得该订单实际支付金额和接单前尚未锁定骑手激励的全额退款。
-- 商家已经产生的备餐损失不由平台和骑手兜底。
+注意：
 
-### 5. 商家备餐状态与真实取餐
+- 统计层描述事实，不自动声称责任。
+- 当前“observableCompletionRate”只是平台观察到的最终完成情况，不等于“商家责任完成率”。
+- USER/地址错误/骑手/系统等异常尚未完成归因，不得自动算入商家过错。
+- 如果某项数据当前模型无法可靠计算，保留 null / insufficient-data，不要编造。
+- 对 claim latency 等分布，优先设计可扩展的聚合/查询接口；不要为了本轮引入复杂数据仓库。
 
-- 商家确认订单后即可进入骑手池。
-- 商家可维护“备餐中 / 可取”等市场信号，但这些仅是自报状态。
-- 商家点击“可取/已出餐”不能视为真实交接证据。
-- 骑手实际取到餐并确认 pickup 才是商家→骑手责任交接的重要事实节点。
-- 记录并可统计：
-  - 商家确认→首次进入订单池；
-  - 首次进入订单池→首次有效接单；
-  - 骑手接单→实际取餐；
-  - 实际取餐→送达。
+### 4. 用户风险提示：时间风险与完成风险分离
 
-### 6. 风险提示所需指标基础
+建立两个独立的、后端可返回的商家风险结论：
 
-- 当前不要实现复杂评分算法。
-- 至少保留可计算：
-  - 订单完成率；
-  - 首次进入池到接单耗时；
-  - 接单到取餐耗时；
-  - 取餐到送达耗时；
-  - 无人承接失败数量/比例；
-  - 商家报价调整次数与最终成交报价。
-- “订单完成率”明确指进入交易流程后的订单最终正常完成比例，不是浏览→下单的商品转化率。
+- timeRisk：例如 UNKNOWN / NORMAL / SLOW
+- completionRisk：例如 UNKNOWN / NORMAL / ELEVATED / HIGH
 
-### 7. 已知需纠偏的当前实现
+具体枚举名称可以调整，但语义必须分离。
 
-下一轮 Codex 开发前必须重新读取 PRODUCT_DECISIONS.md，并检查以下现有默认实现，不得沿用旧假设：
+规则：
 
-- 普通配送照片目前不应默认成为所有订单的强制完成条件；证据默认可选，风险订单/失联规则另行强化。
-- 平台不应通过 targetRiderPayout 自动把每一单补到统一目标价。
-- 平台补贴不能在商家一标记 ready 时自动无条件发生。
-- 订单正式进入骑手池不应依赖“商家已出餐”。
-- 单账号是否支持多业务身份仍未决定，禁止擅自修改 User.role 模型。
-- 校园时区语义应检查，国内校园默认不应继续依赖 Asia/Singapore。
+- 样本不足时返回 UNKNOWN/INSUFFICIENT_DATA，不得用少量订单强行判断。
+- SLOW 可以与正常曝光状态并存；不能因为“慢但能完成”自动降曝光。
+- completionRisk 才可作为曝光策略的重要输入之一。
+- 本轮不要求确定正式阈值；阈值、样本量、统计窗口全部进入 BusinessConfig。
+- Seed 可以提供明确标注为 DEMO 的保守值供测试。
+- Catalog/merchant detail API 应能返回用户真正需要的风险提示结果或结构化字段，使未来小程序能在进入风险商家前弹窗。
+- 不向用户暴露内部补贴金额、复杂评分或责任归因细节。
 
-### 8. 管理员控制参数
+### 5. 商家曝光状态策略
 
-本轮至少把以下配置设计为可由未来管理员控制台管理的业务参数：
+建立独立 MerchantExposurePolicy / MerchantFulfillmentPolicy，不允许继续由补贴 service 直接决定 exposureState。
 
-- merchantRepriceCooldownSeconds（第一版 15）
-- orderClaimWindowSeconds（第一版 2400）
-- 现有 coolingOffSeconds
-- riderSettlementPendingSeconds
-- platformMaxConcurrentOrdersPerRider
-- defaultNaturalClaimBaselineSeconds
-- finalUserWarningSecondsBeforeClaimDeadline（第一版可演示为 300 秒）
-- 平台补贴相关 step / interval / per-order cap / merchant-budget-usage 参数
+策略输入至少包括：
 
-暂时可以先有后端配置与审计能力，不要求本轮做完整管理 UI。
+- 当前 exposureState；
+- 是否为 TRIAL/样本不足；
+- completionRisk；
+- timeRisk（只作事实输入，不能单独把“慢”当失败）；
+- 补贴依赖/救援事实；
+- 结构化异常事实；
+- 管理员强制状态（如果现有模型没有，可预留接口，不必本轮做 UI）。
 
-### 9. 仍不做
+策略要求：
 
-- 不做自动派单。
-- 不做路线规划。
-- 不做自动判责。
-- 不做自动处罚。
-- 不做用户/商家/骑手评分。
-- 不做复杂补贴算法。
-- 不做完整管理员前端。
-- 不做真实支付/退款，先把资金状态和可退/锁定边界表达清楚。
+- 支持 TRIAL / NORMAL / REDUCED / LIMITED / SEVERELY_LIMITED / HIDDEN / SUSPENDED 或与现有枚举等价的状态。
+- 时间风险 SLOW 本身不得直接把 NORMAL 商家降级。
+- 使用最低样本量。
+- 使用进入阈值和恢复阈值分离的 hysteresis，避免单笔订单导致状态来回抖动。
+- 普通策略变更要记录原因、前后状态、策略版本、指标快照/摘要和时间，便于审计。
+- 严重风险立即暂停的具体条件尚未决定；本轮只保留接口/管理员能力，不自行定义“严重风险”算法。
+- 因订单责任归因未定，本轮自动降级不得把所有未完成订单视作商家责任。
 
-### 10. 实现完成后的审核重点
+### 6. TRIAL / 冷启动语义
 
-Codex 完成后需要在 CODEX_REPORT.md 中明确回答：
+- 新商家样本不足时保持 TRIAL/观察期语义。
+- W 推荐的种子商家可以通过配置/管理员标记获得大范围初始曝光，但不获得永久豁免。
+- 不因为前几单中的单次失败直接进入 HIGH 风险。
+- 达到最低样本量后才进入正式风险分类。
+- 本轮若现有 Merchant.exposureState 没有 TRIAL，可通过独立 verification/market state 或兼容枚举实现；优先最小迁移，不要为了命名重写全表。
 
-- 商家报价是否有版本历史和冷却。
-- 骑手接单瞬间的价格是否原子冻结。
-- 用户激励是否与商家报价、平台补贴分账记录。
-- 接单后新增用户激励是否 100% 归当前骑手。
-- 正常流程是否已经取消“骑手主动放弃回池”；若保留异常回池能力，是否保持原始 claimDeadline。
-- 40 分钟到期是否形成明确无人承接结果。
-- 商家 ready 状态是否已与“真实取餐/真实出餐证据”解耦。
-- 普通订单照片是否仍被错误强制。
-- 旧 targetRiderPayout 自动补贴逻辑是否已移除或停用。
-- 平台补贴是否已经变成可追溯的逐步追加，而不是一次性补满目标价。
-- 单次补贴、单订单累计补贴、补贴间隔和商家预算占用比例是否都有服务端约束。
-- 是否存在任何路径能让单个订单一次性吃完商家的可用补贴预算。
-- 自然接单样本和补贴后接单样本是否被明确区分，避免补贴策略自我污染。
-- 补贴资格、补贴时点、补贴增量是否是可替换的独立策略边界。
-- 商家在平台补贴后降低自身报价是否不会触发平台自动补差。
-- migration、测试、typecheck、build 是否通过。
+### 7. 管理员配置
+
+在现有版本化 BusinessConfig + Audit 基础上扩展，而不是新造第二套配置系统。
+
+至少预留/实现：
+
+- riderTipWindowSeconds（第一版 demo 86400）
+- merchantRiskWindowOrderCount / 或等价统计窗口
+- merchantRiskMinimumSampleSize
+- slowFulfillmentThresholdSeconds 或更合适的时间风险阈值结构
+- completionRiskElevatedThresholdBps
+- completionRiskHighThresholdBps
+- exposure downgrade / recovery thresholds
+- recovery minimum sample/window
+- subsidyDependency threshold(s)
+- subsidyRescue threshold(s)
+
+要求：
+
+- 数值为管理员可调，代码不得散落魔法数字。
+- 配置 schema 要校验阈值顺序和合理范围。
+- 不要求本轮做完整管理员前端。
+
+### 8. API / 查询
+
+至少提供：
+
+- 管理员查询商家履约指标与当前风险/曝光决策详情；
+- 用户/目录查询得到简化的 timeRisk、completionRisk 和必要提示信息；
+- 商家自身可查看与自己相关的履约事实摘要，但不要暴露平台内部补贴来源/策略细节；
+- 风险决策结果必须与角色价格视图保持既有隔离原则。
+
+### 9. 不做
+
+- 不做商品评分/口味评价。
+- 不做单一综合“商家分数”。
+- 不做 AI 风险判断。
+- 不做自动责任归因。
+- 不做骑手处罚/淘汰。
+- 不做完整管理前端。
+- 不做真实支付退款/提现。
+- 不修改单账号单角色模型。
+- 不改变上一轮已经确认的订单报价、补贴、接单与结算结构，除非为本轮兼容所必需。
+
+### 10. Docker / 验证
+
+严格遵守根目录 `AGENTS.md`：
+
+- Docker/PostgreSQL 测试前先做 CLI 健康检查；
+- Docker 不可用最多安全重启一次；
+- 不得自动 Clean/Purge data、Factory Reset、删除 Docker 数据或卷；
+- 基础设施失败必须与代码失败分开报告。
+
+完成后运行：
+
+- typecheck；
+- unit tests；
+- PostgreSQL integration tests；
+- build；
+- migration status / drift；
+- 从空库完整 migration；
+- Seed 至少连续执行两次；
+- 必要的 OpenAPI 路径检查。
+
+### 11. 审核重点
+
+`CODEX_REPORT.md` 必须逐项回答：
+
+1. 24 小时 tip window 是否由服务端强制，送达后 24 小时内是否仍可追加，超时是否拒绝。
+2. 是否彻底移除了“补贴使用率直接更新 exposureState”的正常业务路径。
+3. 原 riskScore 是否还存在误导语义；如何处理。
+4. Merchant fulfillment metrics 是否只记录事实、没有擅自完成责任归因。
+5. timeRisk 与 completionRisk 是否真正独立。
+6. SLOW 是否可以保持 NORMAL 曝光。
+7. 样本不足的新商家是否得到 UNKNOWN/TRIAL，而不是被少量订单直接定性。
+8. Exposure policy 是否拥有最低样本量、进入/恢复滞后和审计记录。
+9. 是否存在任何隐藏路径仍按 subsidy usage 自动降曝光。
+10. 风险阈值是否全部来自版本化配置而非散落硬编码。
+11. 用户、商家、管理员三个角色看到的风险信息是否符合既有隔离原则。
+12. migration、测试、typecheck、build、空库 migration/Seed 是否全部通过。
+13. Docker 若发生异常，是否按 AGENTS.md 正确区分为基础设施问题。
+
+完成后停止，不自行进入骑手异常退出、支付或微信登录等下一阶段。
