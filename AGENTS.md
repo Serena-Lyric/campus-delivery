@@ -44,3 +44,20 @@ If infrastructure prevents a required check, do not claim it passed. Report exac
 ## Reports
 
 When a task requests a `CODEX_REPORT.md`, generate it only after implementation and validation are complete (or clearly document blocked checks). Include starting/ending commits, migrations, tests, build results, known issues, intentional omissions and unresolved product decisions.
+
+
+## Implementation truthfulness
+
+- Do not report a feature or policy as implemented merely because an enum, field, interface, strategy input, route, or placeholder exists.
+- A behavior counts as implemented only when the runtime path actually enforces or uses it, and the relevant tests demonstrate that behavior.
+- In `CODEX_REPORT.md`, explicitly distinguish:
+  - **enforced behavior** — currently affects runtime decisions;
+  - **data/telemetry available** — facts are collected but do not yet affect decisions;
+  - **policy hook / placeholder** — interface or configuration exists for future use;
+  - **not implemented** — confirmed product behavior still missing.
+- If a policy receives inputs that are not used in its decision logic, list those inputs as **reserved/not yet active**. Never imply that a multi-factor policy exists when runtime decisions depend on only one factor.
+- If a product state exists only as a label or enum but does not yet change visibility, eligibility, limits, routing, or another relevant behavior, report it as semantic/model support only, not as the full mechanism.
+- Before declaring an `IMPLEMENTATION_PLAN.md` phase complete, perform a requirement-to-code checklist. For every numbered requirement, identify the runtime enforcement point and at least one verification/test, or mark it explicitly incomplete.
+- When the plan asks for separate concepts (for example entry thresholds vs recovery windows), do not substitute a weaker related mechanism (for example threshold hysteresis only) without calling out the gap.
+- Metrics with names such as conversion rate, completion rate, rescue rate, or failure rate must define their numerator, denominator, and treatment of in-progress/non-terminal records. In-progress records must not silently count as failures unless the product definition explicitly says so.
+- Rolling-window metrics must not accidentally discard valid historical terminal samples merely because newer in-progress records entered the window. If different metrics require different populations, use separate query populations or document the tradeoff explicitly.
