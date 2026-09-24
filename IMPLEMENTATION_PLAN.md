@@ -207,3 +207,39 @@
 13. Docker 若发生异常，是否按 AGENTS.md 正确区分为基础设施问题。
 
 完成后停止，不自行进入骑手异常退出、支付或微信登录等下一阶段。
+
+
+## 审核后待修正
+
+以下项目经代码审核确认仍未完整实现，下一轮开发前必须先修正，不得视为本阶段已完成：
+
+1. **TRIAL 只有状态语义，没有真正灰度曝光**
+   - 当前目录对 TRIAL 与 NORMAL 基本同等返回。
+   - 后续需要实现实际曝光差异/灰度范围，或明确由管理员/配置控制的种子商家豁免。
+
+2. **曝光策略仍然近似单因素**
+   - MerchantExposurePolicy 虽然接收 subsidyDependencyBps、subsidizedClaimConversionBps、exceptionCounts、timeRisk 等输入，但当前实际状态迁移只依赖 noRiderAcceptedRateBps（除 forcedState / sample guard 外）。
+   - 后续必须明确哪些已确认的补贴健康度事实真正参与曝光决策；未启用的输入不得在报告中描述为已生效策略。
+
+3. **恢复机制缺少独立 recovery sample/window**
+   - 当前仅实现进入/恢复阈值分离的 hysteresis。
+   - IMPLEMENTATION_PLAN 曾要求 recovery minimum sample/window，尚未独立实现。
+   - 后续需要补充恢复样本/窗口约束，避免短期低失败率立即恢复。
+
+4. **补贴救援率分母包含进行中订单**
+   - 当前 subsidizedClaimConversionBps = 已送达的补贴接单 / 全部补贴接单。
+   - 尚未终态的进行中订单会被隐式计入分母并压低实时“救援率”。
+   - 后续应明确 numerator/denominator，仅用适合的终态样本，或重命名为不误导的指标。
+
+5. **用户商品接口存在角色数据泄漏**
+   - `GET /merchants/:merchantId/products` 当前展开完整 Merchant ORM 记录。
+   - 用户可能看到 `deliveryContributionMinor`、`maxConcurrentOrders`、`exposureState`、`ownerId` 等内部字段。
+   - 这违反三方价格视图隔离；下一轮必须改为显式 customer-safe DTO/select，并增加敏感字段“不应出现”的负向测试。
+   - 同时复查所有 customer-facing catalog/order API，避免类似 raw ORM spread。
+
+6. **滚动窗口对进行中订单的处理需重新确认**
+   - 当前先取最近 N 个 published DeliveryTask，再从中计算 terminal 风险指标。
+   - 大量新进行中订单可能挤掉较老但有效的终态样本，导致 sampleStatus/风险结论暂时退回 UNKNOWN。
+   - 后续应为 terminal completion/time metrics 与 live claim/subsidy metrics 使用合适的独立样本集合，或明确记录并接受该行为。
+
+以上属于实现/统计边界修正，不改变已确认产品方向。
