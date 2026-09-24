@@ -7,8 +7,9 @@ Before making product or business changes, read the root files in this order:
 1. `PRODUCT_DECISIONS.md` — confirmed product decisions; highest priority.
 2. `IMPLEMENTATION_PLAN.md` — current implementation plan and provisional engineering defaults.
 3. `CODEX_TASK.md` — current execution task, if present.
-4. `OPERATIONS_CONTEXT.md` — confirmed real-world operating context; background only, never overrides product decisions.
-5. Existing code, README, OpenAPI, tests and older design documents.
+4. `ROLE_RESPONSIBILITIES.md` — role-oriented view of confirmed duties, permissions, restrictions and outcomes; derived from product decisions and must not create new rules.
+5. `OPERATIONS_CONTEXT.md` — confirmed real-world operating context; background only, never overrides product decisions.
+6. Existing code, README, OpenAPI, tests and older design documents.
 
 If existing code, Seed data, old design docs, or an agent recommendation conflicts with `PRODUCT_DECISIONS.md`, do not silently preserve or invent behavior. Follow the confirmed product decision, or stop and report the unresolved conflict.
 
@@ -70,3 +71,11 @@ When a task requests a `CODEX_REPORT.md`, generate it only after implementation 
 - Build explicit response DTOs/selects for each role. Treat newly added database fields as private by default until explicitly exposed.
 - When claiming role/data isolation, inspect the complete serialized response, not only the newly added nested object. Existing scalar fields and relation payloads can still leak internal pricing, policy, identifiers, limits, or operational state.
 - Add negative tests for sensitive fields that must be absent (for example merchant contribution, platform subsidy, internal policy/exposure details) rather than testing only that intended fields are present.
+
+
+## Role documentation maintenance
+
+- After a product rule is confirmed, identify which of Customer, Merchant, Rider, and Admin it affects and keep `ROLE_RESPONSIBILITIES.md` synchronized.
+- Role documentation must be written from the actor's perspective: what they must do, may do, may not do, and what consequence follows.
+- Do not fill gaps in role documentation by inventing product behavior. Mark unresolved boundaries explicitly.
+- `ROLE_RESPONSIBILITIES.md` is derived documentation; if it conflicts with `PRODUCT_DECISIONS.md`, fix the role document rather than overriding the product decision.
