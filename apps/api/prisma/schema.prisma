@@ -24,12 +24,26 @@ enum CampusLocationType {
 }
 
 enum MerchantExposureState {
+  TRIAL
   NORMAL
   REDUCED
   LIMITED
   SEVERELY_LIMITED
   HIDDEN
   SUSPENDED
+}
+
+enum MerchantTimeRisk {
+  UNKNOWN
+  NORMAL
+  SLOW
+}
+
+enum MerchantCompletionRisk {
+  UNKNOWN
+  NORMAL
+  ELEVATED
+  HIGH
 }
 
 enum RiderStatus {
@@ -161,23 +175,24 @@ enum ExceptionType {
 }
 
 model User {
-  id                   String                  @id @default(uuid()) @db.Uuid
+  id                   String                     @id @default(uuid()) @db.Uuid
   displayName          String
   role                 UserRole
-  active               Boolean                 @default(true)
+  active               Boolean                    @default(true)
   merchant             Merchant?
   rider                Rider?
-  customerOrders       Order[]                 @relation("CustomerOrders")
-  operatedEvents       OrderEvent[]            @relation("OrderEventOperator")
+  customerOrders       Order[]                    @relation("CustomerOrders")
+  operatedEvents       OrderEvent[]               @relation("OrderEventOperator")
   evidence             Evidence[]
-  reportedExceptions   ExceptionEvent[]        @relation("ExceptionReporter")
-  issuedCodes          VerificationCode[]      @relation("VerificationIssuer")
-  verifiedCodes        VerificationCode[]      @relation("VerificationVerifier")
-  merchantQuoteChanges MerchantDeliveryQuote[] @relation("MerchantQuoteOperator")
-  riderTipEvents       RiderTipEvent[]         @relation("RiderTipCustomer")
-  configAudits         BusinessConfigAudit[]   @relation("BusinessConfigAuditActor")
-  createdAt            DateTime                @default(now())
-  updatedAt            DateTime                @updatedAt
+  reportedExceptions   ExceptionEvent[]           @relation("ExceptionReporter")
+  issuedCodes          VerificationCode[]         @relation("VerificationIssuer")
+  verifiedCodes        VerificationCode[]         @relation("VerificationVerifier")
+  merchantQuoteChanges MerchantDeliveryQuote[]    @relation("MerchantQuoteOperator")
+  riderTipEvents       RiderTipEvent[]            @relation("RiderTipCustomer")
+  configAudits         BusinessConfigAudit[]      @relation("BusinessConfigAuditActor")
+  exposureDecisions    MerchantExposureDecision[] @relation("MerchantExposureDecisionActor")
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
 }
 
 model CampusLocation {
@@ -193,26 +208,27 @@ model CampusLocation {
 }
 
 model Merchant {
-  id                        String                  @id @default(uuid()) @db.Uuid
-  ownerId                   String                  @unique @db.Uuid
-  owner                     User                    @relation(fields: [ownerId], references: [id])
+  id                        String                     @id @default(uuid()) @db.Uuid
+  ownerId                   String                     @unique @db.Uuid
+  owner                     User                       @relation(fields: [ownerId], references: [id])
   name                      String
   description               String?
-  campusLocationId          String                  @db.Uuid
-  campusLocation            CampusLocation          @relation(fields: [campusLocationId], references: [id])
-  isOpen                    Boolean                 @default(true)
-  exposureState             MerchantExposureState   @default(NORMAL)
-  maxConcurrentOrders       Int                     @default(0)
-  deliveryContributionMinor Int                     @default(0)
-  supportedDeliveryMethods  DeliveryMethod[]        @default([DESIGNATED_POINT, DOOR, FACE_TO_FACE])
-  pickupVerificationMode    PickupVerificationMode  @default(CONFIRMATION)
+  campusLocationId          String                     @db.Uuid
+  campusLocation            CampusLocation             @relation(fields: [campusLocationId], references: [id])
+  isOpen                    Boolean                    @default(true)
+  exposureState             MerchantExposureState      @default(TRIAL)
+  maxConcurrentOrders       Int                        @default(0)
+  deliveryContributionMinor Int                        @default(0)
+  supportedDeliveryMethods  DeliveryMethod[]           @default([DESIGNATED_POINT, DOOR, FACE_TO_FACE])
+  pickupVerificationMode    PickupVerificationMode     @default(CONFIRMATION)
   categories                ProductCategory[]
   products                  Product[]
   orders                    Order[]
   subsidyAccount            MerchantSubsidyAccount?
   subsidyRecords            SubsidyRecord[]
-  createdAt                 DateTime                @default(now())
-  updatedAt                 DateTime                @updatedAt
+  exposureDecisions         MerchantExposureDecision[]
+  createdAt                 DateTime                   @default(now())
+  updatedAt                 DateTime                   @updatedAt
 }
 
 model ProductCategory {
@@ -265,6 +281,7 @@ model Order {
   shortCode                    String
   shortCodeDay                 DateTime                  @db.Date
   coolingOffEndsAt             DateTime
+  tipDeadline                  DateTime
   customerId                   String                    @db.Uuid
   customer                     User                      @relation("CustomerOrders", fields: [customerId], references: [id])
   merchantId                   String                    @db.Uuid
@@ -502,9 +519,27 @@ model MerchantSubsidyAccount {
   merchant          Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   subsidyUsedMinor  Int      @default(0)
   subsidyLimitMinor Int      @default(0)
-  riskScore         Int      @default(0)
+  subsidyUsageBps   Int      @default(0)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
+}
+
+model MerchantExposureDecision {
+  id              String                 @id @default(uuid()) @db.Uuid
+  merchantId      String                 @db.Uuid
+  merchant        Merchant               @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  previousState   MerchantExposureState
+  newState        MerchantExposureState
+  timeRisk        MerchantTimeRisk
+  completionRisk  MerchantCompletionRisk
+  policyVersion   Int
+  reason          String
+  metricsSnapshot Json
+  actorId         String?                @db.Uuid
+  actor           User?                  @relation("MerchantExposureDecisionActor", fields: [actorId], references: [id], onDelete: SetNull)
+  createdAt       DateTime               @default(now())
+
+  @@index([merchantId, createdAt])
 }
 
 model MerchantDeliveryQuote {

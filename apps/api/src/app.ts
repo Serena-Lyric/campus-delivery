@@ -10,6 +10,7 @@ import { registerDeliveryRoutes } from './delivery/routes.js';
 import { registerEvidenceRoutes } from './evidence/routes.js';
 import { MockMediaStorage } from './evidence/media-storage.js';
 import { registerExceptionRoutes } from './exceptions/routes.js';
+import { registerMerchantRiskRoutes } from './merchant-risk/routes.js';
 import { registerOrderRoutes } from './orders/routes.js';
 import { registerMarketPricingRoutes } from './pricing/routes.js';
 import { registerPricingViewRoutes } from './pricing/view-routes.js';
@@ -33,8 +34,8 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
     openapi: {
       info: {
         title: 'campus-delivery API',
-        description: 'Campus market pricing, claim deadlines, evidence, delivery pool, and settlement API',
-        version: '0.3.0',
+        description: 'Campus delivery market, merchant fulfillment risk, evidence, order pool, and settlement API',
+        version: '0.4.0',
       },
       components: {
         securitySchemes: {
@@ -55,6 +56,7 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
   await registerDeliveryRoutes(app, prisma, config);
   await registerSubsidyRoutes(app, prisma, config);
   await registerAdminConfigRoutes(app, prisma, config);
+  await registerMerchantRiskRoutes(app, prisma, config);
   await registerEvidenceRoutes(app, prisma, config, mediaStorage);
   await registerExceptionRoutes(app, prisma, config);
   await registerVerificationRoutes(app, prisma, config);

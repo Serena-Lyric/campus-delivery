@@ -16,12 +16,13 @@ export function startLifecycleProcessor(
     if (running) return;
     running = true;
     try {
-      const [orders, settlements] = await Promise.all([
+      const [orders, expiredTasks, settlements] = await Promise.all([
         releaseExpiredCoolingOrders(prisma),
+        expireUnclaimedDeliveryTasks(prisma),
         releaseAvailableRiderSettlements(prisma),
       ]);
-      if (orders + settlements > 0) {
-        logger.info({ orders, settlements }, 'lifecycle processor advanced records');
+      if (orders + expiredTasks + settlements > 0) {
+        logger.info({ orders, expiredTasks, settlements }, 'lifecycle processor advanced records');
       }
     } catch (error) {
       logger.error({ err: error }, 'lifecycle processor failed');

@@ -60,6 +60,7 @@ export const demoPolicy = {
   riderSettlementPendingSeconds: 432000,
   platformMaxConcurrentOrdersPerRider: 3,
   customerUnreachableWaitSeconds: 300,
+  riderTipWindowSeconds: 86400,
   merchantRepriceCooldownSeconds: 15,
   orderClaimWindowSeconds: 2400,
   defaultNaturalClaimBaselineSeconds: 600,
@@ -72,14 +73,19 @@ export const demoPolicy = {
   unattendedDeliveryMethods: ['DESIGNATED_POINT', 'DOOR'],
   handoffCodeDeliveryMethods: ['FACE_TO_FACE'],
   requireHandoffCodeForAllOrders: false,
-  exposureThresholds: [
-    { minUsageBps: 0, state: 'NORMAL' },
-    { minUsageBps: 2500, state: 'REDUCED' },
-    { minUsageBps: 5000, state: 'LIMITED' },
-    { minUsageBps: 7500, state: 'SEVERELY_LIMITED' },
-    { minUsageBps: 9000, state: 'HIDDEN' },
-    { minUsageBps: 10000, state: 'SUSPENDED' },
-  ],
+  merchantRiskWindowOrderCount: 50,
+  merchantRiskMinimumSampleSize: 10,
+  slowFulfillmentThresholdSeconds: 2700,
+  completionRiskElevatedThresholdBps: 1500,
+  completionRiskHighThresholdBps: 3000,
+  exposureReducedThresholdBps: 1500,
+  exposureLimitedThresholdBps: 3000,
+  exposureSeverelyLimitedThresholdBps: 5000,
+  exposureNormalRecoveryThresholdBps: 800,
+  exposureReducedRecoveryThresholdBps: 2000,
+  exposureLimitedRecoveryThresholdBps: 3500,
+  subsidyDependencyThresholdBps: 5000,
+  subsidyRescueThresholdBps: 5000,
 };
 
 async function seedScenarioOrders(client: PrismaClient) {
@@ -103,6 +109,7 @@ async function seedScenarioOrders(client: PrismaClient) {
         shortCode,
         shortCodeDay: day,
         coolingOffEndsAt: status === OrderStatus.CREATED ? new Date(now.getTime() + 60_000) : new Date(now.getTime() - 60_000),
+        tipDeadline: new Date(now.getTime() + demoPolicy.riderTipWindowSeconds * 1000),
         status,
         deliveryMethod,
         deliveryVerificationMode,
@@ -113,6 +120,7 @@ async function seedScenarioOrders(client: PrismaClient) {
         shortCode,
         shortCodeDay: day,
         coolingOffEndsAt: status === OrderStatus.CREATED ? new Date(now.getTime() + 60_000) : new Date(now.getTime() - 60_000),
+        tipDeadline: new Date(now.getTime() + demoPolicy.riderTipWindowSeconds * 1000),
         customerId: seedIds.customer,
         merchantId: seedIds.merchant,
         destinationLocationId: seedIds.dormLocation,
@@ -464,12 +472,13 @@ export async function seedDatabase(client: PrismaClient) {
   });
   await client.merchantSubsidyAccount.upsert({
     where: { id: seedIds.subsidyAccount },
-    update: { merchantId: seedIds.merchant, subsidyUsedMinor: 50, subsidyLimitMinor: 1000 },
+    update: { merchantId: seedIds.merchant, subsidyUsedMinor: 50, subsidyLimitMinor: 1000, subsidyUsageBps: 500 },
     create: {
       id: seedIds.subsidyAccount,
       merchantId: seedIds.merchant,
       subsidyUsedMinor: 50,
       subsidyLimitMinor: 1000,
+      subsidyUsageBps: 500,
     },
   });
   await client.businessConfig.updateMany({

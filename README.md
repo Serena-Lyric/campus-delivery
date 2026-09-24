@@ -4,7 +4,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 ## 当前阶段
 
-本阶段仍是模块化单体 REST API。当前重点是市场报价、接单时限、用户骑手激励、逐步平台补贴和配置审计，同时继续保存履约事实并保证状态、并发和资金状态正确。
+本阶段仍是模块化单体 REST API。当前重点是 24 小时用户骑手激励窗口、商家履约事实、独立时间/完成风险提示，以及带最低样本量和恢复滞后的曝光策略基础。
 
 ## 技术栈
 
@@ -23,6 +23,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
       src/delivery/           订单池、持单限制、履约
       src/evidence/           Evidence 和媒体抽象
       src/exceptions/         结构化异常
+      src/merchant-risk/      商家履约指标、风险结论和曝光策略
       src/verification/       一次性码
       src/timeline/           角色化时间线
       src/settlements/        骑手待结算
@@ -61,6 +62,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 - platformMaxConcurrentOrdersPerRider：Seed 为 3。
 - verificationCodeTtlSeconds：Seed 为 10 分钟。
 - customerUnreachableWaitSeconds：只预留，不用于自动判责。
+- riderTipWindowSeconds：Seed 演示为 86400 秒，创建订单时快照到 tipDeadline。
 - merchantRepriceCooldownSeconds：Seed 演示为 15 秒。
 - orderClaimWindowSeconds：Seed 演示为 2400 秒。
 - defaultNaturalClaimBaselineSeconds：自然接单样本不足时的演示基线。
@@ -69,6 +71,11 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 - platformSubsidyMaxPerOrderMinor：演示单订单累计补贴上限。
 - platformSubsidyMinIntervalSeconds：演示补贴最短间隔。
 - merchantSubsidyBudgetMaxUsageBpsPerOrder：单订单商家风险预算占用比例上限。
+- merchantRiskWindowOrderCount / merchantRiskMinimumSampleSize：履约统计窗口和最低样本量。
+- slowFulfillmentThresholdSeconds：独立时间风险阈值。
+- completionRiskElevatedThresholdBps / completionRiskHighThresholdBps：可观察完成风险阈值。
+- exposure*ThresholdBps：曝光状态进入与恢复阈值；恢复阈值与进入阈值分离以避免抖动。
+- subsidyDependencyThresholdBps / subsidyRescueThresholdBps：补贴依赖和救援效果事实阈值，不直接改变曝光。
 - unattendedDeliveryMethods：允许无人接触投递的方式。
 - handoffCodeDeliveryMethods：正常情况下要求交付码的方式。
 
@@ -145,7 +152,7 @@ DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除�
 
 ## 用户骑手激励
 
-用户激励与商家报价、平台补贴独立记账。接单前用户可以增加、减少或撤回；接单后只能追加。接单后新增部分更新当前责任骑手的收益和结算金额，100% 归骑手，不增加平台收入。
+用户激励与商家报价、平台补贴独立记账。操作窗口从订单创建起 24 小时，并在订单创建时保存 tipDeadline；截止判断由服务端执行。接单前用户可以增加、减少或撤回；接单后只能追加。正常送达后只要仍在窗口内仍可追加，新增部分更新当前责任骑手的收益和结算金额，100% 归骑手，不增加平台收入。
 
 无人承接失败时，尚未锁定的用户骑手激励记录为全额退款。
 
@@ -156,6 +163,16 @@ DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除�
 服务端同时限制单次步长、单次绝对上限、单订单累计上限、最短间隔和商家风险预算占用比例。补贴资格、时点和增量是三个独立策略接口。
 
 自然接单样本只包含补贴介入前接单的 DeliveryAssignment；补贴后接单记录为 SUBSIDIZED，不进入自然接单基线。
+
+补贴服务只更新 subsidyUsageBps 这一事实指标，不再直接修改 Merchant.exposureState。旧 riskScore 语义已通过 migration 改名，旧 exposureForUsage 正常业务路径已删除。
+
+## 商家履约风险与曝光
+
+Merchant fulfillment metrics 按配置窗口从订单、任务、接单快照、补贴和结构化异常中按需计算。它记录可观察事实，不把用户失联、地址错误、骑手或系统异常自动归责给商家。完成率只使用 DELIVERED 与 NO_RIDER_ACCEPTED 这两个可观察终态；其他异常按类型单独计数。
+
+timeRisk 与 completionRisk 独立返回。慢但完成正常的商家可以保持 NORMAL；样本不足时返回 UNKNOWN，并允许新商家保持 TRIAL。曝光策略使用最低样本量、分离的进入/恢复阈值和逐级恢复，HIDDEN/SUSPENDED 只由管理员明确控制。每次实际状态变化保存策略版本、前后状态、风险结论、指标快照、原因和操作者。
+
+角色信息隔离：用户目录只看到简化风险提示；商家看到自己的履约事实摘要，不看到平台内部补贴策略；管理员看到完整指标、补贴事实和曝光决策历史。
 
 ## 管理员业务配置
 
@@ -181,6 +198,7 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 | GET | /campus-locations | 已登录 | 校园地点及交付方式 |
 | GET | /merchants | 已登录 | 商家及交付方式 |
 | GET | /merchants/:merchantId/products | 已登录 | 商品目录 |
+| GET | /merchant/fulfillment-risk | 商家 | 自身履约事实与风险摘要 |
 | POST | /orders | 用户 | 创建冷静期订单 |
 | GET | /orders/my | 用户 | 历史订单 |
 | GET | /orders/:orderId | 订单相关方 | 订单详情 |
@@ -206,6 +224,8 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 | POST | /admin/orders/:orderId/platform-subsidies | 管理员 | 逐步追加平台补贴 |
 | GET | /admin/business-configs/:key | 管理员 | 查看配置和审计 |
 | PUT | /admin/business-configs/:key | 管理员 | 创建新配置版本 |
+| GET | /admin/merchants/:merchantId/fulfillment-risk | 管理员 | 完整履约指标、风险与曝光审计 |
+| POST | /admin/merchants/:merchantId/exposure/evaluate | 管理员 | 按当前策略评估或明确强制曝光状态 |
 
 ## 测试与构建
 
@@ -214,7 +234,7 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
     pnpm test:integration
     pnpm build
 
-集成测试使用真实 PostgreSQL，覆盖冷静期竞态、商家确认即发布、报价历史与冷却、改价和接单并发快照、用户激励、固定接单截止时间、无人承接退款边界、逐步补贴约束、自然/补贴样本隔离、角色价格视图、配置审计、双骑手抢单、持单上限、验证码、Evidence、用户失联、待结算和时间线过滤。
+集成测试使用真实 PostgreSQL，覆盖冷静期竞态、商家确认即发布、报价历史与冷却、改价和接单并发快照、24 小时用户激励边界与送达后追加、固定接单截止时间、无人承接退款边界、逐步补贴约束、补贴与曝光解耦、履约指标与风险角色视图、TRIAL/UNKNOWN、曝光审计、自然/补贴样本隔离、配置审计、双骑手抢单、持单上限、验证码、Evidence、用户失联、待结算和时间线过滤。
 
 ## 已实现
 
@@ -228,11 +248,16 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 - 角色化订单时间线
 - 商家订单级报价、版本历史和改价冷却
 - 用户骑手激励独立账本
+- 服务端 24 小时骑手激励窗口和订单 tipDeadline 快照
 - 骑手接单原子价格快照
 - 固定首次发布时间和接单截止时间
 - NO_RIDER_ACCEPTED 与退款记录边界
 - 平台逐步补贴和三类策略接口
 - 自然接单与补贴后接单样本隔离
+- 商家履约事实指标与结构化异常计数
+- 独立 timeRisk / completionRisk 和 TRIAL/UNKNOWN 语义
+- 带最低样本、进入/恢复滞后和审计的曝光策略
+- 补贴使用事实与曝光状态解耦
 - 管理员配置版本和审计
 - 角色隔离价格视图
 - 骑手个人额度与平台绝对上限
@@ -251,8 +276,7 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 - 平台补贴正式步长、间隔、单订单上限和预算比例
 - 40 分钟窗口内更细的提醒与补贴顺序
 - 接单后激励在异常争议下的退款边界
-- 用户风险判定机制
-- 商家风险判定机制
+- 商家风险和曝光的正式统计窗口、阈值及严重风险自动暂停条件
 - 商家何时必须取餐验证
 - 用户何时必须使用交付码
 - 异常订单判责规则

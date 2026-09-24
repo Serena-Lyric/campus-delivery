@@ -205,6 +205,9 @@ export async function adjustRiderTip(
     });
     if (!order) throw notFound('Order');
     if (order.customerId !== actor.id) throw forbidden();
+    if (now >= order.tipDeadline) {
+      throw conflict('RIDER_TIP_WINDOW_ENDED', 'The rider incentive window has ended');
+    }
     if (
       order.status === OrderStatus.CANCELLED
       || order.status === OrderStatus.EXCEPTION

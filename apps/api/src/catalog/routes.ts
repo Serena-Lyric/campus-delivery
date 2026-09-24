@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import type { AppConfig } from '../config.js';
 import { authGuard } from '../auth/auth.js';
 import { notFound } from '../shared/errors.js';
+import { getMerchantRiskSummary } from '../merchant-risk/service.js';
 
 const IdParams = Type.Object({ merchantId: Type.String({ format: 'uuid' }) });
 
@@ -24,7 +25,7 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
   });
 
   app.get('/merchants', { preHandler: authenticate, schema: { tags: ['catalog'] } }, async () => {
-    return prisma.merchant.findMany({
+    const merchants = await prisma.merchant.findMany({
       where: { exposureState: { notIn: [MerchantExposureState.HIDDEN, MerchantExposureState.SUSPENDED] } },
       select: {
         id: true,
@@ -37,6 +38,17 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
       },
       orderBy: { createdAt: 'asc' },
     });
+    return Promise.all(merchants.map(async (merchant) => {
+      const risk = await getMerchantRiskSummary(prisma, merchant.id);
+      return {
+        ...merchant,
+        risk: {
+          timeRisk: risk.timeRisk,
+          completionRisk: risk.completionRisk,
+          sampleStatus: risk.sampleStatus,
+        },
+      };
+    }));
   });
 
   app.get<{ Params: { merchantId: string } }>('/merchants/:merchantId/products', {
@@ -53,7 +65,15 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
       },
     });
     if (!merchant) throw notFound('Merchant');
-    return merchant;
+    const risk = await getMerchantRiskSummary(prisma, merchant.id);
+    return {
+      ...merchant,
+      risk: {
+        timeRisk: risk.timeRisk,
+        completionRisk: risk.completionRisk,
+        sampleStatus: risk.sampleStatus,
+      },
+    };
   });
 }
 

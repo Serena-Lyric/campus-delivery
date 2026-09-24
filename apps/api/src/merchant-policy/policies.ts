@@ -1,7 +1,6 @@
 import {
   DeliveryMethod,
   DeliveryVerificationMode,
-  MerchantExposureState,
   PickupVerificationMode,
   type Prisma,
   type PrismaClient,
@@ -9,7 +8,6 @@ import {
 import { Type, type Static } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import { AppError } from '../shared/errors.js';
-import { assertMinor } from '../shared/money.js';
 
 export const PolicyConfigSchema = Type.Object({
   customerDeliveryFeeMinor: Type.Integer({ minimum: 0 }),
@@ -20,6 +18,7 @@ export const PolicyConfigSchema = Type.Object({
   riderSettlementPendingSeconds: Type.Integer({ minimum: 0 }),
   platformMaxConcurrentOrdersPerRider: Type.Integer({ minimum: 1 }),
   customerUnreachableWaitSeconds: Type.Integer({ minimum: 0 }),
+  riderTipWindowSeconds: Type.Integer({ minimum: 1 }),
   merchantRepriceCooldownSeconds: Type.Integer({ minimum: 0 }),
   orderClaimWindowSeconds: Type.Integer({ minimum: 1 }),
   defaultNaturalClaimBaselineSeconds: Type.Integer({ minimum: 0 }),
@@ -32,10 +31,19 @@ export const PolicyConfigSchema = Type.Object({
   unattendedDeliveryMethods: Type.Array(Type.Enum(DeliveryMethod), { uniqueItems: true }),
   handoffCodeDeliveryMethods: Type.Array(Type.Enum(DeliveryMethod), { uniqueItems: true }),
   requireHandoffCodeForAllOrders: Type.Boolean(),
-  exposureThresholds: Type.Array(Type.Object({
-    minUsageBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
-    state: Type.Enum(MerchantExposureState),
-  }), { minItems: 1 }),
+  merchantRiskWindowOrderCount: Type.Integer({ minimum: 1, maximum: 1000 }),
+  merchantRiskMinimumSampleSize: Type.Integer({ minimum: 1, maximum: 1000 }),
+  slowFulfillmentThresholdSeconds: Type.Integer({ minimum: 1 }),
+  completionRiskElevatedThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
+  completionRiskHighThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
+  exposureReducedThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
+  exposureLimitedThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
+  exposureSeverelyLimitedThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
+  exposureNormalRecoveryThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
+  exposureReducedRecoveryThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
+  exposureLimitedRecoveryThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
+  subsidyDependencyThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
+  subsidyRescueThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
 }, { additionalProperties: false });
 
 export type PolicyConfig = Static<typeof PolicyConfigSchema>;
@@ -55,11 +63,26 @@ export function validatePolicyPayload(payload: Prisma.JsonValue): PolicyConfig {
   if (config.finalUserWarningSecondsBeforeClaimDeadline > config.orderClaimWindowSeconds) {
     throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Final warning must fit within the claim window');
   }
-  const thresholds = [...config.exposureThresholds].sort((a, b) => a.minUsageBps - b.minUsageBps);
-  if (thresholds[0]?.minUsageBps !== 0) {
-    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Exposure thresholds must start at 0 basis points');
+  if (config.merchantRiskMinimumSampleSize > config.merchantRiskWindowOrderCount) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Risk minimum sample size cannot exceed the order window');
   }
-  return { ...config, exposureThresholds: thresholds };
+  if (config.completionRiskElevatedThresholdBps > config.completionRiskHighThresholdBps) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Completion risk thresholds must be ordered');
+  }
+  if (
+    config.exposureReducedThresholdBps > config.exposureLimitedThresholdBps
+    || config.exposureLimitedThresholdBps > config.exposureSeverelyLimitedThresholdBps
+  ) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Exposure downgrade thresholds must be ordered');
+  }
+  if (
+    config.exposureNormalRecoveryThresholdBps >= config.exposureReducedThresholdBps
+    || config.exposureReducedRecoveryThresholdBps >= config.exposureLimitedThresholdBps
+    || config.exposureLimitedRecoveryThresholdBps >= config.exposureSeverelyLimitedThresholdBps
+  ) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Exposure recovery thresholds must remain below their entry thresholds');
+  }
+  return config;
 }
 
 export async function loadPolicyConfig(prisma: PrismaClient): Promise<{ version: number; config: PolicyConfig }> {
@@ -110,19 +133,4 @@ export function pickupVerificationFor(
 
 export function allowsUnattendedDelivery(config: PolicyConfig, method: DeliveryMethod): boolean {
   return config.unattendedDeliveryMethods.includes(method);
-}
-
-export function exposureForUsage(
-  usedMinor: number,
-  limitMinor: number,
-  thresholds: PolicyConfig['exposureThresholds'],
-): { state: MerchantExposureState; usageBps: number } {
-  assertMinor(usedMinor, 'usedMinor');
-  assertMinor(limitMinor, 'limitMinor');
-  const usageBps = limitMinor === 0 ? (usedMinor === 0 ? 0 : 10_000) : Math.min(10_000, Math.floor((usedMinor * 10_000) / limitMinor));
-  let state = thresholds[0]?.state ?? MerchantExposureState.NORMAL;
-  for (const threshold of thresholds) {
-    if (usageBps >= threshold.minUsageBps) state = threshold.state;
-  }
-  return { state, usageBps };
 }

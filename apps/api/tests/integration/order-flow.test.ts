@@ -11,6 +11,7 @@ import { buildApp } from '../../src/app.js';
 import type { AppConfig } from '../../src/config.js';
 import { expireUnclaimedDeliveryTasks, releaseExpiredCoolingOrders } from '../../src/orders/lifecycle.js';
 import { cancelOrder } from '../../src/orders/service.js';
+import { adjustRiderTip } from '../../src/pricing/service.js';
 import { releaseAvailableRiderSettlements } from '../../src/settlements/service.js';
 import { demoPolicy, seedDatabase, seedIds } from '../../prisma/seed.js';
 
@@ -37,6 +38,7 @@ describe('order handoff and settlement flow', () => {
   });
 
   beforeEach(async () => {
+    await prisma.merchantExposureDecision.deleteMany();
     await prisma.subsidyRecord.deleteMany();
     await prisma.deliveryTask.deleteMany();
     await prisma.order.deleteMany();
@@ -48,7 +50,7 @@ describe('order handoff and settlement flow', () => {
     });
     await prisma.merchantSubsidyAccount.update({
       where: { id: seedIds.subsidyAccount },
-      data: { subsidyUsedMinor: 0, riskScore: 0, subsidyLimitMinor: 1000 },
+      data: { subsidyUsedMinor: 0, subsidyUsageBps: 0, subsidyLimitMinor: 1000 },
     });
     await prisma.merchant.update({
       where: { id: seedIds.merchant },
@@ -372,7 +374,55 @@ describe('order handoff and settlement flow', () => {
       riderSettlement.pendingUntil.getTime() - completedTask.deliveredAt!.getTime(),
     ).toBe(demoPolicy.riderSettlementPendingSeconds * 1000);
     expect(settlement.platformRevenueMinor).toBe(100);
+
+    const afterDelivery = await app.inject({
+      method: 'POST',
+      url: `/orders/${order.id}/rider-tip-adjustments`,
+      headers: headers(seedIds.customer),
+      payload: { deltaMinor: 10, reason: 'Post-delivery thank you' },
+    });
+    expect(afterDelivery.statusCode).toBe(201);
+    expect((await prisma.deliveryAssignment.findFirstOrThrow({ where: { taskId } })).postClaimTipMinor).toBe(35);
+    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: order.id } })).amountMinor).toBe(195);
   });
+
+  it('enforces the snapshotted rider-tip deadline at the service boundary', async () => {
+    const order = await createOrder();
+    const deadline = new Date('2026-09-24T12:00:00.000Z');
+    await prisma.order.update({ where: { id: order.id }, data: { tipDeadline: deadline } });
+    await expect(adjustRiderTip(
+      prisma,
+      { id: seedIds.customer, role: 'CUSTOMER' },
+      order.id,
+      10,
+      undefined,
+      new Date(deadline.getTime() - 1),
+    )).resolves.toBeTruthy();
+    await expect(adjustRiderTip(
+      prisma,
+      { id: seedIds.customer, role: 'CUSTOMER' },
+      order.id,
+      10,
+      undefined,
+      deadline,
+    )).rejects.toMatchObject({ code: 'RIDER_TIP_WINDOW_ENDED' });
+  });
+
+  it.each(['CANCELLED', 'NO_RIDER_ACCEPTED', 'EXCEPTION'] as const)(
+    'rejects rider-tip changes for %s orders inside the time window',
+    async (status) => {
+      const order = await createOrder();
+      await prisma.order.update({ where: { id: order.id }, data: { status } });
+      const response = await app.inject({
+        method: 'POST',
+        url: `/orders/${order.id}/rider-tip-adjustments`,
+        headers: headers(seedIds.customer),
+        payload: { deltaMinor: 10 },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().code).toBe('ORDER_NOT_TIPPABLE');
+    },
+  );
 
   it('fails unclaimed orders at the fixed deadline and records the full user refund boundary', async () => {
     const order = await createOrder();
@@ -422,6 +472,8 @@ describe('order handoff and settlement flow', () => {
     });
     expect(first.statusCode).toBe(201);
     expect(first.json().record.addedMinor).toBe(50);
+    expect((await prisma.merchant.findUniqueOrThrow({ where: { id: seedIds.merchant } })).exposureState).toBe('NORMAL');
+    expect((await prisma.merchantSubsidyAccount.findUniqueOrThrow({ where: { id: seedIds.subsidyAccount } })).subsidyUsageBps).toBe(500);
     const tooSoon = await app.inject({
       method: 'POST',
       url: `/admin/orders/${order.id}/platform-subsidies`,
@@ -537,6 +589,88 @@ describe('order handoff and settlement flow', () => {
       payload: { payload: updatedPayload, reason: 'Not allowed' },
     });
     expect(forbidden.statusCode).toBe(403);
+  });
+
+  it('separates merchant risk views and audits hysteretic exposure decisions', async () => {
+    await prisma.businessConfig.update({
+      where: { id: seedIds.policyConfig },
+      data: { payload: { ...demoPolicy, merchantRiskMinimumSampleSize: 1 } },
+    });
+    const delivered = await deliverPhotoOrder();
+    const merchantView = await app.inject({
+      method: 'GET',
+      url: '/merchant/fulfillment-risk',
+      headers: headers(seedIds.merchantUser),
+    });
+    expect(merchantView.statusCode).toBe(200);
+    expect(merchantView.json()).toMatchObject({
+      sampleStatus: 'SUFFICIENT',
+      completionRisk: 'NORMAL',
+    });
+    expect(merchantView.json().metrics.platformSubsidyUsedMinor).toBeUndefined();
+
+    const userCatalog = await app.inject({
+      method: 'GET',
+      url: '/merchants',
+      headers: headers(seedIds.customer),
+    });
+    expect(userCatalog.statusCode).toBe(200);
+    expect(userCatalog.json()[0].risk).toMatchObject({ completionRisk: 'NORMAL' });
+    expect(userCatalog.json()[0].risk.metrics).toBeUndefined();
+
+    const failed = await createOrder();
+    const confirmed = await submitToMerchant(failed.id);
+    const task = await prisma.deliveryTask.findUniqueOrThrow({ where: { id: confirmed.json().deliveryTask.id } });
+    await expireUnclaimedDeliveryTasks(prisma, new Date(task.claimDeadline!.getTime() + 1));
+    const evaluated = await app.inject({
+      method: 'POST',
+      url: `/admin/merchants/${seedIds.merchant}/exposure/evaluate`,
+      headers: headers(seedIds.admin),
+      payload: {},
+    });
+    expect(evaluated.statusCode, evaluated.body).toBe(200);
+    expect(evaluated.json()).toMatchObject({
+      completionRisk: 'HIGH',
+      newState: 'SEVERELY_LIMITED',
+    });
+    expect(await prisma.merchantExposureDecision.count({ where: { merchantId: seedIds.merchant } })).toBe(1);
+
+    const adminView = await app.inject({
+      method: 'GET',
+      url: `/admin/merchants/${seedIds.merchant}/fulfillment-risk`,
+      headers: headers(seedIds.admin),
+    });
+    expect(adminView.statusCode).toBe(200);
+    expect(adminView.json().merchant.subsidyAccount.subsidyUsageBps).toBe(0);
+    expect(adminView.json().merchant.exposureDecisions).toHaveLength(1);
+    expect(adminView.json().risk.metrics.exceptionCounts).toEqual({});
+    expect(delivered.orderId).toBeTruthy();
+  });
+
+  it('keeps a sample-poor trial merchant unknown without changing exposure', async () => {
+    await prisma.merchant.update({
+      where: { id: seedIds.merchant },
+      data: { exposureState: MerchantExposureState.TRIAL },
+    });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/merchants',
+      headers: headers(seedIds.customer),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()[0]).toMatchObject({
+      exposureState: 'TRIAL',
+      risk: { timeRisk: 'UNKNOWN', completionRisk: 'UNKNOWN', sampleStatus: 'INSUFFICIENT_DATA' },
+    });
+  });
+
+  it('publishes the merchant-risk routes in OpenAPI', async () => {
+    const response = await app.inject({ method: 'GET', url: '/docs/json' });
+    expect(response.statusCode).toBe(200);
+    const paths = response.json().paths;
+    expect(paths['/merchant/fulfillment-risk']?.get).toBeTruthy();
+    expect(paths['/admin/merchants/{merchantId}/fulfillment-risk']?.get).toBeTruthy();
+    expect(paths['/admin/merchants/{merchantId}/exposure/evaluate']?.post).toBeTruthy();
   });
 
   it('returns role-specific pricing views without mixing funding sources', async () => {

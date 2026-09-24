@@ -1,18 +1,13 @@
 import { MerchantExposureState } from '@prisma/client';
 import { describe, expect, it } from 'vitest';
 import { demoPolicy } from '../prisma/seed.js';
-import { exposureForUsage, type PolicyConfig } from '../src/merchant-policy/policies.js';
+import type { PolicyConfig } from '../src/merchant-policy/policies.js';
+import { classifyMerchantRisk, MerchantExposurePolicy } from '../src/merchant-risk/policies.js';
 import {
   BudgetSubsidyEligibilityPolicy,
   CappedSubsidyIncrementPolicy,
   NaturalClaimTimingPolicy,
 } from '../src/subsidy/policies.js';
-
-const thresholds = [
-  { minUsageBps: 0, state: MerchantExposureState.NORMAL },
-  { minUsageBps: 5000, state: MerchantExposureState.LIMITED },
-  { minUsageBps: 9000, state: MerchantExposureState.HIDDEN },
-];
 
 describe('platform subsidy policy boundaries', () => {
   const config = demoPolicy as PolicyConfig;
@@ -72,9 +67,49 @@ describe('platform subsidy policy boundaries', () => {
 });
 
 describe('merchant exposure policy', () => {
-  it('changes state at configured usage thresholds', () => {
-    expect(exposureForUsage(499, 1000, thresholds).state).toBe(MerchantExposureState.NORMAL);
-    expect(exposureForUsage(500, 1000, thresholds).state).toBe(MerchantExposureState.LIMITED);
-    expect(exposureForUsage(900, 1000, thresholds).state).toBe(MerchantExposureState.HIDDEN);
+  const config = demoPolicy as PolicyConfig;
+  const exposureFacts = {
+    timeRisk: 'NORMAL' as const,
+    completionRisk: 'NORMAL' as const,
+    subsidyDependencyBps: null,
+    subsidizedClaimConversionBps: null,
+    exceptionCounts: {},
+  };
+
+  it('keeps time and completion risk independent and returns unknown for insufficient data', () => {
+    expect(classifyMerchantRisk({
+      observableTerminalOrderCount: config.merchantRiskMinimumSampleSize - 1,
+      deliveredOrderCount: config.merchantRiskMinimumSampleSize - 1,
+      noRiderAcceptedRateBps: 10_000,
+      averageTotalFulfillmentSeconds: config.slowFulfillmentThresholdSeconds + 1,
+    }, config)).toEqual({ timeRisk: 'UNKNOWN', completionRisk: 'UNKNOWN' });
+    expect(classifyMerchantRisk({
+      observableTerminalOrderCount: config.merchantRiskMinimumSampleSize,
+      deliveredOrderCount: config.merchantRiskMinimumSampleSize,
+      noRiderAcceptedRateBps: 0,
+      averageTotalFulfillmentSeconds: config.slowFulfillmentThresholdSeconds + 1,
+    }, config)).toEqual({ timeRisk: 'SLOW', completionRisk: 'NORMAL' });
+  });
+
+  it('uses separate downgrade and recovery thresholds without subsidy usage input', () => {
+    const policy = new MerchantExposurePolicy();
+    expect(policy.evaluate({
+      ...exposureFacts,
+      currentState: MerchantExposureState.NORMAL,
+      noRiderAcceptedRateBps: config.exposureReducedThresholdBps,
+      observableTerminalOrderCount: config.merchantRiskMinimumSampleSize,
+    }, config).state).toBe(MerchantExposureState.REDUCED);
+    expect(policy.evaluate({
+      ...exposureFacts,
+      currentState: MerchantExposureState.REDUCED,
+      noRiderAcceptedRateBps: config.exposureNormalRecoveryThresholdBps + 1,
+      observableTerminalOrderCount: config.merchantRiskMinimumSampleSize,
+    }, config).state).toBe(MerchantExposureState.REDUCED);
+    expect(policy.evaluate({
+      ...exposureFacts,
+      currentState: MerchantExposureState.REDUCED,
+      noRiderAcceptedRateBps: config.exposureNormalRecoveryThresholdBps,
+      observableTerminalOrderCount: config.merchantRiskMinimumSampleSize,
+    }, config).state).toBe(MerchantExposureState.NORMAL);
   });
 });

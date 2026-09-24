@@ -7,7 +7,7 @@ import {
   type PrismaClient,
 } from '@prisma/client';
 import type { Actor } from '../auth/auth.js';
-import { exposureForUsage, loadPolicyConfig } from '../merchant-policy/policies.js';
+import { loadPolicyConfig } from '../merchant-policy/policies.js';
 import { riderPayoutMinor } from '../pricing/service.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
 import {
@@ -152,7 +152,9 @@ export async function addPlatformSubsidy(
       platformSubsidyMinor: newPlatformSubsidyMinor,
     });
     const usedMinor = account.subsidyUsedMinor + increment.addedMinor;
-    const exposure = exposureForUsage(usedMinor, account.subsidyLimitMinor, config.exposureThresholds);
+    const subsidyUsageBps = account.subsidyLimitMinor === 0
+      ? (usedMinor === 0 ? 0 : 10_000)
+      : Math.min(10_000, Math.floor(usedMinor * 10_000 / account.subsidyLimitMinor));
 
     await tx.orderPricing.update({
       where: { orderId },
@@ -164,9 +166,8 @@ export async function addPlatformSubsidy(
     await tx.deliveryTask.update({ where: { id: task.id }, data: { payoutMinor: nextPayout } });
     await tx.merchantSubsidyAccount.update({
       where: { id: account.id },
-      data: { subsidyUsedMinor: usedMinor, riskScore: exposure.usageBps },
+      data: { subsidyUsedMinor: usedMinor, subsidyUsageBps },
     });
-    await tx.merchant.update({ where: { id: initial.merchantId }, data: { exposureState: exposure.state } });
 
     const record = await tx.subsidyRecord.create({
       data: {

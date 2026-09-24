@@ -97,6 +97,7 @@ export async function createOrder(
   const { config } = await loadPolicyConfig(prisma);
   const codeDay = shortCodeDay(now, campusTimeZone);
   const coolingOffEndsAt = new Date(now.getTime() + config.coolingOffSeconds * 1000);
+  const tipDeadline = new Date(now.getTime() + config.riderTipWindowSeconds * 1000);
 
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const shortCode = generateShortCode();
@@ -160,6 +161,7 @@ export async function createOrder(
             shortCode,
             shortCodeDay: codeDay,
             coolingOffEndsAt,
+            tipDeadline,
             customerId: actor.id,
             merchantId: merchant.id,
             destinationLocationId: location.id,
