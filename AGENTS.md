@@ -61,3 +61,11 @@ When a task requests a `CODEX_REPORT.md`, generate it only after implementation 
 - When the plan asks for separate concepts (for example entry thresholds vs recovery windows), do not substitute a weaker related mechanism (for example threshold hysteresis only) without calling out the gap.
 - Metrics with names such as conversion rate, completion rate, rescue rate, or failure rate must define their numerator, denominator, and treatment of in-progress/non-terminal records. In-progress records must not silently count as failures unless the product definition explicitly says so.
 - Rolling-window metrics must not accidentally discard valid historical terminal samples merely because newer in-progress records entered the window. If different metrics require different populations, use separate query populations or document the tradeoff explicitly.
+
+
+## API role isolation
+
+- Do not return or spread raw ORM/database entities directly into customer-, merchant-, or rider-facing API responses.
+- Build explicit response DTOs/selects for each role. Treat newly added database fields as private by default until explicitly exposed.
+- When claiming role/data isolation, inspect the complete serialized response, not only the newly added nested object. Existing scalar fields and relation payloads can still leak internal pricing, policy, identifiers, limits, or operational state.
+- Add negative tests for sensitive fields that must be absent (for example merchant contribution, platform subsidy, internal policy/exposure details) rather than testing only that intended fields are present.
