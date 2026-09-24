@@ -7,7 +7,8 @@ Before making product or business changes, read the root files in this order:
 1. `PRODUCT_DECISIONS.md` — confirmed product decisions; highest priority.
 2. `IMPLEMENTATION_PLAN.md` — current implementation plan and provisional engineering defaults.
 3. `CODEX_TASK.md` — current execution task, if present.
-4. Existing code, README, OpenAPI, tests and older design documents.
+4. `OPERATIONS_CONTEXT.md` — confirmed real-world operating context; background only, never overrides product decisions.
+5. Existing code, README, OpenAPI, tests and older design documents.
 
 If existing code, Seed data, old design docs, or an agent recommendation conflicts with `PRODUCT_DECISIONS.md`, do not silently preserve or invent behavior. Follow the confirmed product decision, or stop and report the unresolved conflict.
 
