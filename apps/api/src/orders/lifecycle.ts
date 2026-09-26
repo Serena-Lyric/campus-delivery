@@ -4,8 +4,77 @@ import {
   OrderEventType,
   OrderStatus,
   RiderTipEventType,
+  type Prisma,
   type PrismaClient,
 } from '@prisma/client';
+
+export async function expireOpenDeliveryTask(
+  tx: Prisma.TransactionClient,
+  taskId: string,
+  now: Date,
+): Promise<number> {
+  const task = await tx.deliveryTask.findUnique({
+    where: { id: taskId },
+    include: { order: { include: { pricing: true } } },
+  });
+  if (
+    !task
+    || task.status !== DeliveryTaskStatus.OPEN
+    || task.riderId
+    || !task.claimDeadline
+    || task.claimDeadline > now
+    || task.order.status !== OrderStatus.READY_FOR_RIDER
+    || !task.order.pricing
+  ) return 0;
+
+  const pricing = task.order.pricing;
+  const refundableTipMinor = pricing.customerRiderTipMinor;
+  const customerRefundMinor = pricing.itemSubtotalMinor
+    + pricing.customerDeliveryFeeMinor
+    + refundableTipMinor;
+  await tx.deliveryTask.update({ where: { id: task.id }, data: { status: DeliveryTaskStatus.NO_RIDER_ACCEPTED } });
+  await tx.order.update({ where: { id: task.orderId }, data: { status: OrderStatus.NO_RIDER_ACCEPTED } });
+  await tx.orderPricing.update({
+    where: { orderId: task.orderId },
+    data: {
+      customerRefundMinor,
+      customerRiderTipRefundMinor: { increment: refundableTipMinor },
+      customerRiderTipMinor: 0,
+      riderPayoutMinor: pricing.riderPayoutMinor - refundableTipMinor,
+    },
+  });
+  if (refundableTipMinor > 0) {
+    await tx.riderTipEvent.create({
+      data: {
+        orderId: task.orderId,
+        customerId: task.order.customerId,
+        type: RiderTipEventType.NO_RIDER_REFUND,
+        deltaMinor: -refundableTipMinor,
+        balanceAfterMinor: 0,
+        reason: 'NO_RIDER_ACCEPTED',
+        createdAt: now,
+      },
+    });
+  }
+  await tx.orderEvent.create({
+    data: {
+      orderId: task.orderId,
+      eventType: OrderEventType.NO_RIDER_ACCEPTED,
+      actorType: OrderEventActorType.SYSTEM,
+      fromStatus: OrderStatus.READY_FOR_RIDER,
+      toStatus: OrderStatus.NO_RIDER_ACCEPTED,
+      reason: 'Claim deadline reached without a rider',
+      metadata: {
+        firstPublishedAt: task.firstPublishedAt?.toISOString() ?? null,
+        claimDeadline: task.claimDeadline.toISOString(),
+        customerRefundMinor,
+        riderTipRefundMinor: refundableTipMinor,
+      },
+      createdAt: now,
+    },
+  });
+  return 1;
+}
 
 export async function releaseExpiredCoolingOrders(
   prisma: PrismaClient,
@@ -68,76 +137,7 @@ export async function expireUnclaimedDeliveryTasks(
     expired += await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${candidate.orderId}::uuid FOR UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${candidate.id}::uuid FOR UPDATE`;
-      const task = await tx.deliveryTask.findUnique({
-        where: { id: candidate.id },
-        include: { order: { include: { pricing: true } } },
-      });
-      if (
-        !task
-        || task.status !== DeliveryTaskStatus.OPEN
-        || task.riderId
-        || !task.claimDeadline
-        || task.claimDeadline > now
-        || task.order.status !== OrderStatus.READY_FOR_RIDER
-      ) {
-        return 0;
-      }
-      if (!task.order.pricing) return 0;
-
-      const pricing = task.order.pricing;
-      const refundableTipMinor = pricing.customerRiderTipMinor;
-      const customerRefundMinor = pricing.itemSubtotalMinor
-        + pricing.customerDeliveryFeeMinor
-        + refundableTipMinor;
-
-      await tx.deliveryTask.update({
-        where: { id: task.id },
-        data: { status: DeliveryTaskStatus.NO_RIDER_ACCEPTED },
-      });
-      await tx.order.update({
-        where: { id: task.orderId },
-        data: { status: OrderStatus.NO_RIDER_ACCEPTED },
-      });
-      await tx.orderPricing.update({
-        where: { orderId: task.orderId },
-        data: {
-          customerRefundMinor,
-          customerRiderTipRefundMinor: { increment: refundableTipMinor },
-          customerRiderTipMinor: 0,
-          riderPayoutMinor: pricing.riderPayoutMinor - refundableTipMinor,
-        },
-      });
-      if (refundableTipMinor > 0) {
-        await tx.riderTipEvent.create({
-          data: {
-            orderId: task.orderId,
-            customerId: task.order.customerId,
-            type: RiderTipEventType.NO_RIDER_REFUND,
-            deltaMinor: -refundableTipMinor,
-            balanceAfterMinor: 0,
-            reason: 'NO_RIDER_ACCEPTED',
-            createdAt: now,
-          },
-        });
-      }
-      await tx.orderEvent.create({
-        data: {
-          orderId: task.orderId,
-          eventType: OrderEventType.NO_RIDER_ACCEPTED,
-          actorType: OrderEventActorType.SYSTEM,
-          fromStatus: OrderStatus.READY_FOR_RIDER,
-          toStatus: OrderStatus.NO_RIDER_ACCEPTED,
-          reason: 'Claim deadline reached without a rider',
-          metadata: {
-            firstPublishedAt: task.firstPublishedAt?.toISOString() ?? null,
-            claimDeadline: task.claimDeadline.toISOString(),
-            customerRefundMinor,
-            riderTipRefundMinor: refundableTipMinor,
-          },
-          createdAt: now,
-        },
-      });
-      return 1;
+      return expireOpenDeliveryTask(tx, candidate.id, now);
     });
   }
   return expired;

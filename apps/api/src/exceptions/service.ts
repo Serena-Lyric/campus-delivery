@@ -12,6 +12,7 @@ import { allowsUnattendedDelivery, loadPolicyConfig } from '../merchant-policy/p
 import { assertOrderAccess } from '../orders/access.js';
 import { transitionOrder } from '../orders/state-machine.js';
 import { badRequest, forbidden, notFound } from '../shared/errors.js';
+import { openExceptionCase } from '../exception-cases/service.js';
 
 export type CreateExceptionInput = {
   type: ExceptionType;
@@ -63,6 +64,7 @@ export async function createExceptionEvent(
         description: input.description,
       },
     });
+    await openExceptionCase(tx, exception);
     if (evidenceIds.length > 0) {
       await tx.evidence.updateMany({
         where: { id: { in: evidenceIds }, orderId: order.id },

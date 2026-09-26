@@ -1,4 +1,4 @@
-import type { PrismaClient, UserRole } from '@prisma/client';
+import type { AdminLevel, PrismaClient, UserRole } from '@prisma/client';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { AppConfig } from '../config.js';
 import { forbidden, unauthorized } from '../shared/errors.js';
@@ -8,6 +8,7 @@ export type Actor = {
   role: UserRole;
   merchantId?: string;
   riderId?: string;
+  adminLevel?: AdminLevel;
 };
 
 declare module 'fastify' {
@@ -26,7 +27,11 @@ export function authGuard(prisma: PrismaClient, config: AppConfig, roles?: UserR
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      include: { merchant: { select: { id: true } }, rider: { select: { id: true } } },
+      include: {
+        merchant: { select: { id: true } },
+        rider: { select: { id: true } },
+        adminProfile: { select: { level: true } },
+      },
     });
     if (!user?.active) throw unauthorized('User is missing or inactive');
     if (roles && !roles.includes(user.role)) throw forbidden();
@@ -36,12 +41,28 @@ export function authGuard(prisma: PrismaClient, config: AppConfig, roles?: UserR
       role: user.role,
       ...(user.merchant ? { merchantId: user.merchant.id } : {}),
       ...(user.rider ? { riderId: user.rider.id } : {}),
+      ...(user.adminProfile ? { adminLevel: user.adminProfile.level } : {}),
     };
   };
+}
+
+export function adminGuard(
+  prisma: PrismaClient,
+  config: AppConfig,
+  levels: AdminLevel[] = ['OPERATOR', 'SUPER_ADMIN'],
+) {
+  const authenticate = authGuard(prisma, config, ['ADMIN']);
+  return async function authorizeAdmin(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    await authenticate(request, reply);
+    if (!request.actor?.adminLevel || !levels.includes(request.actor.adminLevel)) throw forbidden();
+  };
+}
+
+export function requireAdminLevel(actor: Actor, levels: AdminLevel[]): void {
+  if (actor.role !== 'ADMIN' || !actor.adminLevel || !levels.includes(actor.adminLevel)) throw forbidden();
 }
 
 export function actorOf(request: FastifyRequest): Actor {
   if (!request.actor) throw unauthorized();
   return request.actor;
 }
-

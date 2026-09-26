@@ -1,7 +1,7 @@
 import { DeliveryMethod, type PrismaClient } from '@prisma/client';
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
-import { actorOf, authGuard } from '../auth/auth.js';
+import { actorOf, adminGuard, authGuard } from '../auth/auth.js';
 import type { AppConfig } from '../config.js';
 import {
   cancelOrder,
@@ -24,7 +24,7 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   const anyUser = authGuard(prisma, config);
   const customer = authGuard(prisma, config, ['CUSTOMER']);
   const merchant = authGuard(prisma, config, ['MERCHANT']);
-  const admin = authGuard(prisma, config, ['ADMIN']);
+  const admin = adminGuard(prisma, config);
 
   app.post<{
     Body: {
@@ -84,18 +84,23 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   app.post<{ Params: { orderId: string } }>('/merchant/orders/:orderId/ready', {
     preHandler: merchant,
     schema: { tags: ['merchant'], params: OrderIdParams },
-  }, async (request) => markOrderReady(prisma, actorOf(request), request.params.orderId));
+  }, async (request) => {
+    const actor = actorOf(request);
+    await markOrderReady(prisma, actor, request.params.orderId);
+    return getOrder(prisma, actor, request.params.orderId);
+  });
 
   app.post<{ Params: { orderId: string }; Body: { reason?: string } }>('/admin/orders/:orderId/exception', {
     preHandler: admin,
     schema: { tags: ['admin'], params: OrderIdParams, body: ReasonBody },
   }, async (request) => {
     const actor = actorOf(request);
+    const reason = request.body.reason ?? 'Marked as exception by administrator';
     await markOrderException(
       prisma,
       actor,
       request.params.orderId,
-      request.body.reason ?? 'Marked as exception by administrator',
+      reason,
     );
     return getOrder(prisma, actor, request.params.orderId);
   });

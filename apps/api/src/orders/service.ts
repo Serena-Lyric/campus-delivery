@@ -1,6 +1,7 @@
 import {
   DeliveryMethod,
   DeliveryTaskStatus,
+  ExceptionType,
   MerchantExposureState,
   OrderEventActorType,
   OrderEventType,
@@ -22,6 +23,7 @@ import { getOrderPricingView } from '../pricing/views.js';
 import { assertOrderAccess } from './access.js';
 import { generateShortCode, shortCodeDay } from './short-code.js';
 import { transitionOrder } from './state-machine.js';
+import { openExceptionCase } from '../exception-cases/service.js';
 
 export type CreateOrderInput = {
   merchantId: string;
@@ -45,7 +47,7 @@ const orderInclude = {
 type IncludedOrder = Prisma.OrderGetPayload<{ include: typeof orderInclude }>;
 
 function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown) {
-  const { assignments: _assignments, deliveryTask, settlement, riderSettlement, ...rest } = order;
+  const { deliveryTask, settlement, riderSettlement } = order;
   const task = deliveryTask
     ? {
       id: deliveryTask.id,
@@ -68,11 +70,53 @@ function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown) {
         ? settlement && { status: settlement.status, riderPayableMinor: settlement.riderPayableMinor }
         : settlement && { status: settlement.status };
   return {
-    ...rest,
+    id: order.id,
+    shortCode: order.shortCode,
+    coolingOffEndsAt: order.coolingOffEndsAt,
+    tipDeadline: order.tipDeadline,
+    destinationLabelSnapshot: order.destinationLabelSnapshot,
+    deliveryMethod: order.deliveryMethod,
+    deliveryVerificationMode: order.deliveryVerificationMode,
+    pickupVerificationMode: order.pickupVerificationMode,
+    deliveryEvidenceRequired: order.deliveryEvidenceRequired,
+    merchantPreparationStatus: order.merchantPreparationStatus,
+    merchantPreparationUpdatedAt: order.merchantPreparationUpdatedAt,
+    status: order.status,
+    merchant: order.merchant,
+    destinationLocation: order.destinationLocation,
+    items: order.items.map((item) => ({
+      id: item.id,
+      productName: item.productNameSnapshot,
+      unitPriceMinor: item.unitPriceMinor,
+      quantity: item.quantity,
+      subtotalMinor: item.subtotalMinor,
+    })),
+    events: order.events.map((event) => ({
+      id: event.id,
+      eventType: event.eventType,
+      fromStatus: event.fromStatus,
+      toStatus: event.toStatus,
+      reason: event.reason,
+      createdAt: event.createdAt,
+    })),
+    createdAt: order.createdAt,
+    updatedAt: order.updatedAt,
     pricing,
     deliveryTask: task,
     settlement: settlementView,
-    riderSettlement: actor.role === 'RIDER' || actor.role === 'ADMIN' ? riderSettlement : undefined,
+    riderSettlement: actor.role === 'RIDER' || actor.role === 'ADMIN'
+      ? riderSettlement && {
+        id: riderSettlement.id,
+        amountMinor: riderSettlement.amountMinor,
+        reservedMinor: riderSettlement.reservedMinor,
+        withdrawableMinor: Math.max(0, riderSettlement.amountMinor - riderSettlement.reservedMinor),
+        status: riderSettlement.status,
+        pendingUntil: riderSettlement.pendingUntil,
+        availableAt: riderSettlement.availableAt,
+        heldAt: riderSettlement.heldAt,
+        holdReason: riderSettlement.holdReason,
+      }
+      : undefined,
   };
 }
 
@@ -392,6 +436,17 @@ export async function markOrderException(prisma: PrismaClient, actor: Actor, ord
   return prisma.$transaction(async (tx) => {
     const order = await tx.order.findUnique({ where: { id: orderId }, include: { deliveryTask: true } });
     if (!order) throw notFound('Order');
+    const exception = await tx.exceptionEvent.create({
+      data: {
+        orderId,
+        reporterId: actor.id,
+        reporterRole: actor.role,
+        orderStatus: order.status,
+        type: ExceptionType.OTHER_NEEDS_REVIEW,
+        description: reason,
+      },
+    });
+    await openExceptionCase(tx, exception);
     await transitionOrder(tx, order.id, order.status, OrderStatus.EXCEPTION, actor, {
       eventType: OrderEventType.EXCEPTION_RECORDED,
       reason,

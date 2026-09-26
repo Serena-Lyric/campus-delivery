@@ -17,16 +17,33 @@ import { allowsUnattendedDelivery, loadPolicyConfig } from '../merchant-policy/p
 import { transitionOrder } from '../orders/state-machine.js';
 import { conflict, forbidden, notFound } from '../shared/errors.js';
 import { verifyOrderCode } from '../verification/service.js';
+import { assertRiderCanClaim } from '../riders/restrictions.js';
 
-const taskInclude = {
-  assignments: { orderBy: { claimedAt: 'desc' as const } },
+const taskSelect = {
+  id: true,
+  orderId: true,
+  status: true,
+  payoutMinor: true,
+  firstPublishedAt: true,
+  claimDeadline: true,
+  claimedAt: true,
+  pickedUpAt: true,
+  deliveredAt: true,
+  createdAt: true,
+  updatedAt: true,
   order: {
-    include: {
+    select: {
+      id: true,
+      shortCode: true,
+      status: true,
+      destinationLabelSnapshot: true,
+      deliveryMethod: true,
+      merchantPreparationStatus: true,
       merchant: { select: { id: true, name: true } },
       destinationLocation: { select: { id: true, name: true, type: true } },
     },
   },
-};
+} satisfies Prisma.DeliveryTaskSelect;
 
 async function requireEvidence(
   tx: Prisma.TransactionClient,
@@ -57,7 +74,7 @@ export function listAvailableTasks(prisma: PrismaClient, limit: number, offset: 
       riderId: null,
       claimDeadline: { gt: new Date() },
     },
-    include: taskInclude,
+    select: taskSelect,
     orderBy: { createdAt: 'asc' },
     take: limit,
     skip: offset,
@@ -68,7 +85,7 @@ export function listRiderTasks(prisma: PrismaClient, actor: Actor, limit: number
   if (!actor.riderId) throw forbidden();
   return prisma.deliveryTask.findMany({
     where: { assignments: { some: { riderId: actor.riderId } } },
-    include: taskInclude,
+    select: taskSelect,
     orderBy: { createdAt: 'desc' },
     take: limit,
     skip: offset,
@@ -95,6 +112,7 @@ export async function claimTask(
     await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${taskIdentity.orderId}::uuid FOR UPDATE`;
     const rider = await tx.rider.findUnique({ where: { id: riderId } });
     if (!rider || rider.status !== 'AVAILABLE') throw conflict('RIDER_UNAVAILABLE', 'Rider is not available to claim tasks');
+    await assertRiderCanClaim(tx, riderId, now);
 
     const activeCount = await tx.deliveryTask.count({
       where: {
@@ -163,7 +181,7 @@ export async function claimTask(
         claimLatencySeconds,
       },
     });
-    return tx.deliveryTask.findUniqueOrThrow({ where: { id: taskId }, include: taskInclude });
+    return tx.deliveryTask.findUniqueOrThrow({ where: { id: taskId }, select: taskSelect });
   });
 }
 
@@ -211,7 +229,7 @@ export async function pickUpTask(
       where: { id: task.id },
       data: { status: DeliveryTaskStatus.PICKED_UP, pickedUpAt: new Date() },
     });
-    return tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, include: taskInclude });
+    return tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect });
   });
 }
 
@@ -238,6 +256,20 @@ export async function deliverTask(
     if (task.riderId !== actor.riderId) throw forbidden();
     if (task.status !== DeliveryTaskStatus.PICKED_UP) throw conflict('TASK_STATE_CONFLICT', 'Task is not ready for delivery');
     if (!task.order.pricing) throw notFound('Order pricing');
+
+    const severeCase = await tx.exceptionCase.findFirst({
+      where: { orderId: task.orderId, category: { in: ['SEVERE_FOOD_DAMAGE', 'FOOD_LOST'] } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (
+      severeCase
+      && !(
+        severeCase.status === 'RESOLVED'
+        && ['REMAKE_AND_CONTINUE', 'CONTINUE_FULFILLMENT'].includes(severeCase.resolutionType ?? '')
+      )
+    ) {
+      throw conflict('SEVERE_EXCEPTION_UNRESOLVED', 'Severe damage or loss must be resolved before delivery can continue');
+    }
 
     const customerUnreachable = await tx.exceptionEvent.count({
       where: {
@@ -311,6 +343,6 @@ export async function deliverTask(
         ),
       },
     });
-    return tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, include: taskInclude });
+    return tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect });
   });
 }

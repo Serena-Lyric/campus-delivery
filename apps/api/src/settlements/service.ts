@@ -51,9 +51,18 @@ export async function listRiderSettlements(
   offset: number,
 ) {
   if (!actor.riderId) throw forbidden();
-  return prisma.riderSettlement.findMany({
+  const settlements = await prisma.riderSettlement.findMany({
     where: { riderId: actor.riderId },
-    include: {
+    select: {
+      id: true,
+      amountMinor: true,
+      reservedMinor: true,
+      status: true,
+      pendingUntil: true,
+      availableAt: true,
+      heldAt: true,
+      holdReason: true,
+      createdAt: true,
       order: {
         select: {
           id: true,
@@ -66,5 +75,9 @@ export async function listRiderSettlements(
     take: limit,
     skip: offset,
   });
+  return settlements.map((settlement) => ({
+    ...settlement,
+    withdrawableMinor: Math.max(0, settlement.amountMinor - settlement.reservedMinor),
+  }));
 }
 

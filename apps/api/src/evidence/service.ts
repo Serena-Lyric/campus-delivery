@@ -49,7 +49,7 @@ export async function createEvidence(
       (input.evidenceType === EvidenceType.RIDER_PICKUP_PHOTO && order.status === OrderStatus.CLAIMED)
       || (input.evidenceType === EvidenceType.DELIVERY_PHOTO && order.status === OrderStatus.PICKED_UP)
     );
-  const adminAllowed = actor.role === 'ADMIN';
+  const adminAllowed = actor.role === 'ADMIN' && actor.adminLevel === 'SUPER_ADMIN';
   if (!merchantAllowed && !riderAllowed && !adminAllowed) throw forbidden();
 
   const mediaReference = await storage.createReference(order.id, input.media);

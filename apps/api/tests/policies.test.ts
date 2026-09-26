@@ -72,7 +72,11 @@ describe('merchant exposure policy', () => {
     timeRisk: 'NORMAL' as const,
     completionRisk: 'NORMAL' as const,
     subsidyDependencyBps: null,
-    subsidizedClaimConversionBps: null,
+    subsidizedClaimRescueRateBps: null,
+    recoveryTerminalOrderCount: config.merchantExposureRecoveryMinimumSampleSize,
+    recoveryNoRiderAcceptedRateBps: 0,
+    recoverySubsidyDependencyBps: null,
+    recoverySubsidizedClaimRescueRateBps: null,
     exceptionCounts: {},
   };
 
@@ -103,13 +107,56 @@ describe('merchant exposure policy', () => {
       ...exposureFacts,
       currentState: MerchantExposureState.REDUCED,
       noRiderAcceptedRateBps: config.exposureNormalRecoveryThresholdBps + 1,
+      recoveryNoRiderAcceptedRateBps: config.exposureNormalRecoveryThresholdBps + 1,
       observableTerminalOrderCount: config.merchantRiskMinimumSampleSize,
     }, config).state).toBe(MerchantExposureState.REDUCED);
     expect(policy.evaluate({
       ...exposureFacts,
       currentState: MerchantExposureState.REDUCED,
       noRiderAcceptedRateBps: config.exposureNormalRecoveryThresholdBps,
+      recoveryNoRiderAcceptedRateBps: config.exposureNormalRecoveryThresholdBps,
       observableTerminalOrderCount: config.merchantRiskMinimumSampleSize,
+    }, config).state).toBe(MerchantExposureState.NORMAL);
+  });
+
+  it('uses subsidy health and keeps slow fulfillment from changing exposure by itself', () => {
+    const policy = new MerchantExposurePolicy();
+    expect(policy.evaluate({
+      ...exposureFacts,
+      timeRisk: 'SLOW',
+      currentState: MerchantExposureState.NORMAL,
+      noRiderAcceptedRateBps: 0,
+      observableTerminalOrderCount: config.merchantRiskMinimumSampleSize,
+    }, config).state).toBe(MerchantExposureState.NORMAL);
+    expect(policy.evaluate({
+      ...exposureFacts,
+      currentState: MerchantExposureState.NORMAL,
+      noRiderAcceptedRateBps: 0,
+      observableTerminalOrderCount: config.merchantRiskMinimumSampleSize,
+      subsidyDependencyBps: config.subsidyDependencyThresholdBps,
+      subsidizedClaimRescueRateBps: config.subsidyRescueThresholdBps - 1,
+    }, config)).toMatchObject({
+      state: MerchantExposureState.REDUCED,
+      reason: 'SUBSIDY_HEALTH_UNHEALTHY',
+    });
+  });
+
+  it('requires an independent recovery sample window before improving exposure', () => {
+    const policy = new MerchantExposurePolicy();
+    const input = {
+      ...exposureFacts,
+      currentState: MerchantExposureState.REDUCED,
+      noRiderAcceptedRateBps: 0,
+      observableTerminalOrderCount: config.merchantRiskMinimumSampleSize,
+      recoveryNoRiderAcceptedRateBps: 0,
+    };
+    expect(policy.evaluate({
+      ...input,
+      recoveryTerminalOrderCount: config.merchantExposureRecoveryMinimumSampleSize - 1,
+    }, config).state).toBe(MerchantExposureState.REDUCED);
+    expect(policy.evaluate({
+      ...input,
+      recoveryTerminalOrderCount: config.merchantExposureRecoveryMinimumSampleSize,
     }, config).state).toBe(MerchantExposureState.NORMAL);
   });
 });

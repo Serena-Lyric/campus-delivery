@@ -23,10 +23,21 @@ export async function registerExceptionRoutes(app: FastifyInstance, prisma: Pris
         evidenceIds: Type.Optional(Type.Array(Type.String({ format: 'uuid' }), { maxItems: 20 })),
       }),
     },
-  }, async (request, reply) => reply.status(201).send(await createExceptionEvent(
-    prisma,
-    actorOf(request),
-    request.params.orderId,
-    request.body,
-  )));
+  }, async (request, reply) => {
+    const event = await createExceptionEvent(prisma, actorOf(request), request.params.orderId, request.body);
+    return reply.status(201).send({
+      id: event.id,
+      orderId: event.orderId,
+      orderStatus: event.orderStatus,
+      type: event.type,
+      description: event.description,
+      createdAt: event.createdAt,
+      evidences: event.evidences.map((evidence) => ({
+        id: evidence.id,
+        evidenceType: evidence.evidenceType,
+        orderStage: evidence.orderStage,
+        createdAt: evidence.createdAt,
+      })),
+    });
+  });
 }

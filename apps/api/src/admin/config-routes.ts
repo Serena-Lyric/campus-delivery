@@ -1,14 +1,14 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
-import { actorOf, authGuard } from '../auth/auth.js';
+import { actorOf, adminGuard } from '../auth/auth.js';
 import type { AppConfig } from '../config.js';
 import { getBusinessConfig, updateBusinessConfig } from './config-service.js';
 
 const KeyParams = Type.Object({ key: Type.String({ minLength: 1, maxLength: 100 }) });
 
 export async function registerAdminConfigRoutes(app: FastifyInstance, prisma: PrismaClient, config: AppConfig) {
-  const admin = authGuard(prisma, config, ['ADMIN']);
+  const admin = adminGuard(prisma, config, ['SUPER_ADMIN']);
 
   app.get<{ Params: { key: string } }>('/admin/business-configs/:key', {
     preHandler: admin,

@@ -1,0 +1,357 @@
+import {
+  ExceptionCaseActionType,
+  ExceptionCaseStatus,
+  ExceptionResolutionType,
+  type ExceptionEvent,
+  type Prisma,
+  type PrismaClient,
+} from '@prisma/client';
+import { requireAdminLevel, type Actor } from '../auth/auth.js';
+import { conflict, forbidden, notFound } from '../shared/errors.js';
+import { DeterministicExceptionClassifier, type ExceptionClassifier } from '../exceptions/classifier.js';
+
+export async function openExceptionCase(
+  tx: Prisma.TransactionClient,
+  event: Pick<ExceptionEvent, 'id' | 'orderId' | 'type' | 'description'>,
+  classifier: ExceptionClassifier = new DeterministicExceptionClassifier(),
+) {
+  const classification = await classifier.classify({ type: event.type, description: event.description });
+  const exceptionCase = await tx.exceptionCase.create({
+    data: {
+      orderId: event.orderId,
+      exceptionEventId: event.id,
+      category: classification.category,
+      ...(classification.subtype ? { subtype: classification.subtype } : {}),
+      priority: classification.priority,
+      classifierSource: classifier.source,
+      classifierVersion: classifier.version,
+      classifierResult: classification as unknown as Prisma.InputJsonValue,
+      classifierConfidenceBps: classification.confidenceBps,
+    },
+  });
+  await tx.exceptionCaseAction.createMany({
+    data: [
+      { caseId: exceptionCase.id, type: ExceptionCaseActionType.CREATED, reason: 'EXCEPTION_EVENT_CREATED' },
+      {
+        caseId: exceptionCase.id,
+        type: ExceptionCaseActionType.CLASSIFIED,
+        reason: classifier.source,
+        metadata: classification as unknown as Prisma.InputJsonValue,
+      },
+    ],
+  });
+  return exceptionCase;
+}
+
+function assertAdmin(actor: Actor) {
+  requireAdminLevel(actor, ['OPERATOR', 'SUPER_ADMIN']);
+}
+
+export async function listExceptionCases(
+  prisma: PrismaClient,
+  actor: Actor,
+  status?: ExceptionCaseStatus,
+) {
+  assertAdmin(actor);
+  return prisma.exceptionCase.findMany({
+    ...(status ? { where: { status } } : {}),
+    select: {
+      id: true,
+      orderId: true,
+      category: true,
+      subtype: true,
+      priority: true,
+      status: true,
+      currentHandlerAdminId: true,
+      claimedAt: true,
+      lastActionAt: true,
+      version: true,
+      createdAt: true,
+    },
+    orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+    take: 100,
+  });
+}
+
+export async function getExceptionCaseForAdmin(prisma: PrismaClient, actor: Actor, caseId: string) {
+  assertAdmin(actor);
+  const value = await prisma.exceptionCase.findUnique({
+    where: { id: caseId },
+    select: {
+      id: true,
+      orderId: true,
+      category: true,
+      subtype: true,
+      priority: true,
+      status: true,
+      currentHandlerAdminId: true,
+      claimedAt: true,
+      lastActionAt: true,
+      resolutionType: true,
+      resolutionNote: true,
+      escalatedAt: true,
+      escalationReason: true,
+      version: true,
+      classifierSource: true,
+      classifierVersion: true,
+      classifierResult: true,
+      classifierConfidenceBps: true,
+      createdAt: true,
+      resolvedAt: true,
+      exceptionEvent: {
+        select: { id: true, reporterRole: true, orderStatus: true, type: true, description: true, createdAt: true },
+      },
+      order: {
+        select: {
+          status: true,
+          shortCode: true,
+          customerId: true,
+          merchantId: true,
+          deliveryTask: { select: { riderId: true, claimedAt: true, pickedUpAt: true, deliveredAt: true } },
+          pricing: {
+            select: {
+              itemSubtotalMinor: true,
+              customerDeliveryFeeMinor: true,
+              customerRefundMinor: true,
+              exceptionCompensationMinor: true,
+            },
+          },
+          events: {
+            select: { id: true, eventType: true, fromStatus: true, toStatus: true, reason: true, createdAt: true },
+            orderBy: { createdAt: 'asc' },
+          },
+          evidences: {
+            select: { id: true, evidenceType: true, actorRole: true, orderStage: true, mediaReference: true, note: true, createdAt: true },
+          },
+        },
+      },
+      actions: {
+        select: { id: true, type: true, actorId: true, previousHandlerAdminId: true, nextHandlerAdminId: true, reason: true, metadata: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      },
+      remakeProposal: { select: { id: true, message: true, status: true, respondedAt: true, createdAt: true } },
+      compensationObligation: {
+        select: {
+          id: true,
+          requiredCompensationMinor: true,
+          currentOrderReservedMinor: true,
+          otherUnwithdrawnReservedMinor: true,
+          riderVoluntaryPaymentMinor: true,
+          platformAdvancedMinor: true,
+          customerRefundMinor: true,
+          outstandingMinor: true,
+          status: true,
+        },
+      },
+    },
+  });
+  if (!value) throw notFound('Exception case');
+  return value;
+}
+
+export async function claimExceptionCase(prisma: PrismaClient, actor: Actor, caseId: string, expectedVersion: number) {
+  assertAdmin(actor);
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.exceptionCase.updateMany({
+      where: {
+        id: caseId,
+        version: expectedVersion,
+        currentHandlerAdminId: null,
+        status: ExceptionCaseStatus.OPEN,
+      },
+      data: {
+        currentHandlerAdminId: actor.id,
+        claimedAt: new Date(),
+        lastActionAt: new Date(),
+        status: ExceptionCaseStatus.IN_PROGRESS,
+        version: { increment: 1 },
+      },
+    });
+    if (updated.count !== 1) throw conflict('CASE_ALREADY_CLAIMED', 'Exception case is no longer unclaimed at this version');
+    await tx.exceptionCaseAction.create({
+      data: { caseId, type: ExceptionCaseActionType.CLAIMED, actorId: actor.id, nextHandlerAdminId: actor.id, reason: 'SELF_CLAIM' },
+    });
+    return tx.exceptionCase.findUniqueOrThrow({ where: { id: caseId } });
+  });
+}
+
+export async function releaseExceptionCase(
+  prisma: PrismaClient,
+  actor: Actor,
+  caseId: string,
+  expectedVersion: number,
+  reason: string,
+) {
+  assertAdmin(actor);
+  return prisma.$transaction(async (tx) => {
+    const current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
+    if (!current) throw notFound('Exception case');
+    if (current.currentHandlerAdminId !== actor.id && actor.adminLevel !== 'SUPER_ADMIN') throw forbidden();
+    const updated = await tx.exceptionCase.updateMany({
+      where: { id: caseId, version: expectedVersion, currentHandlerAdminId: current.currentHandlerAdminId },
+      data: {
+        currentHandlerAdminId: null,
+        claimedAt: null,
+        status: ExceptionCaseStatus.OPEN,
+        lastActionAt: new Date(),
+        version: { increment: 1 },
+      },
+    });
+    if (updated.count !== 1) throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before release');
+    await tx.exceptionCaseAction.create({
+      data: {
+        caseId,
+        type: ExceptionCaseActionType.RELEASED,
+        actorId: actor.id,
+        previousHandlerAdminId: current.currentHandlerAdminId,
+        reason,
+      },
+    });
+    return tx.exceptionCase.findUniqueOrThrow({ where: { id: caseId } });
+  });
+}
+
+export async function escalateExceptionCase(
+  prisma: PrismaClient,
+  actor: Actor,
+  caseId: string,
+  expectedVersion: number,
+  reason: string,
+) {
+  assertAdmin(actor);
+  return prisma.$transaction(async (tx) => {
+    const current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
+    if (!current) throw notFound('Exception case');
+    if (current.currentHandlerAdminId !== actor.id && actor.adminLevel !== 'SUPER_ADMIN') throw forbidden();
+    const now = new Date();
+    const updated = await tx.exceptionCase.updateMany({
+      where: { id: caseId, version: expectedVersion },
+      data: {
+        status: ExceptionCaseStatus.ESCALATED,
+        escalatedAt: now,
+        escalationReason: reason,
+        lastActionAt: now,
+        version: { increment: 1 },
+      },
+    });
+    if (updated.count !== 1) throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before escalation');
+    await tx.exceptionCaseAction.create({
+      data: { caseId, type: ExceptionCaseActionType.ESCALATED, actorId: actor.id, reason },
+    });
+    return tx.exceptionCase.findUniqueOrThrow({ where: { id: caseId } });
+  });
+}
+
+export async function takeoverExceptionCase(
+  prisma: PrismaClient,
+  actor: Actor,
+  caseId: string,
+  expectedVersion: number,
+  nextHandlerAdminId: string,
+  reason: string,
+) {
+  requireAdminLevel(actor, ['SUPER_ADMIN']);
+  return prisma.$transaction(async (tx) => {
+    const current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
+    if (!current) throw notFound('Exception case');
+    const target = await tx.user.findUnique({ where: { id: nextHandlerAdminId }, include: { adminProfile: true } });
+    if (!target?.adminProfile || target.role !== 'ADMIN') throw conflict('INVALID_ADMIN_HANDLER', 'Target user is not an administrator');
+    const now = new Date();
+    const updated = await tx.exceptionCase.updateMany({
+      where: { id: caseId, version: expectedVersion },
+      data: {
+        currentHandlerAdminId: nextHandlerAdminId,
+        claimedAt: now,
+        status: ExceptionCaseStatus.IN_PROGRESS,
+        lastActionAt: now,
+        version: { increment: 1 },
+      },
+    });
+    if (updated.count !== 1) throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before takeover');
+    await tx.exceptionCaseAction.create({
+      data: {
+        caseId,
+        type: ExceptionCaseActionType.TAKEN_OVER,
+        actorId: actor.id,
+        ...(current.currentHandlerAdminId ? { previousHandlerAdminId: current.currentHandlerAdminId } : {}),
+        nextHandlerAdminId,
+        reason,
+      },
+    });
+    return tx.exceptionCase.findUniqueOrThrow({ where: { id: caseId } });
+  });
+}
+
+export async function transferExceptionCase(
+  prisma: PrismaClient,
+  actor: Actor,
+  caseId: string,
+  expectedVersion: number,
+  nextHandlerAdminId: string,
+  reason: string,
+) {
+  assertAdmin(actor);
+  return prisma.$transaction(async (tx) => {
+    const current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
+    if (!current) throw notFound('Exception case');
+    if (current.currentHandlerAdminId !== actor.id && actor.adminLevel !== 'SUPER_ADMIN') throw forbidden();
+    const target = await tx.user.findUnique({ where: { id: nextHandlerAdminId }, include: { adminProfile: true } });
+    if (!target?.adminProfile || target.role !== 'ADMIN') throw conflict('INVALID_ADMIN_HANDLER', 'Target user is not an administrator');
+    const updated = await tx.exceptionCase.updateMany({
+      where: { id: caseId, version: expectedVersion, currentHandlerAdminId: current.currentHandlerAdminId },
+      data: { currentHandlerAdminId: nextHandlerAdminId, lastActionAt: new Date(), version: { increment: 1 } },
+    });
+    if (updated.count !== 1) throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before transfer');
+    await tx.exceptionCaseAction.create({
+      data: {
+        caseId,
+        type: ExceptionCaseActionType.TRANSFERRED,
+        actorId: actor.id,
+        previousHandlerAdminId: current.currentHandlerAdminId,
+        nextHandlerAdminId,
+        reason,
+      },
+    });
+    return tx.exceptionCase.findUniqueOrThrow({ where: { id: caseId } });
+  });
+}
+
+export async function resolveNonEconomicCase(
+  prisma: PrismaClient,
+  actor: Actor,
+  caseId: string,
+  expectedVersion: number,
+  resolutionType: Exclude<ExceptionResolutionType, 'REFUND_AND_CLOSE' | 'REMAKE_AND_CONTINUE'>,
+  note: string,
+) {
+  assertAdmin(actor);
+  return prisma.$transaction(async (tx) => {
+    const current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
+    if (!current) throw notFound('Exception case');
+    if (current.currentHandlerAdminId !== actor.id && actor.adminLevel !== 'SUPER_ADMIN') throw forbidden();
+    const waiting = resolutionType === ExceptionResolutionType.WAITING_FOR_INFORMATION;
+    const now = new Date();
+    const updated = await tx.exceptionCase.updateMany({
+      where: { id: caseId, version: expectedVersion },
+      data: {
+        status: waiting ? ExceptionCaseStatus.WAITING_FOR_PARTICIPANT : ExceptionCaseStatus.RESOLVED,
+        resolutionType,
+        resolutionNote: note,
+        lastActionAt: now,
+        ...(!waiting ? { resolvedAt: now } : {}),
+        version: { increment: 1 },
+      },
+    });
+    if (updated.count !== 1) throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before resolution');
+    await tx.exceptionCaseAction.create({
+      data: {
+        caseId,
+        type: waiting ? ExceptionCaseActionType.REQUESTED_INFORMATION : ExceptionCaseActionType.RESOLVED,
+        actorId: actor.id,
+        reason: note,
+        metadata: { resolutionType },
+      },
+    });
+    return tx.exceptionCase.findUniqueOrThrow({ where: { id: caseId } });
+  });
+}

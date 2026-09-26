@@ -1,10 +1,10 @@
 # campus-delivery
 
-campus-delivery 是面向校园半封闭场景的即时配送平台工程。当前版本在第一阶段订单池基础上加入订单冷静期、人工短码、交付方式、交接验证、Evidence、结构化异常、角色化时间线、骑手持单限制和待结算资金。
+campus-delivery 是面向校园半封闭场景的即时配送平台工程。当前版本覆盖订单池、市场报价、履约证据、商家风险灰度、骑手未取餐容错、异常订单池、赔付资金事实和管理员分权。
 
 ## 当前阶段
 
-本阶段仍是模块化单体 REST API。当前重点是 24 小时用户骑手激励窗口、商家履约事实、独立时间/完成风险提示，以及带最低样本量和恢复滞后的曝光策略基础。
+本阶段仍是模块化单体 REST API。当前重点是骑手未取餐取消/冷却、取餐后严重餐损或丢失、异常共享池、赔付 reservation，以及 OPERATOR / SUPER_ADMIN 最小权限边界。
 
 ## 技术栈
 
@@ -23,6 +23,9 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
       src/delivery/           订单池、持单限制、履约
       src/evidence/           Evidence 和媒体抽象
       src/exceptions/         结构化异常
+      src/exception-cases/    异常共享池、领取、处理与审计
+      src/compensation/       赔付义务、资金 reservation 与平台垫付
+      src/riders/             骑手取消、暂停、冷却与管理员 override
       src/merchant-risk/      商家履约指标、风险结论和曝光策略
       src/verification/       一次性码
       src/timeline/           角色化时间线
@@ -72,10 +75,16 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 - platformSubsidyMinIntervalSeconds：演示补贴最短间隔。
 - merchantSubsidyBudgetMaxUsageBpsPerOrder：单订单商家风险预算占用比例上限。
 - merchantRiskWindowOrderCount / merchantRiskMinimumSampleSize：履约统计窗口和最低样本量。
+- merchantTrialExposureBps：TRIAL 商家的稳定用户灰度比例；Seed 演示值不是长期规则。
+- merchantExposureRecoveryWindowOrderCount / merchantExposureRecoveryMinimumSampleSize：独立恢复观察窗口与最低样本。
 - slowFulfillmentThresholdSeconds：独立时间风险阈值。
 - completionRiskElevatedThresholdBps / completionRiskHighThresholdBps：可观察完成风险阈值。
 - exposure*ThresholdBps：曝光状态进入与恢复阈值；恢复阈值与进入阈值分离以避免抖动。
 - subsidyDependencyThresholdBps / subsidyRescueThresholdBps：补贴依赖和救援效果事实阈值，不直接改变曝光。
+- riderDailyFreeCancelLimit：单日未取餐无责取消/警告阈值，Seed 为 2。
+- riderCancellationRollingWindowDays：滚动计数窗口，Seed 为 7 天。
+- riderCancellationCooldownThreshold / riderWarningCooldownThreshold：累计取消与 warning 两条冷却路径阈值。
+- riderCancellationCooldownSeconds / riderWarningCooldownSeconds：两条冷却路径时长，Seed 为 2 天。
 - unattendedDeliveryMethods：允许无人接触投递的方式。
 - handoffCodeDeliveryMethods：正常情况下要求交付码的方式。
 
@@ -89,7 +98,8 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 | 商家 | 00000000-0000-4000-8000-000000000002 |
 | 骑手 A | 00000000-0000-4000-8000-000000000003 |
 | 骑手 B | 00000000-0000-4000-8000-000000000004 |
-| 管理员 | 00000000-0000-4000-8000-000000000005 |
+| 超级管理员 | 00000000-0000-4000-8000-000000000005 |
+| 普通管理员 | 00000000-0000-4000-8000-000000000006 |
 
 Seed 包含正常订单、冷静期订单、等待骑手订单、配送中订单、需要交付码订单、用户失联订单、现场 Evidence 订单，以及有争议且骑手结算为 HELD 的订单。
 
@@ -112,7 +122,7 @@ CREATED 表示冷静期。后台处理器在 coolingOffEndsAt 到期后原子推
 
 商家确认后订单立即进入骑手池并固定 firstPublishedAt 与 claimDeadline。商家“备餐中/可取”只是自报市场信号，真实商家到骑手交接以 pickup 为准。
 
-正常流程不提供骑手接单后主动 abandon。接单即形成履约承诺。到达固定 claimDeadline 仍无人接单时进入 NO_RIDER_ACCEPTED，原始截止时间不会刷新，用户已记录支付金额和未锁定骑手激励进入退款记录边界。
+接单即形成履约承诺，不提供无限制 abandon。骑手仅可在实际取餐前使用有限无责取消；订单回到原池但原 firstPublishedAt、claimDeadline 和资金事实不刷新。到达原 claimDeadline 时仍无人承接则进入 NO_RIDER_ACCEPTED。
 
 ## 短订单码
 
@@ -136,11 +146,19 @@ Evidence 只提供争议事实，不自动代表任何一方有责。普通低�
 
 ## 异常与用户失联
 
-结构化异常包括 CUSTOMER_UNREACHABLE、WRONG_ADDRESS、MERCHANT_DELAY、ITEM_MISSING、ITEM_DAMAGED、RIDER_DELIVERY_EXCEPTION 和 DELIVERY_DISPUTE。
+结构化异常进一步区分轻微损坏/延迟、严重餐损、餐品丢失、投诉争议和其他待审。ExceptionEvent 保存事实，ExceptionCase 保存运营处理状态，两者不混用。
 
 允许无人接触投递时，用户失联订单可在骑手提交 DELIVERY_PHOTO 后完成。不允许无人接触投递时，订单进入 EXCEPTION。系统不自动判责或扣款。
 
 DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除历史余额。
+
+严重餐损/丢失后，骑手可提出补餐继续；用户明确接受后才能恢复送达。用户拒绝后 case 回到共享池。骑手主动赔付或管理员确认标准退款时，订单进入 EXCEPTION，订单本体退款事实立即记录，不等待骑手资金补足；RiderTip 不被自动清零或重算。
+
+## 骑手未取餐取消与限制
+
+每次未取餐取消保存不可变事件、结构化原因、校园自然日、当日计数、7 天计数和 warning 事实。单日第 2 次暂停当天新 claim；7 天累计 4 次或累计 2 次 warning 分别进入配置化冷却。claim 服务只阻止新接单，不改写骑手已经持有的其他任务。
+
+限制状态保存类型、来源、开始/结束、状态和审计。只有 SUPER_ADMIN 可以创建、提前解除或调整跨订单限制；OPERATOR 无权修改。
 
 ## 市场报价与价格快照
 
@@ -168,15 +186,23 @@ DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除�
 
 ## 商家履约风险与曝光
 
-Merchant fulfillment metrics 按配置窗口从订单、任务、接单快照、补贴和结构化异常中按需计算。它记录可观察事实，不把用户失联、地址错误、骑手或系统异常自动归责给商家。完成率只使用 DELIVERED 与 NO_RIDER_ACCEPTED 这两个可观察终态；其他异常按类型单独计数。
+Merchant fulfillment metrics 使用相互独立的终态、接单、补贴终态和恢复样本查询。完成率只使用 DELIVERED 与 NO_RIDER_ACCEPTED；补贴救援率分母只包含已到可判断终态的 subsidized claim，进行中订单不会算失败。
 
-timeRisk 与 completionRisk 独立返回。慢但完成正常的商家可以保持 NORMAL；样本不足时返回 UNKNOWN，并允许新商家保持 TRIAL。曝光策略使用最低样本量、分离的进入/恢复阈值和逐级恢复，HIDDEN/SUSPENDED 只由管理员明确控制。每次实际状态变化保存策略版本、前后状态、风险结论、指标快照、原因和操作者。
+timeRisk 与 completionRisk 独立返回。曝光策略实际使用完成/无人承接风险和“高补贴依赖 + 低救援率”；SLOW 和未归责 exceptionCounts 只作事实参考。恢复使用独立 window/minimum sample。TRIAL 通过 merchantId + customerId 稳定 hash 灰度，种子商家可显式覆盖为 100%；HIDDEN/SUSPENDED 始终不可见。
 
 角色信息隔离：用户目录只看到简化风险提示；商家看到自己的履约事实摘要，不看到平台内部补贴策略；管理员看到完整指标、补贴事实和曝光决策历史。
 
 ## 管理员业务配置
 
-管理员可通过后端 API 读取和更新版本化 BusinessConfig。每次修改记录操作者、前后版本、前后 payload、时间和原因。订单接单窗口、报价冷却和结算等待等会形成数据库时间或价格快照，后续配置修改不追溯改变既有承诺。
+只有 SUPER_ADMIN 可读取/更新全局版本化 BusinessConfig、执行平台补贴、调整曝光策略、管理员级别和骑手跨订单限制。OPERATOR 可领取异常 case、查看必要事实、转交/释放/升级并完成系统定义的标准处理，但不能绕过 ledger 任意输入扣款。
+
+## 异常订单池与赔付资金
+
+异常池使用 `ExceptionCase.version` 与原子条件更新保证同一 case 只有一个有效处理人。claim、release、transfer、takeover、escalate 和 resolve 都记录不可变 action。退款/冻结使用 case row lock、唯一 idempotency key、唯一 obligation 和事务，重试不会重复执行。
+
+赔付义务分别记录本单 settlement reservation、其他未提现 settlement reservation、骑手主动支付、平台垫付、用户退款和 outstanding。`RiderSettlement.reservedMinor` 支持部分冻结；并发事务按固定顺序锁定结算行，同一余额不能重复占用。真实支付、提现、未来收入自动抵扣和长期追偿尚未实现。
+
+异常分类提供类型化 `ExceptionClassifier`、确定性 fallback 和 manual fallback。分类来源/版本/置信度与管理员最终结论分开保存；当前没有真实 Jev 网络调用，AI 不执行资金或责任动作。
 
 ## 骑手持单限制
 
@@ -188,7 +214,7 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 
 送达后资金状态为 PENDING，等待期结束且不存在未解决争议时变为 AVAILABLE，争议可使其变为 HELD。
 
-当前没有真实提现、自动扣款、负余额或历史余额追偿。
+当前没有真实提现、支付网关、无限负余额或历史余额自动追偿；只有关联明确 exception case / compensation obligation 的未提现资金 reservation。
 
 ## API
 
@@ -216,16 +242,37 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 | GET | /delivery-tasks/available | 骑手 | 查看公开任务 |
 | GET | /delivery-tasks/mine | 骑手 | 查看参与过的任务 |
 | POST | /delivery-tasks/:taskId/claim | 骑手 | 原子抢单 |
+| POST | /delivery-tasks/:taskId/pre-pickup-cancel | 骑手 | 取餐前有限无责取消并回原池 |
 | POST | /delivery-tasks/:taskId/verify-pickup-code | 骑手 | 验证取餐码 |
 | POST | /delivery-tasks/:taskId/pick-up | 骑手 | 验证并取餐 |
 | POST | /delivery-tasks/:taskId/deliver | 骑手 | 验证并送达 |
 | GET | /riders/me/settlements | 骑手 | 查看待结算资金 |
-| POST | /admin/orders/:orderId/exception | 管理员 | 标记订单异常 |
-| POST | /admin/orders/:orderId/platform-subsidies | 管理员 | 逐步追加平台补贴 |
-| GET | /admin/business-configs/:key | 管理员 | 查看配置和审计 |
-| PUT | /admin/business-configs/:key | 管理员 | 创建新配置版本 |
-| GET | /admin/merchants/:merchantId/fulfillment-risk | 管理员 | 完整履约指标、风险与曝光审计 |
-| POST | /admin/merchants/:merchantId/exposure/evaluate | 管理员 | 按当前策略评估或明确强制曝光状态 |
+| GET | /riders/me/restrictions | 骑手 | 查看取消计数、warning、暂停和冷却 |
+| POST | /rider/orders/:orderId/severe-exception | 骑手 | 报告严重餐损或丢失 |
+| POST | /exception-cases/:caseId/remake-proposal | 骑手 | 提出补餐继续 |
+| POST | /exception-cases/:caseId/voluntary-compensation | 骑手 | 主动选择原价赔付 |
+| GET | /riders/me/compensations | 骑手 | 查看自身赔付/冻结摘要 |
+| POST | /exception-cases/:caseId/remake-response | 用户 | 接受或拒绝补餐继续 |
+| GET | /orders/:orderId/exception-cases | 订单相关方 | 角色隔离异常状态/退款视图 |
+| GET | /admin/exception-cases | OPERATOR/SUPER_ADMIN | 浏览/筛选异常池 |
+| GET | /admin/exception-cases/:caseId | OPERATOR/SUPER_ADMIN | 查看 case 所需证据、时间线与订单资金事实 |
+| POST | /admin/exception-cases/:caseId/claim | OPERATOR/SUPER_ADMIN | CAS 原子领取 |
+| POST | /admin/exception-cases/:caseId/release | 当前处理人/SUPER_ADMIN | 释放回共享池 |
+| POST | /admin/exception-cases/:caseId/transfer | 当前处理人/SUPER_ADMIN | 转交处理人 |
+| POST | /admin/exception-cases/:caseId/escalate | 当前处理人/SUPER_ADMIN | 升级复杂案件 |
+| POST | /admin/exception-cases/:caseId/resolve | 当前处理人/SUPER_ADMIN | 标准人工判断或退款结束 |
+| POST | /admin/exception-cases/:caseId/takeover | SUPER_ADMIN | 接管/重新分配 case |
+| POST | /admin/exception-cases/:caseId/release-compensation | 当前处理人/SUPER_ADMIN | 幂等释放 reservation |
+| POST | /admin/orders/:orderId/exception | OPERATOR/SUPER_ADMIN | 标记订单异常并创建 case |
+| POST | /admin/orders/:orderId/platform-subsidies | SUPER_ADMIN | 逐步追加平台补贴 |
+| GET | /admin/business-configs/:key | SUPER_ADMIN | 查看全局配置和审计 |
+| PUT | /admin/business-configs/:key | SUPER_ADMIN | 创建新配置版本 |
+| GET | /admin/merchants/:merchantId/fulfillment-risk | SUPER_ADMIN | 完整履约指标、风险与曝光审计 |
+| POST | /admin/merchants/:merchantId/exposure/evaluate | SUPER_ADMIN | 评估或明确强制曝光状态 |
+| POST | /admin/riders/:riderId/restrictions | SUPER_ADMIN | 创建人工骑手限制 |
+| GET | /admin/riders/:riderId/restrictions | SUPER_ADMIN | 查看取消计数、限制和完整审计 |
+| PATCH | /admin/rider-restrictions/:restrictionId | SUPER_ADMIN | 解除或调整限制 |
+| PUT | /admin/users/:userId/admin-profile | SUPER_ADMIN | 管理管理员级别 |
 
 ## 测试与构建
 
@@ -234,7 +281,7 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
     pnpm test:integration
     pnpm build
 
-集成测试使用真实 PostgreSQL，覆盖冷静期竞态、商家确认即发布、报价历史与冷却、改价和接单并发快照、24 小时用户激励边界与送达后追加、固定接单截止时间、无人承接退款边界、逐步补贴约束、补贴与曝光解耦、履约指标与风险角色视图、TRIAL/UNKNOWN、曝光审计、自然/补贴样本隔离、配置审计、双骑手抢单、持单上限、验证码、Evidence、用户失联、待结算和时间线过滤。
+集成测试使用真实 PostgreSQL，覆盖既有订单/报价/结算流程，以及 TRIAL 灰度、角色 DTO 负向泄漏、终态/rescue 样本、取餐前取消、校园时区日界、两条冷却路径、限制 override、补餐确认、异常并发领取、处理权转移、幂等退款/释放、并发 reservation、平台垫付、管理员分权和 OpenAPI 路径。
 
 ## 已实现
 
@@ -257,6 +304,14 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 - 商家履约事实指标与结构化异常计数
 - 独立 timeRisk / completionRisk 和 TRIAL/UNKNOWN 语义
 - 带最低样本、进入/恢复滞后和审计的曝光策略
+- TRIAL 稳定灰度 gate 与种子覆盖
+- 终态/接单/补贴救援/恢复样本集合分离
+- 骑手未取餐取消、日内 warning、两条滚动冷却路径和 override 审计
+- 严重餐损/丢失、补餐提议与用户确认
+- ExceptionCase 共享池、单处理人 CAS、转交/接管/升级审计
+- Compensation obligation、部分 settlement reservation、主动支付、平台垫付与 outstanding
+- OPERATOR / SUPER_ADMIN 分权和管理员级别审计
+- 类型化异常分类 adapter 与确定性/manual fallback（无真实 Jev 调用）
 - 补贴使用事实与曝光状态解耦
 - 管理员配置版本和审计
 - 角色隔离价格视图
@@ -281,6 +336,8 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 - 用户何时必须使用交付码
 - 异常订单判责规则
 - 赔付比例
+- 平台垫付后的长期追偿、未来收入抵扣和骑手恢复接单规则
+- 普通管理员资金权限的更细粒度授权与二次审批
 - 用户失联等待时间
 - 错误地址责任规则
 - 真实媒体存储

@@ -1,10 +1,10 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
-import type { Actor } from '../auth/auth.js';
+import { requireAdminLevel, type Actor } from '../auth/auth.js';
 import { validatePolicyPayload } from '../merchant-policy/policies.js';
-import { forbidden, notFound } from '../shared/errors.js';
+import { notFound } from '../shared/errors.js';
 
 export async function getBusinessConfig(prisma: PrismaClient, actor: Actor, key: string) {
-  if (actor.role !== 'ADMIN') throw forbidden();
+  requireAdminLevel(actor, ['SUPER_ADMIN']);
   const config = await prisma.businessConfig.findFirst({
     where: { key, isActive: true },
     orderBy: { version: 'desc' },
@@ -25,7 +25,7 @@ export async function updateBusinessConfig(
   payload: Prisma.InputJsonValue,
   reason: string,
 ) {
-  if (actor.role !== 'ADMIN') throw forbidden();
+  requireAdminLevel(actor, ['SUPER_ADMIN']);
   const validatedPayload = key === 'ORDER_POLICY'
     ? validatePolicyPayload(payload as Prisma.JsonValue)
     : payload;

@@ -33,6 +33,9 @@ export const PolicyConfigSchema = Type.Object({
   requireHandoffCodeForAllOrders: Type.Boolean(),
   merchantRiskWindowOrderCount: Type.Integer({ minimum: 1, maximum: 1000 }),
   merchantRiskMinimumSampleSize: Type.Integer({ minimum: 1, maximum: 1000 }),
+  merchantTrialExposureBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
+  merchantExposureRecoveryMinimumSampleSize: Type.Integer({ minimum: 1, maximum: 1000 }),
+  merchantExposureRecoveryWindowOrderCount: Type.Integer({ minimum: 1, maximum: 1000 }),
   slowFulfillmentThresholdSeconds: Type.Integer({ minimum: 1 }),
   completionRiskElevatedThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
   completionRiskHighThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
@@ -44,6 +47,12 @@ export const PolicyConfigSchema = Type.Object({
   exposureLimitedRecoveryThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
   subsidyDependencyThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
   subsidyRescueThresholdBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
+  riderDailyFreeCancelLimit: Type.Integer({ minimum: 1 }),
+  riderCancellationRollingWindowDays: Type.Integer({ minimum: 1 }),
+  riderCancellationCooldownThreshold: Type.Integer({ minimum: 1 }),
+  riderWarningCooldownThreshold: Type.Integer({ minimum: 1 }),
+  riderCancellationCooldownSeconds: Type.Integer({ minimum: 1 }),
+  riderWarningCooldownSeconds: Type.Integer({ minimum: 1 }),
 }, { additionalProperties: false });
 
 export type PolicyConfig = Static<typeof PolicyConfigSchema>;
@@ -65,6 +74,9 @@ export function validatePolicyPayload(payload: Prisma.JsonValue): PolicyConfig {
   }
   if (config.merchantRiskMinimumSampleSize > config.merchantRiskWindowOrderCount) {
     throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Risk minimum sample size cannot exceed the order window');
+  }
+  if (config.merchantExposureRecoveryMinimumSampleSize > config.merchantExposureRecoveryWindowOrderCount) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Recovery minimum sample size cannot exceed the recovery window');
   }
   if (config.completionRiskElevatedThresholdBps > config.completionRiskHighThresholdBps) {
     throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Completion risk thresholds must be ordered');

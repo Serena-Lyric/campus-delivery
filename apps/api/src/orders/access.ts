@@ -9,7 +9,7 @@ type AccessibleOrder = {
 };
 
 export function canAccessOrder(actor: Actor, order: AccessibleOrder): boolean {
-  return Boolean(actor.role === 'ADMIN'
+  return Boolean((actor.role === 'ADMIN' && actor.adminLevel === 'SUPER_ADMIN')
     || (actor.role === 'CUSTOMER' && order.customerId === actor.id)
     || (actor.role === 'MERCHANT' && order.merchantId === actor.merchantId)
     || (actor.role === 'RIDER' && (

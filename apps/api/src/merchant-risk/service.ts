@@ -5,9 +5,9 @@ import {
   type Prisma,
   type PrismaClient,
 } from '@prisma/client';
-import type { Actor } from '../auth/auth.js';
+import { requireAdminLevel, type Actor } from '../auth/auth.js';
 import { loadPolicyConfig, type PolicyConfig } from '../merchant-policy/policies.js';
-import { forbidden, notFound } from '../shared/errors.js';
+import { notFound } from '../shared/errors.js';
 import { classifyMerchantRisk, MerchantExposurePolicy } from './policies.js';
 
 function average(values: number[]): number | null {
@@ -31,43 +31,73 @@ export async function getMerchantFulfillmentMetrics(
 ) {
   const merchant = await prisma.merchant.findUnique({ where: { id: merchantId }, select: { id: true } });
   if (!merchant) throw notFound('Merchant');
-  const tasks = await prisma.deliveryTask.findMany({
-    where: { order: { merchantId }, firstPublishedAt: { not: null } },
-    orderBy: { firstPublishedAt: 'desc' },
-    take: config.merchantRiskWindowOrderCount,
-    include: {
-      assignments: { orderBy: { claimedAt: 'asc' }, take: 1 },
-      order: {
-        select: {
-          status: true,
-          pricing: { select: { platformSubsidyMinor: true } },
-          exceptions: { select: { type: true } },
-        },
+  const terminalStatuses = [OrderStatus.DELIVERED, OrderStatus.NO_RIDER_ACCEPTED];
+  const [terminalTasks, claims, subsidizedTerminalClaims, publishedTasks, exceptions, recoveryTasks] = await Promise.all([
+    prisma.deliveryTask.findMany({
+      where: { order: { merchantId, status: { in: terminalStatuses } }, firstPublishedAt: { not: null } },
+      orderBy: { firstPublishedAt: 'desc' },
+      take: config.merchantRiskWindowOrderCount,
+      include: {
+        assignments: { orderBy: { claimedAt: 'asc' }, take: 1 },
+        order: { select: { status: true, pricing: { select: { platformSubsidyMinor: true } } } },
       },
-    },
-  });
-  const delivered = tasks.filter((task) => task.order.status === OrderStatus.DELIVERED);
-  const noRiderAccepted = tasks.filter((task) => task.order.status === OrderStatus.NO_RIDER_ACCEPTED);
+    }),
+    prisma.deliveryAssignment.findMany({
+      where: { order: { merchantId } },
+      orderBy: { claimedAt: 'desc' },
+      take: config.merchantRiskWindowOrderCount,
+      select: { claimLatencySeconds: true, claimSampleType: true },
+    }),
+    prisma.deliveryAssignment.findMany({
+      where: {
+        claimSampleType: ClaimSampleType.SUBSIDIZED,
+        order: { merchantId, status: { in: terminalStatuses } },
+      },
+      orderBy: { claimedAt: 'desc' },
+      take: config.merchantRiskWindowOrderCount,
+      select: { order: { select: { status: true } } },
+    }),
+    prisma.deliveryTask.findMany({
+      where: { order: { merchantId }, firstPublishedAt: { not: null } },
+      orderBy: { firstPublishedAt: 'desc' },
+      take: config.merchantRiskWindowOrderCount,
+      select: { order: { select: { status: true, pricing: { select: { platformSubsidyMinor: true } } } } },
+    }),
+    prisma.exceptionEvent.findMany({
+      where: { order: { merchantId } },
+      orderBy: { createdAt: 'desc' },
+      take: config.merchantRiskWindowOrderCount,
+      select: { type: true },
+    }),
+    prisma.deliveryTask.findMany({
+      where: { order: { merchantId, status: { in: terminalStatuses } }, firstPublishedAt: { not: null } },
+      orderBy: { firstPublishedAt: 'desc' },
+      take: config.merchantExposureRecoveryWindowOrderCount,
+      select: { order: { select: { status: true, pricing: { select: { platformSubsidyMinor: true } } } } },
+    }),
+  ]);
+  const delivered = terminalTasks.filter((task) => task.order.status === OrderStatus.DELIVERED);
+  const noRiderAccepted = terminalTasks.filter((task) => task.order.status === OrderStatus.NO_RIDER_ACCEPTED);
   const observableTerminalOrderCount = delivered.length + noRiderAccepted.length;
-  const claimed = tasks.flatMap((task) => task.assignments.map((assignment) => ({ task, assignment })));
-  const naturalClaims = claimed.filter(({ assignment }) => assignment.claimSampleType === ClaimSampleType.NATURAL);
-  const subsidizedClaims = claimed.filter(({ assignment }) => assignment.claimSampleType === ClaimSampleType.SUBSIDIZED);
-  const subsidizedDelivered = subsidizedClaims.filter(({ task }) => task.order.status === OrderStatus.DELIVERED);
-  const claimToPickup = tasks.map((task) => elapsedSeconds(task.claimedAt, task.pickedUpAt)).filter((value): value is number => value !== null);
-  const pickupToDelivery = tasks.map((task) => elapsedSeconds(task.pickedUpAt, task.deliveredAt)).filter((value): value is number => value !== null);
+  const naturalClaims = claims.filter((assignment) => assignment.claimSampleType === ClaimSampleType.NATURAL);
+  const subsidizedClaims = claims.filter((assignment) => assignment.claimSampleType === ClaimSampleType.SUBSIDIZED);
+  const subsidizedRescued = subsidizedTerminalClaims.filter(({ order }) => order.status === OrderStatus.DELIVERED);
+  const claimToPickup = terminalTasks.map((task) => elapsedSeconds(task.claimedAt, task.pickedUpAt)).filter((value): value is number => value !== null);
+  const pickupToDelivery = terminalTasks.map((task) => elapsedSeconds(task.pickedUpAt, task.deliveredAt)).filter((value): value is number => value !== null);
   const totalFulfillment = delivered.map((task) => elapsedSeconds(task.firstPublishedAt, task.deliveredAt)).filter((value): value is number => value !== null);
   const exceptionCounts: Record<string, number> = {};
-  for (const task of tasks) {
-    for (const exception of task.order.exceptions) {
-      exceptionCounts[exception.type] = (exceptionCounts[exception.type] ?? 0) + 1;
-    }
+  for (const exception of exceptions) {
+    exceptionCounts[exception.type] = (exceptionCounts[exception.type] ?? 0) + 1;
   }
-  const platformSubsidyUsedMinor = tasks.reduce((sum, task) => sum + (task.order.pricing?.platformSubsidyMinor ?? 0), 0);
+  const platformSubsidyUsedMinor = publishedTasks.reduce((sum, task) => sum + (task.order.pricing?.platformSubsidyMinor ?? 0), 0);
   const completedOrderSubsidyMinor = delivered.reduce((sum, task) => sum + (task.order.pricing?.platformSubsidyMinor ?? 0), 0);
+  const recoveryNoRiderCount = recoveryTasks.filter(({ order }) => order.status === OrderStatus.NO_RIDER_ACCEPTED).length;
+  const recoverySubsidized = recoveryTasks.filter(({ order }) => (order.pricing?.platformSubsidyMinor ?? 0) > 0);
+  const recoverySubsidizedDelivered = recoverySubsidized.filter(({ order }) => order.status === OrderStatus.DELIVERED);
 
   return {
     windowOrderCount: config.merchantRiskWindowOrderCount,
-    publishedOrderCount: tasks.length,
+    publishedOrderCount: publishedTasks.length,
     observableTerminalOrderCount,
     deliveredOrderCount: delivered.length,
     noRiderAcceptedCount: noRiderAccepted.length,
@@ -77,24 +107,40 @@ export async function getMerchantFulfillmentMetrics(
     noRiderAcceptedRateBps: observableTerminalOrderCount === 0
       ? null
       : Math.floor(noRiderAccepted.length * 10_000 / observableTerminalOrderCount),
-    averageClaimLatencySeconds: average(claimed.map(({ assignment }) => assignment.claimLatencySeconds)),
-    claimLatencyP50Seconds: percentile(claimed.map(({ assignment }) => assignment.claimLatencySeconds), 0.5),
-    claimLatencyP90Seconds: percentile(claimed.map(({ assignment }) => assignment.claimLatencySeconds), 0.9),
+    claimSampleCount: claims.length,
+    averageClaimLatencySeconds: average(claims.map((assignment) => assignment.claimLatencySeconds)),
+    claimLatencyP50Seconds: percentile(claims.map((assignment) => assignment.claimLatencySeconds), 0.5),
+    claimLatencyP90Seconds: percentile(claims.map((assignment) => assignment.claimLatencySeconds), 0.9),
     averageClaimToPickupSeconds: average(claimToPickup),
     averagePickupToDeliverySeconds: average(pickupToDelivery),
     averageTotalFulfillmentSeconds: average(totalFulfillment),
     naturalClaimCount: naturalClaims.length,
     subsidizedClaimCount: subsidizedClaims.length,
-    subsidyDependencyBps: claimed.length === 0 ? null : Math.floor(subsidizedClaims.length * 10_000 / claimed.length),
-    subsidizedClaimConversionBps: subsidizedClaims.length === 0
+    subsidyDependencyBps: claims.length === 0 ? null : Math.floor(subsidizedClaims.length * 10_000 / claims.length),
+    subsidizedTerminalClaimCount: subsidizedTerminalClaims.length,
+    subsidizedRescuedOrderCount: subsidizedRescued.length,
+    subsidizedClaimRescueRateBps: subsidizedTerminalClaims.length === 0
       ? null
-      : Math.floor(subsidizedDelivered.length * 10_000 / subsidizedClaims.length),
+      : Math.floor(subsidizedRescued.length * 10_000 / subsidizedTerminalClaims.length),
     platformSubsidyUsedMinor,
     completedOrderSubsidyMinor,
     platformSubsidyPerCompletedOrderMinor: delivered.length === 0
       ? null
       : Math.floor(completedOrderSubsidyMinor / delivered.length),
     exceptionCounts,
+    recovery: {
+      windowOrderCount: config.merchantExposureRecoveryWindowOrderCount,
+      terminalOrderCount: recoveryTasks.length,
+      noRiderAcceptedRateBps: recoveryTasks.length === 0
+        ? null
+        : Math.floor(recoveryNoRiderCount * 10_000 / recoveryTasks.length),
+      subsidyDependencyBps: recoveryTasks.length === 0
+        ? null
+        : Math.floor(recoverySubsidized.length * 10_000 / recoveryTasks.length),
+      subsidizedClaimRescueRateBps: recoverySubsidized.length === 0
+        ? null
+        : Math.floor(recoverySubsidizedDelivered.length * 10_000 / recoverySubsidized.length),
+    },
   };
 }
 
@@ -111,8 +157,8 @@ export async function getMerchantRiskSummary(prisma: PrismaClient, merchantId: s
       : 'INSUFFICIENT_DATA',
     subsidyDependencyElevated: metrics.subsidyDependencyBps !== null
       && metrics.subsidyDependencyBps >= config.subsidyDependencyThresholdBps,
-    subsidyRescueHealthy: metrics.subsidizedClaimConversionBps !== null
-      && metrics.subsidizedClaimConversionBps >= config.subsidyRescueThresholdBps,
+    subsidyRescueHealthy: metrics.subsidizedClaimRescueRateBps !== null
+      && metrics.subsidizedClaimRescueRateBps >= config.subsidyRescueThresholdBps,
   };
 }
 
@@ -122,7 +168,7 @@ export async function evaluateMerchantExposure(
   merchantId: string,
   forcedState?: MerchantExposureState,
 ) {
-  if (actor.role !== 'ADMIN') throw forbidden();
+  requireAdminLevel(actor, ['SUPER_ADMIN']);
   const { version, config } = await loadPolicyConfig(prisma);
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT "id" FROM "Merchant" WHERE "id" = ${merchantId}::uuid FOR UPDATE`;
@@ -137,7 +183,11 @@ export async function evaluateMerchantExposure(
       noRiderAcceptedRateBps: metrics.noRiderAcceptedRateBps,
       observableTerminalOrderCount: metrics.observableTerminalOrderCount,
       subsidyDependencyBps: metrics.subsidyDependencyBps,
-      subsidizedClaimConversionBps: metrics.subsidizedClaimConversionBps,
+      subsidizedClaimRescueRateBps: metrics.subsidizedClaimRescueRateBps,
+      recoveryTerminalOrderCount: metrics.recovery.terminalOrderCount,
+      recoveryNoRiderAcceptedRateBps: metrics.recovery.noRiderAcceptedRateBps,
+      recoverySubsidyDependencyBps: metrics.recovery.subsidyDependencyBps,
+      recoverySubsidizedClaimRescueRateBps: metrics.recovery.subsidizedClaimRescueRateBps,
       exceptionCounts: metrics.exceptionCounts,
       ...(forcedState ? { forcedState } : {}),
     }, config);

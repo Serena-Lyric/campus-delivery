@@ -38,6 +38,14 @@ describe('order handoff and settlement flow', () => {
   });
 
   beforeEach(async () => {
+    await prisma.compensationAllocation.deleteMany();
+    await prisma.compensationObligation.deleteMany();
+    await prisma.remakeProposal.deleteMany();
+    await prisma.exceptionCaseAction.deleteMany();
+    await prisma.exceptionCase.deleteMany();
+    await prisma.riderRestrictionAudit.deleteMany();
+    await prisma.riderRestriction.deleteMany();
+    await prisma.riderCancellationEvent.deleteMany();
     await prisma.merchantExposureDecision.deleteMany();
     await prisma.subsidyRecord.deleteMany();
     await prisma.deliveryTask.deleteMany();
@@ -56,6 +64,7 @@ describe('order handoff and settlement flow', () => {
       where: { id: seedIds.merchant },
       data: {
         exposureState: MerchantExposureState.NORMAL,
+        trialExposureOverrideBps: 10_000,
         pickupVerificationMode: PickupVerificationMode.CONFIRMATION,
       },
     });
@@ -659,9 +668,9 @@ describe('order handoff and settlement flow', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()[0]).toMatchObject({
-      exposureState: 'TRIAL',
       risk: { timeRisk: 'UNKNOWN', completionRisk: 'UNKNOWN', sampleStatus: 'INSUFFICIENT_DATA' },
     });
+    expect(response.json()[0].exposureState).toBeUndefined();
   });
 
   it('publishes the merchant-risk routes in OpenAPI', async () => {

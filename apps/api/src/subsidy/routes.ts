@@ -1,14 +1,14 @@
 import type { PrismaClient } from '@prisma/client';
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
-import { actorOf, authGuard } from '../auth/auth.js';
+import { actorOf, adminGuard } from '../auth/auth.js';
 import type { AppConfig } from '../config.js';
 import { addPlatformSubsidy } from './service.js';
 
 const OrderIdParams = Type.Object({ orderId: Type.String({ format: 'uuid' }) });
 
 export async function registerSubsidyRoutes(app: FastifyInstance, prisma: PrismaClient, config: AppConfig) {
-  const admin = authGuard(prisma, config, ['ADMIN']);
+  const admin = adminGuard(prisma, config, ['SUPER_ADMIN']);
   app.post<{
     Params: { orderId: string };
     Body: { requestedMinor?: number; reason: string };

@@ -28,6 +28,7 @@ export const seedIds = {
   riderAUser: '00000000-0000-4000-8000-000000000003',
   riderBUser: '00000000-0000-4000-8000-000000000004',
   admin: '00000000-0000-4000-8000-000000000005',
+  operator: '00000000-0000-4000-8000-000000000006',
   merchant: '10000000-0000-4000-8000-000000000001',
   riderA: '20000000-0000-4000-8000-000000000001',
   riderB: '20000000-0000-4000-8000-000000000002',
@@ -38,6 +39,8 @@ export const seedIds = {
   productTea: '50000000-0000-4000-8000-000000000002',
   subsidyAccount: '60000000-0000-4000-8000-000000000001',
   policyConfig: '70000000-0000-4000-8000-000000000001',
+  adminProfile: '71000000-0000-4000-8000-000000000001',
+  operatorProfile: '71000000-0000-4000-8000-000000000002',
 } as const;
 
 const scenarioIds = {
@@ -75,6 +78,9 @@ export const demoPolicy = {
   requireHandoffCodeForAllOrders: false,
   merchantRiskWindowOrderCount: 50,
   merchantRiskMinimumSampleSize: 10,
+  merchantTrialExposureBps: 2500,
+  merchantExposureRecoveryMinimumSampleSize: 10,
+  merchantExposureRecoveryWindowOrderCount: 20,
   slowFulfillmentThresholdSeconds: 2700,
   completionRiskElevatedThresholdBps: 1500,
   completionRiskHighThresholdBps: 3000,
@@ -86,6 +92,12 @@ export const demoPolicy = {
   exposureLimitedRecoveryThresholdBps: 3500,
   subsidyDependencyThresholdBps: 5000,
   subsidyRescueThresholdBps: 5000,
+  riderDailyFreeCancelLimit: 2,
+  riderCancellationRollingWindowDays: 7,
+  riderCancellationCooldownThreshold: 4,
+  riderWarningCooldownThreshold: 2,
+  riderCancellationCooldownSeconds: 172800,
+  riderWarningCooldownSeconds: 172800,
 };
 
 async function seedScenarioOrders(client: PrismaClient) {
@@ -412,6 +424,7 @@ export async function seedDatabase(client: PrismaClient) {
     [seedIds.riderAUser, '演示骑手 A', UserRole.RIDER],
     [seedIds.riderBUser, '演示骑手 B', UserRole.RIDER],
     [seedIds.admin, '演示平台管理员', UserRole.ADMIN],
+    [seedIds.operator, '演示普通管理员', UserRole.ADMIN],
   ] as const;
   for (const [id, displayName, role] of users) {
     await client.user.upsert({
@@ -421,6 +434,17 @@ export async function seedDatabase(client: PrismaClient) {
     });
   }
 
+  await client.adminProfile.upsert({
+    where: { userId: seedIds.admin },
+    update: { level: 'SUPER_ADMIN' },
+    create: { id: seedIds.adminProfile, userId: seedIds.admin, level: 'SUPER_ADMIN' },
+  });
+  await client.adminProfile.upsert({
+    where: { userId: seedIds.operator },
+    update: { level: 'OPERATOR' },
+    create: { id: seedIds.operatorProfile, userId: seedIds.operator, level: 'OPERATOR' },
+  });
+
   await client.merchant.upsert({
     where: { id: seedIds.merchant },
     update: {
@@ -429,6 +453,7 @@ export async function seedDatabase(client: PrismaClient) {
       campusLocationId: seedIds.merchantLocation,
       isOpen: true,
       exposureState: MerchantExposureState.NORMAL,
+      trialExposureOverrideBps: 10_000,
       maxConcurrentOrders: 20,
       deliveryContributionMinor: 100,
       supportedDeliveryMethods: [DeliveryMethod.DESIGNATED_POINT, DeliveryMethod.DOOR, DeliveryMethod.FACE_TO_FACE],
@@ -442,6 +467,7 @@ export async function seedDatabase(client: PrismaClient) {
       campusLocationId: seedIds.merchantLocation,
       isOpen: true,
       exposureState: MerchantExposureState.NORMAL,
+      trialExposureOverrideBps: 10_000,
       maxConcurrentOrders: 20,
       deliveryContributionMinor: 100,
       supportedDeliveryMethods: [DeliveryMethod.DESIGNATED_POINT, DeliveryMethod.DOOR, DeliveryMethod.FACE_TO_FACE],

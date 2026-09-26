@@ -37,7 +37,11 @@ export type ExposurePolicyInput = {
   noRiderAcceptedRateBps: number | null;
   observableTerminalOrderCount: number;
   subsidyDependencyBps: number | null;
-  subsidizedClaimConversionBps: number | null;
+  subsidizedClaimRescueRateBps: number | null;
+  recoveryTerminalOrderCount: number;
+  recoveryNoRiderAcceptedRateBps: number | null;
+  recoverySubsidyDependencyBps: number | null;
+  recoverySubsidizedClaimRescueRateBps: number | null;
   exceptionCounts: Readonly<Record<string, number>>;
   forcedState?: MerchantExposureState;
 };
@@ -57,22 +61,42 @@ export class MerchantExposurePolicy {
       return { state: input.currentState, reason: 'INSUFFICIENT_DATA' };
     }
 
+    const subsidyUnhealthy = (
+      dependencyBps: number | null,
+      rescueRateBps: number | null,
+    ) => dependencyBps !== null
+      && rescueRateBps !== null
+      && dependencyBps >= config.subsidyDependencyThresholdBps
+      && rescueRateBps < config.subsidyRescueThresholdBps;
+    const entrySubsidyUnhealthy = subsidyUnhealthy(
+      input.subsidyDependencyBps,
+      input.subsidizedClaimRescueRateBps,
+    );
+    const recoverySubsidyUnhealthy = subsidyUnhealthy(
+      input.recoverySubsidyDependencyBps,
+      input.recoverySubsidizedClaimRescueRateBps,
+    );
+    const recoveryReady = input.recoveryTerminalOrderCount >= config.merchantExposureRecoveryMinimumSampleSize
+      && input.recoveryNoRiderAcceptedRateBps !== null
+      && !recoverySubsidyUnhealthy;
     const failureBps = input.noRiderAcceptedRateBps;
     if (input.currentState === MerchantExposureState.HIDDEN || input.currentState === MerchantExposureState.SUSPENDED) {
       return { state: input.currentState, reason: 'ADMIN_STATE_PRESERVED' };
     }
     if (input.currentState === MerchantExposureState.SEVERELY_LIMITED) {
-      return failureBps <= config.exposureLimitedRecoveryThresholdBps
+      return recoveryReady
+        && input.recoveryNoRiderAcceptedRateBps! <= config.exposureLimitedRecoveryThresholdBps
         ? { state: MerchantExposureState.LIMITED, reason: 'RECOVERY_THRESHOLD_MET' }
-        : { state: input.currentState, reason: 'RECOVERY_THRESHOLD_NOT_MET' };
+        : { state: input.currentState, reason: 'RECOVERY_WINDOW_NOT_MET' };
     }
     if (input.currentState === MerchantExposureState.LIMITED) {
       if (failureBps >= config.exposureSeverelyLimitedThresholdBps) {
         return { state: MerchantExposureState.SEVERELY_LIMITED, reason: 'OBSERVED_FAILURE_RATE_SEVERE' };
       }
-      return failureBps <= config.exposureReducedRecoveryThresholdBps
+      return recoveryReady
+        && input.recoveryNoRiderAcceptedRateBps! <= config.exposureReducedRecoveryThresholdBps
         ? { state: MerchantExposureState.REDUCED, reason: 'RECOVERY_THRESHOLD_MET' }
-        : { state: input.currentState, reason: 'RECOVERY_THRESHOLD_NOT_MET' };
+        : { state: input.currentState, reason: 'RECOVERY_WINDOW_NOT_MET' };
     }
     if (input.currentState === MerchantExposureState.REDUCED) {
       if (failureBps >= config.exposureSeverelyLimitedThresholdBps) {
@@ -81,9 +105,10 @@ export class MerchantExposurePolicy {
       if (failureBps >= config.exposureLimitedThresholdBps) {
         return { state: MerchantExposureState.LIMITED, reason: 'OBSERVED_FAILURE_RATE_HIGH' };
       }
-      return failureBps <= config.exposureNormalRecoveryThresholdBps
+      return recoveryReady
+        && input.recoveryNoRiderAcceptedRateBps! <= config.exposureNormalRecoveryThresholdBps
         ? { state: MerchantExposureState.NORMAL, reason: 'RECOVERY_THRESHOLD_MET' }
-        : { state: input.currentState, reason: 'RECOVERY_THRESHOLD_NOT_MET' };
+        : { state: input.currentState, reason: 'RECOVERY_WINDOW_NOT_MET' };
     }
     if (failureBps >= config.exposureSeverelyLimitedThresholdBps) {
       return { state: MerchantExposureState.SEVERELY_LIMITED, reason: 'OBSERVED_FAILURE_RATE_SEVERE' };
@@ -94,6 +119,16 @@ export class MerchantExposurePolicy {
     if (failureBps >= config.exposureReducedThresholdBps) {
       return { state: MerchantExposureState.REDUCED, reason: 'OBSERVED_FAILURE_RATE_ELEVATED' };
     }
+    if (input.completionRisk === MerchantCompletionRisk.HIGH) {
+      return { state: MerchantExposureState.LIMITED, reason: 'COMPLETION_RISK_HIGH' };
+    }
+    if (input.completionRisk === MerchantCompletionRisk.ELEVATED) {
+      return { state: MerchantExposureState.REDUCED, reason: 'COMPLETION_RISK_ELEVATED' };
+    }
+    if (entrySubsidyUnhealthy) {
+      return { state: MerchantExposureState.REDUCED, reason: 'SUBSIDY_HEALTH_UNHEALTHY' };
+    }
+    // timeRisk and exceptionCounts remain telemetry only until product attribution rules exist.
     return { state: MerchantExposureState.NORMAL, reason: 'OBSERVED_FAILURE_RATE_NORMAL' };
   }
 }

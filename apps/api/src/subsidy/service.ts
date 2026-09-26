@@ -6,10 +6,10 @@ import {
   OrderStatus,
   type PrismaClient,
 } from '@prisma/client';
-import type { Actor } from '../auth/auth.js';
+import { requireAdminLevel, type Actor } from '../auth/auth.js';
 import { loadPolicyConfig } from '../merchant-policy/policies.js';
 import { riderPayoutMinor } from '../pricing/service.js';
-import { AppError, badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
+import { AppError, badRequest, conflict, notFound } from '../shared/errors.js';
 import {
   BudgetSubsidyEligibilityPolicy,
   CappedSubsidyIncrementPolicy,
@@ -39,7 +39,7 @@ export async function addPlatformSubsidy(
   policies: SubsidyPolicies = defaultSubsidyPolicies,
   now = new Date(),
 ) {
-  if (actor.role !== 'ADMIN') throw forbidden();
+  requireAdminLevel(actor, ['SUPER_ADMIN']);
   if (input.requestedMinor !== undefined && (!Number.isSafeInteger(input.requestedMinor) || input.requestedMinor <= 0)) {
     throw badRequest('INVALID_SUBSIDY_INCREMENT', 'requestedMinor must be a positive integer');
   }

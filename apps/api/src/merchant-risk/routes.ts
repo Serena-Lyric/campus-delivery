@@ -1,7 +1,7 @@
 import { MerchantExposureState, type PrismaClient } from '@prisma/client';
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
-import { actorOf, authGuard } from '../auth/auth.js';
+import { actorOf, adminGuard, authGuard } from '../auth/auth.js';
 import type { AppConfig } from '../config.js';
 import { forbidden, notFound } from '../shared/errors.js';
 import { evaluateMerchantExposure, getMerchantRiskSummary } from './service.js';
@@ -10,7 +10,7 @@ const MerchantIdParams = Type.Object({ merchantId: Type.String({ format: 'uuid' 
 
 export async function registerMerchantRiskRoutes(app: FastifyInstance, prisma: PrismaClient, config: AppConfig) {
   const merchant = authGuard(prisma, config, ['MERCHANT']);
-  const admin = authGuard(prisma, config, ['ADMIN']);
+  const admin = adminGuard(prisma, config, ['SUPER_ADMIN']);
 
   app.get('/merchant/fulfillment-risk', {
     preHandler: merchant,
