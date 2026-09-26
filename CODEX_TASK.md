@@ -1,135 +1,155 @@
 # CODEX_TASK
 
-执行仓库根目录 `IMPLEMENTATION_PLAN.md` 中“下一轮：审核修正 + 骑手容错 + 异常订单池 + 管理员分权”的全部内容。
+执行当前根目录 `IMPLEMENTATION_PLAN.md` 的全部内容。
 
-开始前完整阅读并按优先级理解：
+开始前按以下顺序完整阅读并核对当前工作区：
 
-1. `AGENTS.md`
-2. `PRODUCT_DECISIONS.md`
-3. `IMPLEMENTATION_PLAN.md`
-4. `EXCEPTION_HANDLING.md`
-5. `ROLE_RESPONSIBILITIES.md`
-6. `OPERATIONS_CONTEXT.md`
-7. 当前 Prisma schema / migrations / Seed / README / OpenAPI
-8. merchant-risk、catalog、orders、delivery、pricing、settlements、exceptions、admin config/auth 等相关代码与测试
-
-## 优先级
-
-- `PRODUCT_DECISIONS.md` 是产品规则最高依据。
-- `IMPLEMENTATION_PLAN.md` 是本轮执行范围。
-- `EXCEPTION_HANDLING.md` 定义第一版异常运营/技术工作流，但不得覆盖产品决策。
-- `ROLE_RESPONSIBILITIES.md` 是角色视图，不能创造新规则。
-- 旧代码、Seed、旧测试或你自己的推荐方案如与以上冲突，必须以已确认规则为准。
+1. `git status` / `git diff` / 最近 commits / migrations / untracked files；不要 reset/discard 已有有效工作。
+2. `AGENTS.md`
+3. `PRODUCT_DECISIONS.md`
+4. `IMPLEMENTATION_PLAN.md`
+5. `AUDIT_FOLLOWUP.md`
+6. `RIDER_CAPACITY_DECISIONS.md`
+7. `ORDER_POOL_DECISIONS.md`
+8. `DELIVERY_PRICING_DECISIONS.md`
+9. `EXCEPTION_HANDLING.md`
+10. `ROLE_RESPONSIBILITIES.md`
+11. `OPERATIONS_CONTEXT.md`
+12. Prisma schema、Seed、README/OpenAPI 与相关 runtime/tests。
 
 ## 本轮执行顺序
 
-### 第一阶段：先修上轮 6 个已知审核缺口
+### 1. 先修审核补丁
 
-必须先完成并测试：
+必须先完成 `AUDIT_FOLLOWUP.md`：
 
-1. TRIAL 真正灰度曝光；
-2. 曝光策略真实使用已确认的 completion/no-rider + subsidy health 因素，不再伪装多因素；
-3. recovery minimum sample/window；
-4. subsidy rescue metric terminal denominator；
-5. customer catalog/raw ORM 数据泄漏；
-6. rolling terminal/live metric 样本集合分离。
+- 每日无责取消真正封顶；
+- ExceptionCase 合法状态机；
+- RESOLVED/CLOSED terminal protection；
+- ESCALATED 后 operator 权限边界；
+- refund-and-close 真正使用 expectedVersion + status guard + idempotency；
+- voluntary compensation 的合法状态/严重异常限制；
+- 陈旧页面与并发回归测试。
 
-不要在这些已知问题未修正时继续堆新功能然后在报告里写“后续再处理”。
+修完并通过针对性测试后再进入新功能。
 
-### 第二阶段：骑手未取餐无责取消与限制
+### 2. 实现骑手容量 1 → 2 → 5 + 全局/个人上限
 
-实现：
+- Seed 全局绝对上限 10，版本化配置；
+- 新 rider 未正常完成首单：1；
+- 首单正常 DELIVERED 后同一校园自然日：2；
+- 下一校园自然日：5；
+- 5 后不自动升级；
+- Super Admin 可设置单 rider override；
+- effective cap = min(personal/global)；
+- 下调不破坏已持订单，只阻止新 claim；
+- claim transaction 原子防并发越限；
+- rider 可查看当前 capacity/stage，并能读取 1→2、2→5 的额度变化通知/事件；
+- 不实现自动降额度、骑手评分或 5 后自动升级。
 
-- pre-pickup responsibility-free cancel；
-- assignment 历史保留；
-- 订单重新入原池；
-- firstPublishedAt / claimDeadline 绝不刷新；
-- 单日第 1 次记录、第 2 次 warning + 当日暂停新接单；
-- 7 天 2-warning → 2 天 cooldown；
-- 尚未触发第 2 次 warning 时，7 天累计 4 次取消 → 2 天 cooldown，不补记第二 warning；
-- 全部阈值版本化配置；
-- pause/cooldown 只阻止新 claim，不破坏已持订单；
-- super-admin restriction override + audit。
+### 3. 实现 rider order-pool 最低决策 DTO
 
-### 第三阶段：严重餐损/丢失 + 赔付资金模型
+至少包含：
 
-实现：
+- rider guaranteed payout；
+- pickup merchant/location/region；
+- destination snapshot/location；
+- foodType 粗分类；
+- quantity / carrying-count fact。
 
-- severe damage/loss report；
-- remake-and-continue proposal；
-- customer confirm/reject；
-- refund-and-close；
-- RiderTip 与订单退款独立；
-- compensation obligation；
-- 本单未提现资金 reservation；
-- 其他未提现余额 reservation；
-- rider voluntary payment/transfer 记录；
-- platform advance / outstanding 记录；
-- 每笔来源和用途可审计；
-- 并发下同一余额不能被重复 reserve。
+显式 DTO/select；不泄漏 customer/private internal pricing/platform spread。
+不做 UI、地图、自动路线、拼单推荐。
 
-不要实现真实支付网关，不要实现无限负余额、未来收入自动追债或未确认的自动停接单规则。
+### 4. 实现低风险 item classifier / Jev hook
 
-### 第四阶段：异常订单池与管理员分权
+- 保存原始商品名/商家分类与 AI 建议分离；
+- typed foodType + optional handlingTags + source/version/confidence；
+- deterministic/manual/UNKNOWN fallback；
+- classifier 失败绝不阻塞下单/入池/配送；
+- AI 输出绝不能执行或影响资金、责任、处罚、容量、接单资格、商家曝光。
+- 如果没有安全可用的真实 Jev 配置，不硬编码 key、不依赖公网测试；报告明确 `adapter/hook ready, not active`。
 
-实现：
+### 5. 重构配送价格语义
 
-- ExceptionCase/work queue；
-- 普通管理员自行领取；
-- exactly-one-active-handler 等效安全保证；
-- release/transfer/takeover/escalate audit；
-- refund/freeze/release/close 幂等或 version protection；
-- ADMIN 内部分 OPERATOR / SUPER_ADMIN，不改变普通业务账号多角色问题；
-- 普通管理员可以实际完成日常人工判断和标准异常处理；
-- 复杂、高风险、权限不足的 case 升级 super admin；
-- super admin 管理全局 config / admin rights / high-risk overrides；
-- 审计现有所有 `/admin/**` endpoint 并给出权限矩阵。
+严格按 `DELIVERY_PRICING_DECISIONS.md`：
 
-### 第五阶段：AI/Jev 分类边界
+- merchant base/reference delivery price ≠ merchant real contribution；
+- customerDeliveryFee；
+- riderBasePayout；
+- merchantRescueContribution；
+- customerRiderTip；
+- platformSubsidy；
+- riderGuaranteedPayout；
+- platform delivery contribution/spread；
+- 迁移旧 `merchantDeliveryContributionMinor` 语义，不能继续一字段两义。
 
-- 建立 `ExceptionClassifier` 或等价 typed adapter；
-- 保存分类 source/version/result/confidence，与最终人工处理结论分离；
-- 提供 deterministic/manual/no-op fallback；
-- 不要求真实 Jev 网络调用；
-- AI 不得执行 liability/refund/freeze/penalty/restriction。
+第一版公式：
 
-如果没有真正调用 Jev，报告必须写 `adapter/hook ready, not active`，不能写成“Jev 已实现/上线”。
+`riderGuaranteedPayout = riderBasePayout + merchantRescueContribution + customerRiderTip + platformSubsidy`
 
-## 重要约束
+`deliveryPlatformContribution = customerDeliveryFee - riderBasePayout - platformSubsidy`
 
-- 严格遵守 `AGENTS.md` 的 implementation truthfulness、API role isolation、Docker 和 exception safety 规则。
-- 不把进行中订单静默计入失败/救援失败分母。
-- 不把所有 exception 自动归责商家或骑手。
-- 不做单一综合风险分。
-- 不让 ordinary admin 直接绕过 ledger 任意输入扣款。
-- 不返回 raw ORM 到 customer/merchant/rider API。
-- 所有钱使用整数 minor unit。
-- 所有关键资金、限制、handler ownership 变化可审计。
-- 所有高风险动作需要 transaction + idempotency/version/unique invariant 等安全保护。
-- 不修改单账号单业务角色模型。
+商家 rescue 增量与用户 tip 均 100% 传给 rider；merchant rescue 是真实商家新增资金，base/reference price 不是。
 
-## Docker
+### 6. 第一版 pricing policy
 
-Docker Desktop 已更新，但仍严格按 `AGENTS.md`：
+实现可替换、可配置、可审计的确定性 policy，不做黑箱“最优价格算法”。
 
-- Docker/PostgreSQL 验证前 CLI health check；
-- 失败最多一次安全 restart；
-- 再失败收集 diagnostics/logs 并报告；
-- 禁止 factory reset、clean/purge data、删除 volumes/data 等破坏性恢复。
+允许使用 merchant base price、merchant/category、pickup region、destination region、foodType、quantity 等输入；按当前 schema 能安全支持的层级实现。
 
-## 完成条件
+要求：
 
-1. 完成 `IMPLEMENTATION_PLAN.md` 全部范围；
-2. 更新必要 README/OpenAPI；
-3. typecheck；
-4. unit tests；
-5. PostgreSQL integration tests；
-6. build；
-7. current DB migration status/drift；
-8. current DB migrate；
-9. empty DB full migration；
-10. Seed 连续至少两次；
-11. 并发领取、重复退款/冻结、余额 reservation 等安全测试通过；
-12. 提交并 push 到 `main`，禁止 force push；
-13. 根目录生成 `CODEX_REPORT.md`，逐项回答 `IMPLEMENTATION_PLAN.md` 的 19 个审核问题，提供起止 commit、migration、权限矩阵、测试结果、Docker 情况、已知问题、刻意未实现内容；
-14. 完成后停止，不自行进入下一阶段。
+- customer fee 与 rider base payout 独立计算；
+- baseline 不隐藏制造负价差；主动让利通过既有受预算约束的 platform subsidy；
+- Super Admin 可配置全局/商家相关 pricing 参数并审计；
+- Seed 值只作为 DEMO；
+- policy version + inputs/reason 可追溯；
+- 报告必须区分已真正参与 runtime 计算的 input 与 reserved input。
+
+### 7. 把 merchant reprice 迁移为 rescue contribution
+
+- 未 claim 前可追加；
+- 增量 100% 加到 rider guaranteed payout；
+- 从 merchant 真实资金/settlement 记录；
+- 不刷新 firstPublishedAt/claimDeadline；
+- 保留 cooldown/version/history；
+- claim 后已承诺收益不可向下撤销；
+- claim 瞬间原子快照全部资金来源。
+
+如为兼容保留旧 endpoint/字段名，必须在内部和 OpenAPI 明确新语义，避免继续把 reference price 当 real contribution。
+
+## 强约束
+
+- 不修改普通业务账号单角色模型。
+- 不做真实微信支付/提现/退款网关。
+- 不做路线规划、导航、自动拼单。
+- 不做 5 单后自动升额或异常自动降额。
+- 不做机器学习/黑箱动态定价。
+- 不让 Jev/AI 影响高风险动作。
+- 不擅自确定平台商品佣金最终比例、支付通道费、税费。
+- 所有钱使用 integer minor units。
+- 所有 customer/merchant/rider API 使用显式 DTO/select。
+- 关键资金、capacity override、pricing config、claim snapshot、exception transitions 必须可审计。
+- 严格遵守 `AGENTS.md` Docker 与 implementation truthfulness 规则。
+
+## 完成与验证
+
+执行 `IMPLEMENTATION_PLAN.md` 的必测场景，并完成：
+
+- typecheck；
+- unit tests；
+- PostgreSQL integration tests；
+- build；
+- current DB migration/status/drift；
+- current DB migrate；
+- empty DB full migrate；
+- Seed 连续至少两次；
+- OpenAPI/权限检查；
+- Docker 如异常最多一次安全 restart，禁止 destructive cleanup/reset/purge/delete volumes。
+
+完成后：
+
+1. 更新必要 README/OpenAPI；
+2. 提交并普通 push `main`，禁止 force push；
+3. 生成根目录 `CODEX_REPORT.md`，逐项回答 `IMPLEMENTATION_PLAN.md` 的报告要求，特别说明：audit 修复、容量并发保护、订单池 DTO、Jev active/hook 状态、旧 pricing migration、资金来源、100% merchant rescue pass-through、platform contribution、policy active/reserved inputs、权限矩阵、测试/migration/Seed/Docker 结果、刻意未实现和仍待产品决定内容；
+4. 完成后停止，不自行进入下一阶段。
