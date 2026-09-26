@@ -7,9 +7,10 @@ Before making product or business changes, read the root files in this order:
 1. `PRODUCT_DECISIONS.md` — confirmed product decisions; highest priority.
 2. `IMPLEMENTATION_PLAN.md` — current implementation plan and provisional engineering defaults.
 3. `CODEX_TASK.md` — current execution task, if present.
-4. `ROLE_RESPONSIBILITIES.md` — role-oriented view of confirmed duties, permissions, restrictions and outcomes; derived from product decisions and must not create new rules.
-5. `OPERATIONS_CONTEXT.md` — confirmed real-world operating context; background only, never overrides product decisions.
-6. Existing code, README, OpenAPI, tests and older design documents.
+4. `EXCEPTION_HANDLING.md` — first-version operational/technical design for abnormal-order handling; subordinate to product decisions.
+5. `ROLE_RESPONSIBILITIES.md` — role-oriented view of confirmed duties, permissions, restrictions and outcomes; derived from product decisions and must not create new rules.
+6. `OPERATIONS_CONTEXT.md` — confirmed real-world operating context; background only, never overrides product decisions.
+7. Existing code, README, OpenAPI, tests and older design documents.
 
 If existing code, Seed data, old design docs, or an agent recommendation conflicts with `PRODUCT_DECISIONS.md`, do not silently preserve or invent behavior. Follow the confirmed product decision, or stop and report the unresolved conflict.
 
@@ -47,7 +48,6 @@ If infrastructure prevents a required check, do not claim it passed. Report exac
 
 When a task requests a `CODEX_REPORT.md`, generate it only after implementation and validation are complete (or clearly document blocked checks). Include starting/ending commits, migrations, tests, build results, known issues, intentional omissions and unresolved product decisions.
 
-
 ## Implementation truthfulness
 
 - Do not report a feature or policy as implemented merely because an enum, field, interface, strategy input, route, or placeholder exists.
@@ -64,7 +64,6 @@ When a task requests a `CODEX_REPORT.md`, generate it only after implementation 
 - Metrics with names such as conversion rate, completion rate, rescue rate, or failure rate must define their numerator, denominator, and treatment of in-progress/non-terminal records. In-progress records must not silently count as failures unless the product definition explicitly says so.
 - Rolling-window metrics must not accidentally discard valid historical terminal samples merely because newer in-progress records entered the window. If different metrics require different populations, use separate query populations or document the tradeoff explicitly.
 
-
 ## API role isolation
 
 - Do not return or spread raw ORM/database entities directly into customer-, merchant-, or rider-facing API responses.
@@ -72,10 +71,17 @@ When a task requests a `CODEX_REPORT.md`, generate it only after implementation 
 - When claiming role/data isolation, inspect the complete serialized response, not only the newly added nested object. Existing scalar fields and relation payloads can still leak internal pricing, policy, identifiers, limits, or operational state.
 - Add negative tests for sensitive fields that must be absent (for example merchant contribution, platform subsidy, internal policy/exposure details) rather than testing only that intended fields are present.
 
-
 ## Role documentation maintenance
 
 - After a product rule is confirmed, identify which of Customer, Merchant, Rider, and Admin it affects and keep `ROLE_RESPONSIBILITIES.md` synchronized.
 - Role documentation must be written from the actor's perspective: what they must do, may do, may not do, and what consequence follows.
 - Do not fill gaps in role documentation by inventing product behavior. Mark unresolved boundaries explicitly.
 - `ROLE_RESPONSIBILITIES.md` is derived documentation; if it conflicts with `PRODUCT_DECISIONS.md`, fix the role document rather than overriding the product decision.
+
+## Exception handling safety
+
+- Follow `EXCEPTION_HANDLING.md` for the first-version abnormal-order workflow.
+- AI/Jev may assist only with low-risk classification, priority and routing. Deterministic rules and authorized human actions control liability, refunds, freezes, penalties and account restrictions.
+- A shared exception pool must provide exactly-one-active-handler semantics. The implementation may use an atomic conditional update, version/CAS, lease or equivalent mechanism; the safety property matters more than the mechanism name.
+- High-risk resolution actions such as refund, freeze, release, compensation transfer and order termination must be idempotent or version-protected so concurrent/retried requests cannot execute the economic action twice.
+- Claim, release, transfer, takeover and escalation of an exception must be auditable.
