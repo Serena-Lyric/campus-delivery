@@ -7,10 +7,11 @@ Before making product or business changes, read the root files in this order:
 1. `PRODUCT_DECISIONS.md` — confirmed product decisions; highest priority.
 2. `IMPLEMENTATION_PLAN.md` — current implementation plan and provisional engineering defaults.
 3. `CODEX_TASK.md` — current execution task, if present.
-4. `EXCEPTION_HANDLING.md` — first-version operational/technical design for abnormal-order handling; subordinate to product decisions.
-5. `ROLE_RESPONSIBILITIES.md` — role-oriented view of confirmed duties, permissions, restrictions and outcomes; derived from product decisions and must not create new rules.
-6. `OPERATIONS_CONTEXT.md` — confirmed real-world operating context; background only, never overrides product decisions.
-7. Existing code, README, OpenAPI, tests and older design documents.
+4. `AUDIT_FOLLOWUP.md` — confirmed code-audit gaps that must be fixed before the affected behavior is considered complete; subordinate to product decisions.
+5. `EXCEPTION_HANDLING.md` — first-version operational/technical design for abnormal-order handling; subordinate to product decisions.
+6. `ROLE_RESPONSIBILITIES.md` — role-oriented view of confirmed duties, permissions, restrictions and outcomes; derived from product decisions and must not create new rules.
+7. `OPERATIONS_CONTEXT.md` — confirmed real-world operating context; background only, never overrides product decisions.
+8. Existing code, README, OpenAPI, tests and older design documents.
 
 If existing code, Seed data, old design docs, or an agent recommendation conflicts with `PRODUCT_DECISIONS.md`, do not silently preserve or invent behavior. Follow the confirmed product decision, or stop and report the unresolved conflict.
 
@@ -63,6 +64,8 @@ When a task requests a `CODEX_REPORT.md`, generate it only after implementation 
 - When the plan asks for separate concepts (for example entry thresholds vs recovery windows), do not substitute a weaker related mechanism (for example threshold hysteresis only) without calling out the gap.
 - Metrics with names such as conversion rate, completion rate, rescue rate, or failure rate must define their numerator, denominator, and treatment of in-progress/non-terminal records. In-progress records must not silently count as failures unless the product definition explicitly says so.
 - Rolling-window metrics must not accidentally discard valid historical terminal samples merely because newer in-progress records entered the window. If different metrics require different populations, use separate query populations or document the tradeoff explicitly.
+- When reporting version/status protection, verify each runtime branch separately. A request schema containing `expectedVersion` is not evidence that every service branch actually checks it.
+- Distinguish idempotency protection from stale-state protection: idempotency prevents duplicate execution of the same business action; version/status guards prevent an old or no-longer-valid action from executing after the workflow changed. High-risk paths often require both.
 
 ## API role isolation
 
@@ -80,8 +83,10 @@ When a task requests a `CODEX_REPORT.md`, generate it only after implementation 
 
 ## Exception handling safety
 
-- Follow `EXCEPTION_HANDLING.md` for the first-version abnormal-order workflow.
+- Follow `EXCEPTION_HANDLING.md` for the first-version abnormal-order workflow and `AUDIT_FOLLOWUP.md` for confirmed post-review gaps.
 - AI/Jev may assist only with low-risk classification, priority and routing. Deterministic rules and authorized human actions control liability, refunds, freezes, penalties and account restrictions.
 - A shared exception pool must provide exactly-one-active-handler semantics. The implementation may use an atomic conditional update, version/CAS, lease or equivalent mechanism; the safety property matters more than the mechanism name.
-- High-risk resolution actions such as refund, freeze, release, compensation transfer and order termination must be idempotent or version-protected so concurrent/retried requests cannot execute the economic action twice.
+- High-risk resolution actions such as refund, freeze, release, compensation transfer and order termination must be idempotent and, where workflow state can change concurrently, version/status-protected so concurrent/retried/stale requests cannot execute an invalid economic action.
+- ExceptionCase workflow operations must enforce legal state transitions, not merely compare versions. Terminal states must stay terminal unless the product explicitly defines an audited reopen path.
+- An escalated case must not remain ordinarily resolvable by the operator who escalated it; escalation transfers the decision boundary to the super-admin path until an explicit audited reassignment/takeover occurs.
 - Claim, release, transfer, takeover and escalation of an exception must be auditable.
