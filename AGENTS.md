@@ -52,6 +52,13 @@ Never automatically use destructive recovery actions such as factory reset, clea
 
 If Docker fails while application code appears unrelated, distinguish infrastructure failure from code/test failure in the report.
 
+## Production financial migration integrity
+
+- The existing `20260926000400_capacity_pool_pricing` migration is a pre-production semantic rewrite over demo/development data; it is not a template for production financial migrations.
+- After real production accounting data exists, an ordinary migration must not silently rewrite `FINALIZED` settlement facts or previously effective historical business-config versions in place.
+- Production corrections must preserve the audit trail through an explicit versioned migration, correction/event record, or another reviewed strategy that keeps the prior fact and explains the adjustment.
+- Do not edit an already-applied migration to disguise history. Add a new migration for any later schema or data correction.
+
 ## Validation
 
 For completed implementation tasks, run the task-required typecheck, unit tests, PostgreSQL integration tests, build, migration and Seed validation when infrastructure is healthy.

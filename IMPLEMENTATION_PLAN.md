@@ -1,6 +1,6 @@
 # IMPLEMENTATION_PLAN
 
-> 当前实现阶段：审核补丁 + 骑手容量 + 订单池决策信息 + 配送定价语义拆分。
+> 当前实现阶段：修复 2026-09-27 独立审核已确认的问题。配送定价拆分中的商家初始配送金额资金语义已重新打开，当前 reference-only runtime 仅为 provisional 实现，不得视为最终产品规则。
 > 最高原则仍以 `PRODUCT_DECISIONS.md` 为准；本轮同时读取 `AUDIT_FOLLOWUP.md`、`RIDER_CAPACITY_DECISIONS.md`、`ORDER_POOL_DECISIONS.md`、`DELIVERY_PRICING_DECISIONS.md`。这些主题文档记录了用户刚确认的当前实现边界；若与旧代码/Seed/旧测试冲突，不得静默保留旧行为。
 > 本轮只做后端数据模型、策略、API、迁移、审计、测试与必要文档；不设计完整 UI，不接真实支付/提现，不做路线规划，不做成熟动态定价算法。
 
@@ -120,7 +120,7 @@ claim transaction 内必须校验当前 active held orders 与有效额度，避
 - rider guaranteed payout；
 - platform delivery contribution/spread。
 
-不得把 merchant base/reference price 继续从 merchant settlement 中等额扣除。
+当前 runtime 暂不把 merchant base/reference price 从 merchant settlement 中等额扣除，以避免在资金语义未确认时扩大旧假设；这不是最终产品结论。真实结算方式待 W/运营验证后再设计和迁移。
 
 ### 4.2 第一版资金公式
 
@@ -129,6 +129,8 @@ claim transaction 内必须校验当前 active held orders 与有效额度，避
 `riderGuaranteedPayout = riderBasePayout + merchantRescueContribution + customerRiderTip + platformSubsidy`
 
 `deliveryPlatformContribution = customerDeliveryFee - riderBasePayout - platformSubsidy`
+
+该公式是当前 provisional runtime 口径；如果商家初始配送金额后续被确认为真实资金来源，必须重新核对平台贡献公式。
 
 - 商家 rescue 增量 100% 传给骑手；同时从商家真实结算/资金来源中记账。
 - 用户 tip 100% 传给骑手。
@@ -172,7 +174,7 @@ claim transaction 内必须校验当前 active held orders 与有效额度，避
 
 - 正式 Prisma migration，不修改历史 migration。
 - 当前数据库升级与空库重建都必须成功。
-- 明确旧 `merchantDeliveryContributionMinor` 数据如何迁移；demo/seed 可以按新的 reference/rescue 语义重建，但不能静默把历史参考价变成商家真实欠款。
+- 明确旧 `merchantDeliveryContributionMinor` 数据如何迁移；当前 demo/seed 可按 provisional reference/rescue 语义重建，但不能把这种开发期重解释当成已确认的真实资金历史或未来生产迁移范式。
 - 所有钱继续使用 integer minor units。
 - 接单/订单创建时价格策略版本与关键输入要可追溯。
 
@@ -199,7 +201,7 @@ Rider：
 
 Merchant：
 
-- 可看到自己的 base/reference price、自己的 rescue contribution/history；
+- 可看到自己的当前 provisional base/reference 和 rescue contribution/history；初始金额真实结算语义仍待确认；
 - 不默认看到用户 tip/platform subsidy；
 - rescue 真实资金必须明确，不得与 reference price 混淆。
 
@@ -237,7 +239,7 @@ Customer：
 8. rider order-pool DTO 含 guaranteed payout / pickup / destination / foodType / quantity，但不泄漏平台/用户敏感字段；
 9. classifier failure/UNKNOWN 不阻塞订单；原始商品信息保留；
 10. Jev/AI 输出不能改变钱/容量/责任；
-11. base/reference price 不从商家结算中当作真实资金扣除；
+11. 当前 provisional runtime 不把 base/reference 从商家结算中扣除，且测试不得把该实现提升为最终产品规则；
 12. 初始 customer fee 与 rider base payout 可不同，并正确形成 spread；
 13. merchant rescue +X 后 rider guaranteed payout 精确 +X，平台 spread 不因该增量扩大；
 14. tip +X 后 rider payout +X，平台 spread 不扩大；

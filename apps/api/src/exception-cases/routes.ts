@@ -186,7 +186,10 @@ export async function registerExceptionCaseRoutes(app: FastifyInstance, prisma: 
       body: Type.Object({
         expectedVersion: Type.Integer({ minimum: 0 }),
         idempotencyKey: Type.String({ minLength: 8, maxLength: 200 }),
-        voluntaryPaymentMinor: Type.Optional(Type.Integer({ minimum: 0 })),
+        voluntaryPaymentMinor: Type.Optional(Type.Integer({
+          minimum: 0,
+          description: 'Temporarily restricted to 0 until a verifiable rider payment source is available',
+        })),
         reason: Type.String({ minLength: 1, maxLength: 500 }),
       }),
     },

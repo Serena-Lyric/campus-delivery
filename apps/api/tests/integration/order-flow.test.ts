@@ -379,12 +379,14 @@ describe('order handoff and settlement flow', () => {
     expect(assignment.riderPayoutMinorAtClaim).toBe(280);
     expect(assignment.postClaimTipMinor).toBe(25);
     expect(settlement.riderPayableMinor).toBe(305);
+    expect(settlement.merchantPayableMinor).toBe(2000);
     expect(riderSettlement.amountMinor).toBe(305);
     const completedTask = await prisma.deliveryTask.findUniqueOrThrow({ where: { id: taskId } });
     expect(
       riderSettlement.pendingUntil.getTime() - completedTask.deliveredAt!.getTime(),
     ).toBe(demoPolicy.riderSettlementPendingSeconds * 1000);
-    expect(settlement.platformRevenueMinor).toBe(200);
+    expect(settlement.platformRevenueMinor).toBe(100);
+    expect((await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: order.id } })).platformCommissionMinor).toBe(0);
 
     const afterDelivery = await app.inject({
       method: 'POST',

@@ -15,4 +15,13 @@ describe('exception case state machine', () => {
     expect(() => assertExceptionCaseAction(ExceptionCaseStatus.ESCALATED, 'ADMIN_REFUND')).toThrow(/not allowed/);
     expect(() => assertExceptionCaseAction(ExceptionCaseStatus.ESCALATED, 'TAKEOVER')).not.toThrow();
   });
+
+  it('blocks participant remake actions while a case is escalated', () => {
+    for (const action of ['RIDER_PROPOSE_REMAKE', 'CUSTOMER_ACCEPT_REMAKE', 'CUSTOMER_REJECT_REMAKE'] as const) {
+      expect(() => assertExceptionCaseAction(ExceptionCaseStatus.ESCALATED, action)).toThrow(/not allowed/);
+    }
+    expect(() => assertExceptionCaseAction(ExceptionCaseStatus.OPEN, 'RIDER_PROPOSE_REMAKE')).not.toThrow();
+    expect(() => assertExceptionCaseAction(ExceptionCaseStatus.WAITING_FOR_PARTICIPANT, 'CUSTOMER_ACCEPT_REMAKE')).not.toThrow();
+    expect(() => assertExceptionCaseAction(ExceptionCaseStatus.WAITING_FOR_PARTICIPANT, 'CUSTOMER_REJECT_REMAKE')).not.toThrow();
+  });
 });

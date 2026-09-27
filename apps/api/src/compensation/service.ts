@@ -31,6 +31,12 @@ export async function refundAndCloseExceptionCase(
 ) {
   const voluntaryPaymentMinor = input.voluntaryPaymentMinor ?? 0;
   assertMinor(voluntaryPaymentMinor, 'voluntaryPaymentMinor');
+  if (voluntaryPaymentMinor > 0) {
+    throw badRequest(
+      'VOLUNTARY_PAYMENT_UNFUNDED',
+      'Non-zero voluntary payment requires a verified funding source and is not currently available',
+    );
+  }
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT "id" FROM "ExceptionCase" WHERE "id" = ${caseId}::uuid FOR UPDATE`;
     const exceptionCase = await tx.exceptionCase.findUnique({
@@ -341,11 +347,11 @@ export async function releaseCompensationReservations(
         currentOrderReservedMinor: 0,
         otherUnwithdrawnReservedMinor: 0,
         platformAdvancedMinor: { increment: releasedMinor },
-        outstandingMinor: 0,
-        status: CompensationStatus.RESOLVED,
+        outstandingMinor: { increment: releasedMinor },
+        status: CompensationStatus.PARTIALLY_FUNDED,
         releaseIdempotencyKey: idempotencyKey,
         releasedAt: now,
-        resolvedAt: now,
+        resolvedAt: null,
       },
     });
     await tx.exceptionCaseAction.create({

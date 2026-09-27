@@ -13,6 +13,7 @@ import { assertOrderAccess } from '../orders/access.js';
 import { transitionOrder } from '../orders/state-machine.js';
 import { badRequest, forbidden, notFound } from '../shared/errors.js';
 import { openExceptionCase } from '../exception-cases/service.js';
+import { DeterministicExceptionClassifier, type ExceptionClassifier } from './classifier.js';
 
 export type CreateExceptionInput = {
   type: ExceptionType;
@@ -25,6 +26,7 @@ export async function createExceptionEvent(
   actor: Actor,
   orderId: string,
   input: CreateExceptionInput,
+  classifier: ExceptionClassifier = new DeterministicExceptionClassifier(),
 ) {
   const { config } = await loadPolicyConfig(prisma);
   return prisma.$transaction(async (tx) => {
@@ -64,7 +66,7 @@ export async function createExceptionEvent(
         description: input.description,
       },
     });
-    await openExceptionCase(tx, exception);
+    await openExceptionCase(tx, exception, classifier);
     if (evidenceIds.length > 0) {
       await tx.evidence.updateMany({
         where: { id: { in: evidenceIds }, orderId: order.id },

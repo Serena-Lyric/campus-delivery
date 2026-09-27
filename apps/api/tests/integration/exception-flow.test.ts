@@ -2,6 +2,7 @@ import {
   DeliveryMethod,
   DeliveryTaskStatus,
   DeliveryVerificationMode,
+  ExceptionType,
   MerchantExposureState,
   OrderStatus,
   PickupVerificationMode,
@@ -17,6 +18,8 @@ import type { PolicyConfig } from '../../src/merchant-policy/policies.js';
 import { releaseExpiredCoolingOrders } from '../../src/orders/lifecycle.js';
 import { cancelBeforePickup } from '../../src/riders/restrictions.js';
 import { stableExposureBucket } from '../../src/catalog/visibility.js';
+import { createExceptionEvent } from '../../src/exceptions/service.js';
+import type { ExceptionClassifier } from '../../src/exceptions/classifier.js';
 import { demoPolicy, seedDatabase, seedIds } from '../../prisma/seed.js';
 
 const prisma = new PrismaClient();
@@ -384,6 +387,73 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${ready.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {} })).statusCode).toBe(200);
   });
 
+  it('keeps ordinary remake rejection available before escalation', async () => {
+    const ready = await pickedUpOrder();
+    const reported = await app.inject({
+      method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'FOOD_LOST', description: 'Customer may reject waiting for a remake' },
+    });
+    const caseId = reported.json().id as string;
+    expect((await app.inject({
+      method: 'POST', url: `/exception-cases/${caseId}/remake-proposal`, headers: headers(seedIds.riderAUser),
+      payload: { message: 'A remake can be prepared' },
+    })).statusCode).toBe(201);
+    expect((await app.inject({
+      method: 'POST', url: `/exception-cases/${caseId}/remake-response`, headers: headers(seedIds.customer), payload: { accept: false },
+    })).statusCode).toBe(200);
+    expect((await prisma.exceptionCase.findUniqueOrThrow({ where: { id: caseId } })).status).toBe('OPEN');
+  });
+
+  it('blocks rider remake proposals after escalation', async () => {
+    const ready = await pickedUpOrder();
+    const reported = await app.inject({
+      method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'SEVERE_FOOD_DAMAGE', description: 'Escalated before a remake proposal' },
+    });
+    const caseId = reported.json().id as string;
+    await app.inject({ method: 'POST', url: `/admin/exception-cases/${caseId}/claim`, headers: headers(seedIds.operator), payload: { expectedVersion: 0 } });
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/escalate`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 1, reason: 'Escalate before participant action' },
+    });
+    const proposal = await app.inject({
+      method: 'POST', url: `/exception-cases/${caseId}/remake-proposal`, headers: headers(seedIds.riderAUser),
+      payload: { message: 'This must not reopen an escalated case' },
+    });
+    expect(proposal.statusCode).toBe(409);
+    expect((await prisma.exceptionCase.findUniqueOrThrow({ where: { id: caseId } })).status).toBe('ESCALATED');
+    expect(await prisma.remakeProposal.count({ where: { caseId } })).toBe(0);
+  });
+
+  it('blocks both customer remake responses when a pending proposal is escalated', async () => {
+    const ready = await pickedUpOrder();
+    const reported = await app.inject({
+      method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'FOOD_LOST', description: 'Escalated while remake confirmation is pending' },
+    });
+    const caseId = reported.json().id as string;
+    await app.inject({
+      method: 'POST', url: `/exception-cases/${caseId}/remake-proposal`, headers: headers(seedIds.riderAUser),
+      payload: { message: 'Pending customer decision' },
+    });
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/takeover`, headers: headers(seedIds.admin),
+      payload: { expectedVersion: 1, nextHandlerAdminId: seedIds.operator, reason: 'Assign pending case for escalation' },
+    });
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/escalate`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 2, reason: 'Participant decision now requires super-admin control' },
+    });
+    for (const accept of [true, false]) {
+      const response = await app.inject({
+        method: 'POST', url: `/exception-cases/${caseId}/remake-response`, headers: headers(seedIds.customer), payload: { accept },
+      });
+      expect(response.statusCode).toBe(409);
+      expect((await prisma.exceptionCase.findUniqueOrThrow({ where: { id: caseId } })).status).toBe('ESCALATED');
+      expect((await prisma.remakeProposal.findUniqueOrThrow({ where: { caseId } })).status).toBe('PENDING');
+    }
+  });
+
   it('claims an exception case exactly once under concurrency and lets an operator resolve ordinary judgment', async () => {
     const ready = await pickedUpOrder();
     const reported = await app.inject({
@@ -454,6 +524,45 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     })).statusCode).toBe(200);
     expect((await prisma.exceptionCaseAction.findMany({ where: { caseId: exceptionCase.id }, orderBy: { createdAt: 'asc' } }))
       .map((action) => action.type)).toEqual(['CREATED', 'CLASSIFIED', 'CLAIMED', 'TRANSFERRED', 'TAKEN_OVER', 'RELEASED']);
+  });
+
+  it('lets one super admin assign an escalated case to another super admin but not an operator', async () => {
+    const secondSuperAdminId = '00000000-0000-4000-8000-000000000007';
+    await prisma.user.upsert({
+      where: { id: secondSuperAdminId },
+      update: { displayName: 'Second super admin', role: 'ADMIN', active: true },
+      create: { id: secondSuperAdminId, displayName: 'Second super admin', role: 'ADMIN' },
+    });
+    await prisma.adminProfile.upsert({
+      where: { userId: secondSuperAdminId },
+      update: { level: 'SUPER_ADMIN' },
+      create: { userId: secondSuperAdminId, level: 'SUPER_ADMIN' },
+    });
+    const ready = await pickedUpOrder();
+    const reported = await app.inject({
+      method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'FOOD_LOST', description: 'Escalated reassignment case' },
+    });
+    const caseId = reported.json().id as string;
+    await app.inject({ method: 'POST', url: `/admin/exception-cases/${caseId}/claim`, headers: headers(seedIds.operator), payload: { expectedVersion: 0 } });
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/escalate`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 1, reason: 'Requires super-admin reassignment' },
+    });
+    const operatorTarget = await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/takeover`, headers: headers(seedIds.admin),
+      payload: { expectedVersion: 2, nextHandlerAdminId: seedIds.operator, reason: 'Must remain behind super-admin boundary' },
+    });
+    expect(operatorTarget.statusCode).toBe(409);
+    const reassigned = await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/takeover`, headers: headers(seedIds.admin),
+      payload: { expectedVersion: 2, nextHandlerAdminId: secondSuperAdminId, reason: 'Assign to the responsible super admin' },
+    });
+    expect(reassigned.statusCode, reassigned.body).toBe(200);
+    expect(reassigned.json()).toMatchObject({ status: 'IN_PROGRESS', currentHandlerAdminId: secondSuperAdminId });
+    expect(await prisma.exceptionCaseAction.count({
+      where: { caseId, type: 'TAKEN_OVER', actorId: seedIds.admin, nextHandlerAdminId: secondSuperAdminId },
+    })).toBe(1);
   });
 
   it('keeps resolved cases terminal across release, transfer, takeover, and escalation', async () => {
@@ -531,7 +640,30 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect(superRefund.statusCode, superRefund.body).toBe(200);
   });
 
-  it('records idempotent refund funding without changing RiderTip or over-reserving settlements', async () => {
+  it('rejects an unverified non-zero rider voluntary payment without creating funded facts', async () => {
+    const ready = await pickedUpOrder();
+    const reported = await app.inject({
+      method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'FOOD_LOST', description: 'Unverified voluntary payment attempt' },
+    });
+    const caseId = reported.json().id as string;
+    const response = await app.inject({
+      method: 'POST', url: `/exception-cases/${caseId}/voluntary-compensation`, headers: headers(seedIds.riderAUser),
+      payload: {
+        expectedVersion: 0,
+        idempotencyKey: `unfunded-${caseId}`,
+        voluntaryPaymentMinor: 100,
+        reason: 'A client-entered amount is not proof of payment',
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'VOLUNTARY_PAYMENT_UNFUNDED' });
+    expect(await prisma.compensationObligation.count({ where: { caseId } })).toBe(0);
+    expect(await prisma.compensationAllocation.count()).toBe(0);
+    expect((await prisma.exceptionCase.findUniqueOrThrow({ where: { id: caseId } })).status).toBe('OPEN');
+  });
+
+  it('records idempotent refund funding and keeps released rider reservations as outstanding platform advance', async () => {
     const fundingOrder = await prisma.order.create({
       data: {
         shortCode: 'FUND',
@@ -570,7 +702,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     const caseId = reported.json().id as string;
     const request = () => app.inject({
       method: 'POST', url: `/exception-cases/${caseId}/voluntary-compensation`, headers: headers(seedIds.riderAUser),
-      payload: { expectedVersion: 0, idempotencyKey: `refund-${caseId}`, voluntaryPaymentMinor: 100, reason: 'Rider voluntarily chose original-price compensation' },
+      payload: { expectedVersion: 0, idempotencyKey: `refund-${caseId}`, reason: 'Rider chose original-price compensation' },
     });
     const responses = await Promise.all([request(), request()]);
     expect(responses.every((response) => response.statusCode === 201)).toBe(true);
@@ -580,9 +712,10 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect(obligation.customerRefundMinor).toBe(2320);
     expect(obligation.currentOrderReservedMinor).toBe(250);
     expect(obligation.otherUnwithdrawnReservedMinor).toBe(500);
-    expect(obligation.riderVoluntaryPaymentMinor).toBe(100);
-    expect(obligation.platformAdvancedMinor).toBe(1470);
-    expect(obligation.outstandingMinor).toBe(1470);
+    expect(obligation.riderVoluntaryPaymentMinor).toBe(0);
+    expect(obligation.platformAdvancedMinor).toBe(1570);
+    expect(obligation.outstandingMinor).toBe(1570);
+    expect(obligation.allocations.some((allocation) => allocation.source === 'RIDER_VOLUNTARY_PAYMENT')).toBe(false);
     const pricing = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } });
     expect(pricing.customerRiderTipMinor).toBe(30);
     expect(pricing.customerRefundMinor).toBe(2320);
@@ -603,10 +736,17 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect(released).toMatchObject({
       currentOrderReservedMinor: 0,
       otherUnwithdrawnReservedMinor: 0,
-      platformAdvancedMinor: 2220,
-      outstandingMinor: 0,
-      status: 'RESOLVED',
+      platformAdvancedMinor: 2320,
+      outstandingMinor: 2320,
+      status: 'PARTIALLY_FUNDED',
+      resolvedAt: null,
     });
+    expect(released.platformAdvancedMinor).toBe(released.outstandingMinor);
+    expect((await prisma.compensationAllocation.findFirstOrThrow({
+      where: { obligationId: released.id, source: 'PLATFORM_ADVANCE' },
+    })).amountMinor).toBe(2320);
+    expect((await prisma.riderSettlement.findMany({ where: { riderId: seedIds.riderA } }))
+      .every((settlement) => settlement.reservedMinor === 0)).toBe(true);
     expect(await prisma.exceptionCaseAction.count({ where: { caseId, type: 'RESERVATION_RELEASED' } })).toBe(1);
   });
 
@@ -664,5 +804,29 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect(docs.json().paths['/delivery-tasks/{taskId}/pre-pickup-cancel']?.post).toBeTruthy();
     expect(docs.json().paths['/exception-cases/{caseId}/voluntary-compensation']?.post).toBeTruthy();
     expect(docs.json().paths['/admin/riders/{riderId}/restrictions']?.get).toBeTruthy();
+  });
+
+  it('creates an exception case with manual fallback metadata when the classifier throws', async () => {
+    const ready = await createReady();
+    const failingClassifier: ExceptionClassifier = {
+      source: 'JEV_TEST_ADAPTER',
+      version: 'test',
+      classify: async () => { throw new Error('Jev timeout'); },
+    };
+    const event = await createExceptionEvent(
+      prisma,
+      { id: seedIds.customer, role: 'CUSTOMER' },
+      ready.orderId,
+      { type: ExceptionType.OTHER_NEEDS_REVIEW, description: 'Classifier failure must not block case creation' },
+      failingClassifier,
+    );
+    const exceptionCase = await prisma.exceptionCase.findUniqueOrThrow({ where: { exceptionEventId: event.id } });
+    expect(exceptionCase).toMatchObject({
+      category: ExceptionType.OTHER_NEEDS_REVIEW,
+      classifierSource: 'MANUAL_FALLBACK',
+      classifierVersion: '1',
+      classifierConfidenceBps: 0,
+    });
+    expect(exceptionCase.classifierResult).toMatchObject({ routeSuggestion: 'OPERATOR_POOL' });
   });
 });

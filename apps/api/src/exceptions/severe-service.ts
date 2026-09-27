@@ -10,6 +10,7 @@ import type { Actor } from '../auth/auth.js';
 import { assertOrderAccess } from '../orders/access.js';
 import { conflict, forbidden, notFound } from '../shared/errors.js';
 import { createExceptionEvent } from './service.js';
+import { assertExceptionCaseAction } from '../exception-cases/state-machine.js';
 
 const severeTypes: ExceptionType[] = [ExceptionType.SEVERE_FOOD_DAMAGE, ExceptionType.FOOD_LOST];
 
@@ -51,9 +52,7 @@ export async function proposeRemake(
     if (!severeTypes.includes(exceptionCase.category)) throw conflict('REMAKE_NOT_AVAILABLE', 'This exception does not support remake');
     if (exceptionCase.order.deliveryTask?.riderId !== riderId) throw forbidden();
     if (exceptionCase.remakeProposal) throw conflict('REMAKE_ALREADY_PROPOSED', 'A remake proposal already exists');
-    if (exceptionCase.status === ExceptionCaseStatus.RESOLVED || exceptionCase.status === ExceptionCaseStatus.CLOSED) {
-      throw conflict('CASE_ALREADY_RESOLVED', 'Exception case is already resolved');
-    }
+    assertExceptionCaseAction(exceptionCase.status, 'RIDER_PROPOSE_REMAKE');
     const proposal = await tx.remakeProposal.create({
       data: { caseId, orderId: exceptionCase.orderId, riderId, message },
     });
@@ -93,6 +92,10 @@ export async function respondToRemake(
     if (!exceptionCase.remakeProposal || exceptionCase.remakeProposal.status !== RemakeProposalStatus.PENDING) {
       throw conflict('NO_PENDING_REMAKE', 'No pending remake proposal exists');
     }
+    assertExceptionCaseAction(
+      exceptionCase.status,
+      accept ? 'CUSTOMER_ACCEPT_REMAKE' : 'CUSTOMER_REJECT_REMAKE',
+    );
     const status = accept ? RemakeProposalStatus.ACCEPTED : RemakeProposalStatus.REJECTED;
     await tx.remakeProposal.update({
       where: { id: exceptionCase.remakeProposal.id },

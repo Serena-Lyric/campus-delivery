@@ -84,7 +84,7 @@
 
 当前 runtime 已经把旧 `merchantDeliveryContributionMinor` 拆为 `merchantBaseDeliveryPriceMinor` 与 `merchantRescueContributionMinor`，并把 base/reference 从商家结算中移除。这是为解决旧字段混义而做的**第一版实现假设**，不是已经验证的真实商家结算规则。
 
-另外，当前 Seed/Runtime 仍启用了 `platformCommissionBps` 商品佣金（Seed 为 500 bps / 5%），会实际从商家商品结算扣除并计入平台收入；但**平台商品佣金/抽成规则尚未被产品确认**。因此该非零值只能视为审核缺口/演示遗留，不能视为产品规则；下一轮应将未决收费规则与真实运行默认隔离，避免 Seed 参数静默成为商业规则。
+商品佣金字段和计算能力仍保留为未来 policy hook，但平台商品佣金/抽成规则尚未被产品确认，因此当前 Seed 与默认业务配置使用中性值 `platformCommissionBps = 0`。非零比例只能出现在明确隔离的技术能力测试或未来经确认的版本化配置中，不能由演示参数静默成为商业规则。
 
 ## 7. 仍未决定
 

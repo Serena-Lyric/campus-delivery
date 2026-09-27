@@ -4,7 +4,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 ## 当前阶段
 
-本阶段仍是模块化单体 REST API。当前重点是骑手并发容量 1→2→5、订单池决策事实、低风险物品分类，以及配送参考价/真实救单出资/平台价差的明确拆分。
+本阶段仍是模块化单体 REST API。当前重点是修复独立审核确认的资金与状态机安全问题，并保持骑手容量、订单池快照和低风险分类基础设施一致。商家初始配送金额的真实结算语义仍待 W/真实运营经验验证，本轮不作决定。
 
 ## 技术栈
 
@@ -68,6 +68,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 - deliveryPricingDefaultCustomerFeeMinor / deliveryPricingDefaultRiderBasePayoutMinor：用户基础配送费与骑手基础保证收益独立 DEMO 默认值。
 - deliveryPricingAdditionalItemCustomerFeeMinor / deliveryPricingAdditionalItemRiderPayoutMinor：按额外件数增加的第一版规则参数。
 - deliveryPricingMerchantOverrides：SUPER_ADMIN 管理的商家级绝对覆盖；仍受非负基础价差校验。
+- platformCommissionBps：商品佣金计算能力的配置 hook；正式抽成规则尚未确认，当前 Seed/默认业务值为 0。
 - verificationCodeTtlSeconds：Seed 为 10 分钟。
 - customerUnreachableWaitSeconds：只预留，不用于自动判责。
 - riderTipWindowSeconds：Seed 演示为 86400 秒，创建订单时快照到 tipDeadline。
@@ -153,6 +154,8 @@ Evidence 只提供争议事实，不自动代表任何一方有责。普通低�
 
 结构化异常进一步区分轻微损坏/延迟、严重餐损、餐品丢失、投诉争议和其他待审。ExceptionEvent 保存事实，ExceptionCase 保存运营处理状态，两者不混用。
 
+普通固定地址/校园位置节点订单正常情况下不要求骑手先联系用户或等待本人出现；骑手按订单地址/位置快照正确送达即完成正常履约。地址填写/选择错误属于用户侧责任，额外转送由用户与骑手自愿协商，骑手拒绝不构成履约失败。仅必须本人交接、强制交付码等特殊模式下的失联等待与最终处理仍待确定。
+
 允许无人接触投递时，用户失联订单可在骑手提交 DELIVERY_PHOTO 后完成。不允许无人接触投递时，订单进入 EXCEPTION。系统不自动判责或扣款。
 
 DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除历史余额。
@@ -167,17 +170,19 @@ DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除�
 
 ## 配送定价、救单与价格快照
 
-配送价格明确区分商家基础/reference price、用户基础配送费、骑手基础收益、商家真实救单出资、用户红包、平台补贴、骑手保证收益和平台配送贡献。reference price 只是策略输入，不再从商家结算中等额扣除。
+配送价格当前明确区分商家初始配送金额、用户基础配送费、骑手基础收益、商家真实救单出资、用户红包、平台补贴、骑手保证收益和平台配送贡献。当前 runtime 暂时把 `merchantBaseDeliveryPrice` 当作 reference input，不从商家结算中等额扣除；这是 provisional 实现，不是最终商业规则。商家初始金额是否为真实成本、是否从商品结算扣除或采用其他资金方式，仍待 W/真实运营经验验证。
 
 第一版确定性 policy 使用全局默认、商家 override 和总数量计算彼此独立的 customerDeliveryFee / riderBasePayout，并拒绝负基础价差。merchant category、取餐/目的地区域、reference price 和 classifier foodType 当前只进入 inputs snapshot，尚未影响金额。
 
 未接单前商家可以增加真实 rescue contribution；只允许增加，增量 100% 进入骑手保证收益并从商家结算扣除，平台配送贡献不扩大。兼容 endpoint `/delivery-quote` 已在 OpenAPI 标记 `newRescueContributionMinor` 语义。
 
-骑手接单事务原子冻结 customer fee、rider base、merchant rescue、tip、subsidy、guaranteed payout、platform contribution、policy version 和 inputs snapshot。角色价格视图彼此隔离：用户只看自己的费用/tip，商家只看 base/reference 与 rescue/history，骑手只看保证收益，SUPER_ADMIN 看完整账务。
+骑手接单事务原子冻结 customer fee、rider base、merchant rescue、tip、subsidy、guaranteed payout、platform contribution、policy version 和 inputs snapshot。角色价格视图彼此隔离：用户只看自己的费用/tip，商家看到当前 provisional initial/reference 与 rescue/history，骑手只看保证收益，SUPER_ADMIN 看完整账务。
+
+商品佣金字段与计算 plumbing 保留，但正式抽成规则未决定。当前默认 `platformCommissionBps=0`，正常创建/完成订单不会因此减少 merchant payable，也不会生成商品 commission revenue。
 
 ## 用户骑手激励
 
-用户激励与商家报价、平台补贴独立记账。操作窗口从订单创建起 24 小时，并在订单创建时保存 tipDeadline；截止判断由服务端执行。接单前用户可以增加、减少或撤回；接单后只能追加。正常送达后只要仍在窗口内仍可追加，新增部分更新当前责任骑手的收益和结算金额，100% 归骑手，不增加平台收入。
+用户激励与商家初始配送金额、商家救单出资、平台补贴独立记账。操作窗口从订单创建起 24 小时，并在订单创建时保存 tipDeadline；截止判断由服务端执行。接单前用户可以增加、减少或撤回；接单后只能追加。正常送达后只要仍在窗口内仍可追加，新增部分更新当前责任骑手的收益和结算金额，100% 归骑手，不增加平台收入。
 
 无人承接失败时，尚未锁定的用户骑手激励记录为全额退款。
 
@@ -207,9 +212,11 @@ timeRisk 与 completionRisk 独立返回。曝光策略实际使用完成/无人
 
 异常池使用 `ExceptionCase.version` 与原子条件更新保证同一 case 只有一个有效处理人。claim、release、transfer、takeover、escalate 和 resolve 都记录不可变 action。退款/冻结使用 case row lock、唯一 idempotency key、唯一 obligation 和事务，重试不会重复执行。
 
-赔付义务分别记录本单 settlement reservation、其他未提现 settlement reservation、骑手主动支付、平台垫付、用户退款和 outstanding。`RiderSettlement.reservedMinor` 支持部分冻结；并发事务按固定顺序锁定结算行，同一余额不能重复占用。真实支付、提现、未来收入自动抵扣和长期追偿尚未实现。
+赔付义务分别记录本单 settlement reservation、其他未提现 settlement reservation、平台垫付、用户退款和 outstanding。`RiderSettlement.reservedMinor` 支持部分冻结；并发事务按固定顺序锁定结算行，同一余额不能重复占用。真实支付、提现、未来收入自动抵扣和长期追偿尚未实现；因此 public API 当前拒绝非零 `voluntaryPaymentMinor`，不会把骑手输入的数字记作已付款。
 
-异常分类提供类型化 `ExceptionClassifier`、确定性 fallback 和 manual fallback。分类来源/版本/置信度与管理员最终结论分开保存；当前没有真实 Jev 网络调用，AI 不执行资金或责任动作。
+`release-compensation` 只解除已有 settlement reservation。若用户退款已经发生，解冻后由平台继续垫付的金额会同时增加 `platformAdvancedMinor` 与 `outstandingMinor`，义务保持未结；release 不等于 write-off 或债务核销。
+
+异常分类提供类型化 `ExceptionClassifier`、确定性 fallback 和 manual fallback。adapter 抛错时 case 仍创建，并明确记录 `MANUAL_FALLBACK`；确定性默认只建议 `OPERATOR_POOL`，异常类型本身不会自动升级超管。分类来源/版本/置信度与管理员最终结论分开保存；当前没有真实 Jev 网络调用，AI 不执行资金或责任动作。
 
 ## 骑手容量与订单池信息
 
@@ -217,9 +224,13 @@ timeRisk 与 completionRisk 独立返回。曝光策略实际使用完成/无人
 
 claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/PICKED_UP，两个并发请求竞争最后一个槽位只能成功一个。调低额度不破坏已持订单。骑手可通过 `/riders/me/capacity` 查看阶段、有效额度和升级/override 事件。
 
-可接订单 DTO 只返回骑手决策所需事实：保证收益、取餐商家/地点/区域、目的地快照/区域、foodType、handlingTags、总数量和行项目数；不返回 customer、平台价差或资金来源拆分。平台不据此规划路线或推荐拼单。
+可接订单 DTO 只返回骑手决策所需事实：保证收益、稳定 merchant/location id、订单创建时的取餐地点/区域与目的地 label/区域快照、foodType、handlingTags、总数量和行项目数；不混入可变的 live 商家/地点名称，也不返回 customer、平台价差或资金来源拆分。平台不据此规划路线或推荐拼单。
 
-物品分类保存原始商品名、商家原始分类与 suggestedFoodType/handlingTags/source/version/confidence。当前只有 deterministic/manual fallback，没有真实 Jev 网络调用；分类失败回退 UNKNOWN 且不阻塞订单，也不影响钱、容量、责任或曝光。
+物品分类保存原始商品名、商家原始分类与 suggestedFoodType/handlingTags/source/version/confidence。潜在远程分类调用在订单写事务之前执行，事务内会重新校验商品事实，变化时安全拒绝重试。当前只有 deterministic/manual fallback，没有真实 Jev 网络调用；分类失败回退 UNKNOWN 且不阻塞订单，也不影响钱、容量、责任或曝光。
+
+## Migration 约束
+
+`20260926000400_capacity_pool_pricing` 对开发/demo 历史 settlement 与 BusinessConfig 做过 semantic rewrite。项目尚未进入真实生产账务，因此本轮不为 demo 历史构造复杂反迁移；该 migration 明确只属于 pre-production 语义迁移，不是未来生产财务 migration 模板。真实生产后，已 FINALIZED 财务事实和已生效历史配置必须通过保留审计历史的版本化 correction/event/明确迁移策略修正，不能由普通 migration 静默原地重写。
 
 ## 待结算资金
 
@@ -294,7 +305,7 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
     pnpm test:integration
     pnpm build
 
-集成测试使用真实 PostgreSQL，覆盖既有订单/异常/结算流程、审核补丁状态矩阵，以及容量 1→2→5、并发最后槽位、global/override 取 min、订单池 DTO、classifier fallback、参考价/救单出资拆分、rescue/tip/subsidy 精确传递、claim 价格快照、角色资金隔离和 Super Admin 权限。
+集成测试使用真实 PostgreSQL，覆盖既有订单/异常/结算流程、审核补丁状态矩阵，以及默认 commission=0、release 后未结垫付恒等、非零自报付款拒绝、participant escalation guard、超管转派、容量历史回填、容量 1→2→5、订单池快照 DTO、classifier fallback/事务边界、rescue/tip/subsidy 精确传递、claim 价格快照、角色资金隔离和 Super Admin 权限。
 
 ## 已实现
 
@@ -306,7 +317,7 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
 - 独立 Evidence 与 MockMediaStorage
 - 结构化异常事实
 - 角色化订单时间线
-- 商家 base/reference price 与真实 rescue contribution/history/cooldown 分离
+- 商家初始配送金额（当前 provisional reference）与真实 rescue contribution/history/cooldown 分离
 - 可配置 DeliveryPricingPolicy：全局默认、商家 override、数量规则和输入快照
 - 用户骑手激励独立账本
 - 服务端 24 小时骑手激励窗口和订单 tipDeadline 快照
@@ -324,7 +335,7 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
 - 骑手未取餐取消、日内 warning、两条滚动冷却路径和 override 审计
 - 严重餐损/丢失、补餐提议与用户确认
 - ExceptionCase 共享池、单处理人 CAS、转交/接管/升级审计
-- Compensation obligation、部分 settlement reservation、主动支付、平台垫付与 outstanding
+- Compensation obligation、部分 settlement reservation、平台垫付与 outstanding；非零 rider 自报付款在可验证资金能力上线前被拒绝
 - OPERATOR / SUPER_ADMIN 分权和管理员级别审计
 - 类型化异常分类 adapter 与确定性/manual fallback（无真实 Jev 调用）
 - 补贴使用事实与曝光状态解耦
@@ -344,6 +355,8 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
 - 骑手待结算最终天数
 - 5 单之后是否自动升级、哪些事实会触发自动降额度
 - 各商家/品类/区域的正式配送定价参数与长期算法
+- 商家初始配送金额究竟是 reference、真实商家成本还是混合概念，以及是否从商品结算中扣除、pre-claim 是否允许降低
+- 正式商品佣金/平台抽成比例；当前默认值为 0
 - 平台补贴正式步长、间隔、单订单上限和预算比例
 - 40 分钟窗口内更细的提醒与补贴顺序
 - 接单后激励在异常争议下的退款边界
@@ -354,8 +367,7 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
 - 赔付比例
 - 平台垫付后的长期追偿、未来收入抵扣和骑手恢复接单规则
 - 普通管理员资金权限的更细粒度授权与二次审批
-- 用户失联等待时间
-- 错误地址责任规则
+- 必须本人交接、强制交付码等特殊模式下的用户失联等待与最终处理；普通固定地址/位置节点正常履约不要求联系或等待
 - 真实媒体存储
 - 微信登录
 - 手机号登录

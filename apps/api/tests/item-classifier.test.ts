@@ -9,6 +9,11 @@ describe('low-risk item classifier', () => {
     expect(result.handlingTags).toContain('LIQUID');
   });
 
+  it('matches a cream cake as a crush-risk dessert before the generic milk keyword', async () => {
+    const result = await new DeterministicItemClassifier().classify({ productName: '奶油蛋糕', merchantCategoryName: '甜品' });
+    expect(result).toMatchObject({ suggestedFoodType: FoodType.CAKE_DESSERT, handlingTags: ['CRUSH_RISK'] });
+  });
+
   it('falls back to UNKNOWN when an adapter fails', async () => {
     const failing: ItemClassifier = { classify: async () => { throw new Error('Jev unavailable'); } };
     await expect(classifyItemSafely(failing, { productName: '未知商品', merchantCategoryName: '其他' }))

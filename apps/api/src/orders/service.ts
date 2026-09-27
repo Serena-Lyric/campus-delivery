@@ -147,6 +147,34 @@ export async function createOrder(
   const coolingOffEndsAt = new Date(now.getTime() + config.coolingOffSeconds * 1000);
   const tipDeadline = new Date(now.getTime() + config.riderTipWindowSeconds * 1000);
 
+  const productsToClassify = await prisma.product.findMany({
+    where: { id: { in: [...quantities.keys()] } },
+    include: { category: { select: { name: true } } },
+  });
+  if (
+    productsToClassify.length !== quantities.size
+    || productsToClassify.some((product) => product.merchantId !== input.merchantId || !product.isAvailable)
+  ) {
+    throw badRequest('INVALID_PRODUCTS', 'Every product must be available from the selected merchant');
+  }
+  const preclassifiedItems = new Map(await Promise.all(productsToClassify.map(async (product) => [
+    product.id,
+    {
+      facts: {
+        merchantId: product.merchantId,
+        categoryId: product.categoryId,
+        productName: product.name,
+        categoryName: product.category.name,
+        priceMinor: product.priceMinor,
+        isAvailable: product.isAvailable,
+      },
+      classification: await classifyItemSafely(classifier, {
+        productName: product.name,
+        merchantCategoryName: product.category.name,
+      }),
+    },
+  ] as const)));
+
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const shortCode = generateShortCode();
     try {
@@ -167,6 +195,18 @@ export async function createOrder(
         }
         if (products.length !== quantities.size || products.some((product) => product.merchantId !== merchant.id || !product.isAvailable)) {
           throw badRequest('INVALID_PRODUCTS', 'Every product must be available from the selected merchant');
+        }
+        if (products.some((product) => {
+          const before = preclassifiedItems.get(product.id)?.facts;
+          return !before
+            || before.merchantId !== product.merchantId
+            || before.categoryId !== product.categoryId
+            || before.productName !== product.name
+            || before.categoryName !== product.category.name
+            || before.priceMinor !== product.priceMinor
+            || before.isAvailable !== product.isAvailable;
+        })) {
+          throw conflict('PRODUCT_FACTS_CHANGED', 'Product facts changed during classification; retry order creation');
         }
 
         if (merchant.maxConcurrentOrders > 0) {
@@ -189,12 +229,9 @@ export async function createOrder(
           }
         }
 
-        const itemData = await Promise.all(products.map(async (product) => {
+        const itemData = products.map((product) => {
           const quantity = quantities.get(product.id)!;
-          const classification = await classifyItemSafely(classifier, {
-            productName: product.name,
-            merchantCategoryName: product.category.name,
-          });
+          const classification = preclassifiedItems.get(product.id)!.classification;
           return {
             productId: product.id,
             productNameSnapshot: product.name,
@@ -208,7 +245,7 @@ export async function createOrder(
             quantity,
             subtotalMinor: multiplyMinor(product.priceMinor, quantity),
           };
-        }));
+        });
         const itemSubtotalMinor = itemData.reduce((sum, item) => sum + item.subtotalMinor, 0);
         if (!Number.isSafeInteger(itemSubtotalMinor)) {
           throw badRequest('MONEY_OVERFLOW', 'Money calculation overflowed');

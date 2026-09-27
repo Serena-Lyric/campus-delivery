@@ -1,10 +1,12 @@
 import {
   DeliveryMethod,
+  FoodType,
   MerchantExposureState,
   PickupVerificationMode,
   PrismaClient,
   RiderStatus,
 } from '@prisma/client';
+import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import type { AppConfig } from '../../src/config.js';
@@ -175,8 +177,8 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
     const task = response.json().find((candidate: { id: string }) => candidate.id === ready.taskId);
     expect(task).toMatchObject({
       riderGuaranteedPayoutMinor: 220,
-      pickup: { merchant: { id: seedIds.merchant }, locationName: '第一食堂', region: '东门片区' },
-      destination: { label: '学生宿舍 3 号楼', region: '一期' },
+      pickup: { merchantId: seedIds.merchant, locationName: '第一食堂', region: '东门片区' },
+      destination: { locationId: seedIds.dormLocation, label: '学生宿舍 3 号楼', region: '一期' },
       carrying: { totalQuantity: 2, lineItemCount: 2 },
     });
     expect(task.carrying.foodTypes).toEqual(expect.arrayContaining(['RICE_MEAL', 'DRINK']));
@@ -186,6 +188,30 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
     const items = await prisma.orderItem.findMany({ where: { orderId: ready.orderId } });
     expect(items.map((item) => item.productNameSnapshot)).toEqual(expect.arrayContaining(['鸡腿饭', '柠檬茶']));
     expect(items.every((item) => item.merchantCategoryNameSnapshot === '主食')).toBe(true);
+  });
+
+  it('keeps rider fulfillment text on order snapshots after merchant and location renames', async () => {
+    const ready = await createReady();
+    await Promise.all([
+      prisma.merchant.update({ where: { id: seedIds.merchant }, data: { name: '改名后的商家' } }),
+      prisma.campusLocation.update({ where: { id: seedIds.merchantLocation }, data: { name: '改名后的取餐点' } }),
+      prisma.campusLocation.update({ where: { id: seedIds.dormLocation }, data: { name: '改名后的目的地' } }),
+    ]);
+    try {
+      const response = await app.inject({ method: 'GET', url: '/delivery-tasks/available', headers: headers(seedIds.riderAUser) });
+      const task = response.json().find((candidate: { id: string }) => candidate.id === ready.taskId);
+      expect(task).toMatchObject({
+        pickup: { merchantId: seedIds.merchant, locationName: '第一食堂', region: '东门片区' },
+        destination: { locationId: seedIds.dormLocation, label: '学生宿舍 3 号楼', region: '一期' },
+      });
+      expect(JSON.stringify(task)).not.toMatch(/改名后的商家|改名后的取餐点|改名后的目的地/);
+    } finally {
+      await Promise.all([
+        prisma.merchant.update({ where: { id: seedIds.merchant }, data: { name: '校园饭堂演示店' } }),
+        prisma.campusLocation.update({ where: { id: seedIds.merchantLocation }, data: { name: '第一食堂' } }),
+        prisma.campusLocation.update({ where: { id: seedIds.dormLocation }, data: { name: '学生宿舍 3 号楼' } }),
+      ]);
+    }
   });
 
   it('falls back safely when the item classifier fails and does not change money or block order creation', async () => {
@@ -211,6 +237,68 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
     expect(pricing).toMatchObject({ customerDeliveryFeeMinor: 300, riderBasePayoutMinor: 200, deliveryPlatformContributionMinor: 100 });
   });
 
+  it('runs item classification before the write transaction and rejects stale product facts', async () => {
+    const beforeCount = await prisma.order.count();
+    const mutatingClassifier: ItemClassifier = {
+      classify: async () => {
+        await prisma.product.update({ where: { id: seedIds.productRice }, data: { name: '鸡腿饭（分类期间已变更）' } });
+        return {
+          suggestedFoodType: FoodType.RICE_MEAL,
+          handlingTags: [],
+          source: 'JEV_TEST_ADAPTER',
+          version: 'test',
+          confidenceBps: 9000,
+        };
+      },
+    };
+    try {
+      await expect(createOrder(
+        prisma,
+        { id: seedIds.customer, role: 'CUSTOMER' },
+        {
+          merchantId: seedIds.merchant,
+          destinationLocationId: seedIds.dormLocation,
+          deliveryMethod: DeliveryMethod.DESIGNATED_POINT,
+          items: [{ productId: seedIds.productRice, quantity: 1 }],
+        },
+        config.campusTimeZone,
+        new Date(),
+        mutatingClassifier,
+      )).rejects.toMatchObject({ code: 'PRODUCT_FACTS_CHANGED' });
+      expect(await prisma.order.count()).toBe(beforeCount);
+    } finally {
+      await prisma.product.update({ where: { id: seedIds.productRice }, data: { name: '鸡腿饭' } });
+    }
+  });
+
+  it('backfills only riders with a completed assignment on a delivered order', async () => {
+    const ready = await createReady();
+    expect((await claim(ready.taskId, seedIds.riderAUser)).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${ready.taskId}/pick-up`, headers: headers(seedIds.riderAUser), payload: {} })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${ready.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {} })).statusCode).toBe(200);
+    await prisma.rider.updateMany({ data: { firstNormalDeliveredAt: null } });
+    const migrationSql = await readFile(
+      new URL('../../prisma/migrations/20260927000200_audit_handoff_safety_fixes/migration.sql', import.meta.url),
+      'utf8',
+    );
+    for (const statement of migrationSql.split(';').map((part) => part.trim()).filter(Boolean)) {
+      await prisma.$executeRawUnsafe(statement);
+    }
+    const [historical, noHistory] = await Promise.all([
+      prisma.rider.findUniqueOrThrow({ where: { id: seedIds.riderA } }),
+      prisma.rider.findUniqueOrThrow({ where: { id: seedIds.riderB } }),
+    ]);
+    expect(historical.firstNormalDeliveredAt).not.toBeNull();
+    expect(noHistory.firstNormalDeliveredAt).toBeNull();
+    const capacity = await getMyCapacity(
+      prisma,
+      { id: seedIds.riderAUser, role: 'RIDER', riderId: seedIds.riderA },
+      config,
+      new Date(historical.firstNormalDeliveredAt!.getTime() + 86_400_000),
+    );
+    expect(capacity).toMatchObject({ stage: 'STANDARD', stageCapacity: 5 });
+  });
+
   it('keeps reference price separate and applies rescue, tip, subsidy, spread, and claim snapshots exactly', async () => {
     const ready = await createReady();
     const initial = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } });
@@ -223,7 +311,8 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
       platformSubsidyMinor: 0,
       riderGuaranteedPayoutMinor: 220,
       deliveryPlatformContributionMinor: 100,
-      merchantSettlementMinor: 1900,
+      platformCommissionMinor: 0,
+      merchantSettlementMinor: 2000,
       merchantDeliveryContributionMinor: 0,
     });
     const taskBefore = await prisma.deliveryTask.findUniqueOrThrow({ where: { id: ready.taskId } });
@@ -237,7 +326,7 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
       merchantRescueContributionMinor: 50,
       riderGuaranteedPayoutMinor: 270,
       deliveryPlatformContributionMinor: 100,
-      merchantSettlementMinor: 1850,
+      merchantSettlementMinor: 1950,
     });
     expect((await prisma.deliveryTask.findUniqueOrThrow({ where: { id: ready.taskId } })).claimDeadline).toEqual(taskBefore.claimDeadline);
     expect((await app.inject({

@@ -8,7 +8,11 @@ import {
 } from '@prisma/client';
 import { requireAdminLevel, type Actor } from '../auth/auth.js';
 import { conflict, forbidden, notFound } from '../shared/errors.js';
-import { DeterministicExceptionClassifier, type ExceptionClassifier } from '../exceptions/classifier.js';
+import {
+  DeterministicExceptionClassifier,
+  classifyExceptionSafely,
+  type ExceptionClassifier,
+} from '../exceptions/classifier.js';
 import { assertExceptionCaseAction } from './state-machine.js';
 
 export async function openExceptionCase(
@@ -16,7 +20,7 @@ export async function openExceptionCase(
   event: Pick<ExceptionEvent, 'id' | 'orderId' | 'type' | 'description'>,
   classifier: ExceptionClassifier = new DeterministicExceptionClassifier(),
 ) {
-  const classification = await classifier.classify({ type: event.type, description: event.description });
+  const classification = await classifyExceptionSafely(classifier, { type: event.type, description: event.description });
   const exceptionCase = await tx.exceptionCase.create({
     data: {
       orderId: event.orderId,
@@ -24,8 +28,8 @@ export async function openExceptionCase(
       category: classification.category,
       ...(classification.subtype ? { subtype: classification.subtype } : {}),
       priority: classification.priority,
-      classifierSource: classifier.source,
-      classifierVersion: classifier.version,
+      classifierSource: classification.source,
+      classifierVersion: classification.version,
       classifierResult: classification as unknown as Prisma.InputJsonValue,
       classifierConfidenceBps: classification.confidenceBps,
     },
@@ -36,7 +40,7 @@ export async function openExceptionCase(
       {
         caseId: exceptionCase.id,
         type: ExceptionCaseActionType.CLASSIFIED,
-        reason: classifier.source,
+        reason: classification.source,
         metadata: classification as unknown as Prisma.InputJsonValue,
       },
     ],
@@ -260,8 +264,8 @@ export async function takeoverExceptionCase(
     assertExceptionCaseAction(current.status, 'TAKEOVER');
     const target = await tx.user.findUnique({ where: { id: nextHandlerAdminId }, include: { adminProfile: true } });
     if (!target?.adminProfile || target.role !== 'ADMIN') throw conflict('INVALID_ADMIN_HANDLER', 'Target user is not an administrator');
-    if (current.status === ExceptionCaseStatus.ESCALATED && nextHandlerAdminId !== actor.id) {
-      throw conflict('ESCALATED_CASE_REQUIRES_SUPER_ADMIN', 'An escalated case must first be taken over by the super admin');
+    if (current.status === ExceptionCaseStatus.ESCALATED && target.adminProfile.level !== 'SUPER_ADMIN') {
+      throw conflict('ESCALATED_CASE_REQUIRES_SUPER_ADMIN', 'An escalated case can be assigned only to a super admin');
     }
     const now = new Date();
     const updated = await tx.exceptionCase.updateMany({

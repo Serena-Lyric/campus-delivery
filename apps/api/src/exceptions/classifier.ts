@@ -28,9 +28,26 @@ export class DeterministicExceptionClassifier implements ExceptionClassifier {
       category: input.type,
       subtype: null,
       priority: high ? ExceptionCasePriority.HIGH : medium ? ExceptionCasePriority.MEDIUM : ExceptionCasePriority.UNKNOWN,
-      routeSuggestion: high ? 'SUPER_ADMIN_REVIEW' : 'OPERATOR_POOL',
+      routeSuggestion: 'OPERATOR_POOL',
       confidenceBps: 10_000,
     };
+  }
+}
+
+export type SourcedExceptionClassification = ExceptionClassification & {
+  source: string;
+  version: string;
+};
+
+export async function classifyExceptionSafely(
+  classifier: ExceptionClassifier,
+  input: { type: ExceptionType; description: string },
+): Promise<SourcedExceptionClassification> {
+  try {
+    return { ...await classifier.classify(input), source: classifier.source, version: classifier.version };
+  } catch {
+    const fallback = new ManualFallbackClassifier();
+    return { ...await fallback.classify(input), source: fallback.source, version: fallback.version };
   }
 }
 

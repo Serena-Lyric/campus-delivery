@@ -43,8 +43,8 @@ const taskSelect = {
       pickupRegionSnapshot: true,
       deliveryMethod: true,
       merchantPreparationStatus: true,
-      merchant: { select: { id: true, name: true } },
-      destinationLocation: { select: { id: true, name: true, type: true } },
+      merchantId: true,
+      destinationLocationId: true,
       items: {
         select: {
           suggestedFoodType: true,
@@ -71,14 +71,14 @@ function presentRiderTask(task: RiderTask) {
     pickedUpAt: task.pickedUpAt,
     deliveredAt: task.deliveredAt,
     pickup: {
-      merchant: task.order.merchant,
+      merchantId: task.order.merchantId,
       locationName: task.order.pickupLocationNameSnapshot,
       region: task.order.pickupRegionSnapshot,
     },
     destination: {
       label: task.order.destinationLabelSnapshot,
       region: task.order.destinationRegionSnapshot,
-      location: task.order.destinationLocation,
+      locationId: task.order.destinationLocationId,
     },
     carrying: {
       totalQuantity,

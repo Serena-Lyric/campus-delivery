@@ -9,7 +9,10 @@ export type ExceptionCaseAction =
   | 'ESCALATE'
   | 'RESOLVE'
   | 'ADMIN_REFUND'
-  | 'RIDER_COMPENSATE';
+  | 'RIDER_COMPENSATE'
+  | 'RIDER_PROPOSE_REMAKE'
+  | 'CUSTOMER_ACCEPT_REMAKE'
+  | 'CUSTOMER_REJECT_REMAKE';
 
 const allowed: Readonly<Record<ExceptionCaseAction, readonly ExceptionCaseStatus[]>> = {
   CLAIM: [ExceptionCaseStatus.OPEN],
@@ -29,6 +32,13 @@ const allowed: Readonly<Record<ExceptionCaseAction, readonly ExceptionCaseStatus
     ExceptionCaseStatus.IN_PROGRESS,
     ExceptionCaseStatus.WAITING_FOR_PARTICIPANT,
   ],
+  RIDER_PROPOSE_REMAKE: [
+    ExceptionCaseStatus.OPEN,
+    ExceptionCaseStatus.IN_PROGRESS,
+    ExceptionCaseStatus.WAITING_FOR_PARTICIPANT,
+  ],
+  CUSTOMER_ACCEPT_REMAKE: [ExceptionCaseStatus.WAITING_FOR_PARTICIPANT],
+  CUSTOMER_REJECT_REMAKE: [ExceptionCaseStatus.WAITING_FOR_PARTICIPANT],
 };
 
 export function assertExceptionCaseAction(status: ExceptionCaseStatus, action: ExceptionCaseAction): void {
