@@ -6,6 +6,7 @@ import {
   ExceptionCaseActionType,
   ExceptionCaseStatus,
   ExceptionResolutionType,
+  ExceptionType,
   OrderEventActorType,
   OrderEventType,
   OrderStatus,
@@ -15,6 +16,7 @@ import {
 } from '@prisma/client';
 import { requireAdminLevel, type Actor } from '../auth/auth.js';
 import { badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
+import { assertExceptionCaseAction } from '../exception-cases/state-machine.js';
 
 function assertMinor(value: number, name: string) {
   if (!Number.isSafeInteger(value) || value < 0) throw badRequest('INVALID_MONEY', `${name} must be a non-negative integer`);
@@ -24,7 +26,7 @@ export async function refundAndCloseExceptionCase(
   prisma: PrismaClient,
   actor: Actor,
   caseId: string,
-  input: { idempotencyKey: string; voluntaryPaymentMinor?: number; reason: string },
+  input: { expectedVersion: number; idempotencyKey: string; voluntaryPaymentMinor?: number; reason: string },
   now = new Date(),
 ) {
   const voluntaryPaymentMinor = input.voluntaryPaymentMinor ?? 0;
@@ -50,6 +52,10 @@ export async function refundAndCloseExceptionCase(
     if (!task || !assignment) throw conflict('RIDER_RESPONSIBILITY_MISSING', 'Exception order has no rider assignment');
     if (actor.role === 'RIDER') {
       if (actor.riderId !== assignment.riderId) throw forbidden();
+      const voluntaryTypes: ExceptionType[] = [ExceptionType.SEVERE_FOOD_DAMAGE, ExceptionType.FOOD_LOST];
+      if (!voluntaryTypes.includes(exceptionCase.category)) {
+        throw conflict('VOLUNTARY_COMPENSATION_NOT_ALLOWED', 'Rider voluntary compensation is limited to severe damage or loss cases');
+      }
     } else {
       requireAdminLevel(actor, ['OPERATOR', 'SUPER_ADMIN']);
       if (exceptionCase.currentHandlerAdminId !== actor.id && actor.adminLevel !== 'SUPER_ADMIN') throw forbidden();
@@ -60,6 +66,16 @@ export async function refundAndCloseExceptionCase(
       }
       return exceptionCase.compensationObligation;
     }
+    const action = actor.role === 'RIDER' ? 'RIDER_COMPENSATE' : 'ADMIN_REFUND';
+    assertExceptionCaseAction(exceptionCase.status, action);
+    if (exceptionCase.version !== input.expectedVersion) {
+      throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before compensation');
+    }
+    const reservedCase = await tx.exceptionCase.updateMany({
+      where: { id: caseId, version: input.expectedVersion, status: exceptionCase.status },
+      data: { version: { increment: 1 }, lastActionAt: now },
+    });
+    if (reservedCase.count !== 1) throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before compensation');
     const pricing = exceptionCase.order.pricing;
     if (!pricing) throw conflict('MISSING_PRICING', 'Order pricing is missing');
     const customerRefundMinor = pricing.itemSubtotalMinor + pricing.customerDeliveryFeeMinor;
@@ -73,7 +89,7 @@ export async function refundAndCloseExceptionCase(
         data: {
           orderId: exceptionCase.orderId,
           riderId: assignment.riderId,
-          amountMinor: assignment.riderPayoutMinorAtClaim + assignment.postClaimTipMinor,
+          amountMinor: assignment.riderGuaranteedPayoutMinorAtClaim + assignment.postClaimTipMinor,
           status: RiderSettlementStatus.HELD,
           pendingUntil: now,
           heldAt: now,
@@ -193,17 +209,17 @@ export async function refundAndCloseExceptionCase(
       where: { taskId: task.id, status: DeliveryAssignmentStatus.ACTIVE },
       data: { status: DeliveryAssignmentStatus.EXCEPTION, endedAt: now, reason: 'REFUND_AND_CLOSE' },
     });
-    await tx.exceptionCase.update({
-      where: { id: caseId },
+    const resolvedCase = await tx.exceptionCase.updateMany({
+      where: { id: caseId, version: input.expectedVersion + 1, status: exceptionCase.status },
       data: {
         status: ExceptionCaseStatus.RESOLVED,
         resolutionType: ExceptionResolutionType.REFUND_AND_CLOSE,
         resolutionNote: input.reason,
         resolvedAt: now,
         lastActionAt: now,
-        version: { increment: 1 },
       },
     });
+    if (resolvedCase.count !== 1) throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before final resolution');
     await tx.exceptionCaseAction.createMany({
       data: [
         {
@@ -251,6 +267,7 @@ export async function releaseCompensationReservations(
   prisma: PrismaClient,
   actor: Actor,
   caseId: string,
+  expectedVersion: number,
   idempotencyKey: string,
   reason: string,
   now = new Date(),
@@ -271,6 +288,20 @@ export async function releaseCompensationReservations(
       }
       return obligation;
     }
+    if (
+      exceptionCase.status !== ExceptionCaseStatus.RESOLVED
+      || exceptionCase.resolutionType !== ExceptionResolutionType.REFUND_AND_CLOSE
+    ) {
+      throw conflict('CASE_STATE_CONFLICT', 'Compensation reservations can be released only after refund-and-close resolution');
+    }
+    if (exceptionCase.version !== expectedVersion) {
+      throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before compensation release');
+    }
+    const reservedCase = await tx.exceptionCase.updateMany({
+      where: { id: caseId, version: expectedVersion, status: ExceptionCaseStatus.RESOLVED },
+      data: { version: { increment: 1 }, lastActionAt: now },
+    });
+    if (reservedCase.count !== 1) throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before compensation release');
     const reservations = obligation.allocations.filter((allocation) => allocation.riderSettlementId && !allocation.releasedAt);
     const settlementIds = reservations.map((allocation) => allocation.riderSettlementId!);
     if (settlementIds.length > 0) {

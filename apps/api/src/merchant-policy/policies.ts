@@ -10,7 +10,15 @@ import { Value } from '@sinclair/typebox/value';
 import { AppError } from '../shared/errors.js';
 
 export const PolicyConfigSchema = Type.Object({
-  customerDeliveryFeeMinor: Type.Integer({ minimum: 0 }),
+  deliveryPricingDefaultCustomerFeeMinor: Type.Integer({ minimum: 0 }),
+  deliveryPricingDefaultRiderBasePayoutMinor: Type.Integer({ minimum: 0 }),
+  deliveryPricingAdditionalItemCustomerFeeMinor: Type.Integer({ minimum: 0 }),
+  deliveryPricingAdditionalItemRiderPayoutMinor: Type.Integer({ minimum: 0 }),
+  deliveryPricingMerchantOverrides: Type.Array(Type.Object({
+    merchantId: Type.String({ minLength: 1 }),
+    customerDeliveryFeeMinor: Type.Integer({ minimum: 0 }),
+    riderBasePayoutMinor: Type.Integer({ minimum: 0 }),
+  }), { maxItems: 1000 }),
   platformCommissionBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
   subsidyEnabled: Type.Boolean(),
   coolingOffSeconds: Type.Integer({ minimum: 0 }),
@@ -63,6 +71,22 @@ export function validatePolicyPayload(payload: Prisma.JsonValue): PolicyConfig {
     throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'ORDER_POLICY payload is invalid');
   }
   const config = payload as PolicyConfig;
+  if (config.deliveryPricingDefaultCustomerFeeMinor < config.deliveryPricingDefaultRiderBasePayoutMinor) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Default delivery pricing cannot have a negative base contribution');
+  }
+  if (config.deliveryPricingAdditionalItemCustomerFeeMinor < config.deliveryPricingAdditionalItemRiderPayoutMinor) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Additional-item pricing cannot have a negative base contribution');
+  }
+  if (config.deliveryPricingMerchantOverrides.some((override) => override.customerDeliveryFeeMinor < override.riderBasePayoutMinor)) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Merchant delivery pricing override cannot have a negative base contribution');
+  }
+  const merchantOverrideIds = config.deliveryPricingMerchantOverrides.map((override) => override.merchantId);
+  if (merchantOverrideIds.some((id) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Merchant delivery pricing override requires a UUID merchantId');
+  }
+  if (new Set(merchantOverrideIds).size !== merchantOverrideIds.length) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Merchant delivery pricing overrides must have unique merchantId values');
+  }
   if (config.platformSubsidyStepMinor > config.platformSubsidyMaxStepMinor) {
     throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Subsidy step cannot exceed the maximum step');
   }

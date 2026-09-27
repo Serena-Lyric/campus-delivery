@@ -8,7 +8,7 @@ import {
 } from '@prisma/client';
 import { requireAdminLevel, type Actor } from '../auth/auth.js';
 import { loadPolicyConfig } from '../merchant-policy/policies.js';
-import { riderPayoutMinor } from '../pricing/service.js';
+import { deliveryPlatformContributionMinor, riderGuaranteedPayoutMinor } from '../pricing/service.js';
 import { AppError, badRequest, conflict, notFound } from '../shared/errors.js';
 import {
   BudgetSubsidyEligibilityPolicy,
@@ -80,7 +80,10 @@ export async function addPlatformSubsidy(
           claimSampleType: ClaimSampleType.NATURAL,
           order: { merchantId: initial.merchantId },
         },
-        select: { claimLatencySeconds: true, merchantQuoteMinorAtClaim: true },
+        select: {
+          claimLatencySeconds: true,
+          order: { select: { pricing: { select: { merchantBaseDeliveryPriceMinor: true } } } },
+        },
         orderBy: { claimedAt: 'desc' },
         take: 50,
       }),
@@ -114,7 +117,7 @@ export async function addPlatformSubsidy(
     const remainingMerchantBudgetMinor = Math.max(0, account.subsidyLimitMinor - account.subsidyUsedMinor);
     const historicalQuoteAverage = naturalSamples.length > 0
       ? Math.round(
-        naturalSamples.reduce((sum, sample) => sum + sample.merchantQuoteMinorAtClaim, 0)
+        naturalSamples.reduce((sum, sample) => sum + (sample.order.pricing?.merchantBaseDeliveryPriceMinor ?? 0), 0)
         / naturalSamples.length,
       )
       : null;
@@ -123,7 +126,7 @@ export async function addPlatformSubsidy(
       remainingMerchantBudgetMinor,
       currentOrderSubsidyMinor: pricing.platformSubsidyMinor,
       merchantBudgetUsageBpsPerOrder: config.merchantSubsidyBudgetMaxUsageBpsPerOrder,
-      currentMerchantQuoteMinor: pricing.merchantDeliveryContributionMinor,
+      currentMerchantQuoteMinor: pricing.merchantBaseDeliveryPriceMinor,
       historicalNaturalClaimQuoteAverageMinor: historicalQuoteAverage,
       merchantPublishedOrderCount,
       merchantCompletedOrderCount,
@@ -147,7 +150,11 @@ export async function addPlatformSubsidy(
 
     const previousPlatformSubsidyMinor = pricing.platformSubsidyMinor;
     const newPlatformSubsidyMinor = previousPlatformSubsidyMinor + increment.addedMinor;
-    const nextPayout = riderPayoutMinor({
+    const nextPayout = riderGuaranteedPayoutMinor({
+      ...pricing,
+      platformSubsidyMinor: newPlatformSubsidyMinor,
+    });
+    const nextContribution = deliveryPlatformContributionMinor({
       ...pricing,
       platformSubsidyMinor: newPlatformSubsidyMinor,
     });
@@ -160,7 +167,9 @@ export async function addPlatformSubsidy(
       where: { orderId },
       data: {
         platformSubsidyMinor: newPlatformSubsidyMinor,
+        riderGuaranteedPayoutMinor: nextPayout,
         riderPayoutMinor: nextPayout,
+        deliveryPlatformContributionMinor: nextContribution,
       },
     });
     await tx.deliveryTask.update({ where: { id: task.id }, data: { payoutMinor: nextPayout } });

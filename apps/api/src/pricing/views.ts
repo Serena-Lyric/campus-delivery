@@ -11,6 +11,7 @@ export async function getOrderPricingView(prisma: PrismaClient, actor: Actor, or
       deliveryTask: { include: { assignments: { orderBy: { claimedAt: 'desc' } } } },
       assignments: { select: { riderId: true } },
       merchantQuoteHistory: { orderBy: { version: 'asc' } },
+      rescueContributionEvents: { orderBy: { version: 'asc' } },
       riderTipEvents: { orderBy: { createdAt: 'asc' } },
       subsidyRecords: { orderBy: { createdAt: 'asc' } },
     },
@@ -38,16 +39,18 @@ export async function getOrderPricingView(prisma: PrismaClient, actor: Actor, or
 
   if (actor.role === 'MERCHANT') {
     return {
-      merchantDeliveryQuoteMinor: pricing.merchantDeliveryContributionMinor,
-      merchantQuoteVersion: pricing.merchantQuoteVersion,
-      merchantQuoteUpdatedAt: pricing.merchantQuoteUpdatedAt,
-      quoteHistory: order.merchantQuoteHistory.map((quote) => ({
-        id: quote.id,
-        version: quote.version,
-        previousMinor: quote.previousMinor,
-        newMinor: quote.newMinor,
-        reason: quote.reason,
-        createdAt: quote.createdAt,
+      merchantBaseDeliveryPriceMinor: pricing.merchantBaseDeliveryPriceMinor,
+      merchantRescueContributionMinor: pricing.merchantRescueContributionMinor,
+      merchantRescueContributionVersion: pricing.merchantRescueContributionVersion,
+      merchantRescueUpdatedAt: pricing.merchantRescueUpdatedAt,
+      rescueHistory: order.rescueContributionEvents.map((event) => ({
+        id: event.id,
+        version: event.version,
+        previousMinor: event.previousMinor,
+        addedMinor: event.addedMinor,
+        newMinor: event.newMinor,
+        reason: event.reason,
+        createdAt: event.createdAt,
       })),
     };
   }
@@ -58,8 +61,8 @@ export async function getOrderPricingView(prisma: PrismaClient, actor: Actor, or
     );
     return {
       guaranteedRiderPayoutMinor: assignment
-        ? assignment.riderPayoutMinorAtClaim + assignment.postClaimTipMinor
-        : order.deliveryTask?.payoutMinor ?? pricing.riderPayoutMinor,
+        ? assignment.riderGuaranteedPayoutMinorAtClaim + assignment.postClaimTipMinor
+        : order.deliveryTask?.payoutMinor ?? pricing.riderGuaranteedPayoutMinor,
       preparationStatus: order.merchantPreparationStatus,
       firstPublishedAt: order.deliveryTask?.firstPublishedAt ?? null,
       claimDeadline: order.deliveryTask?.claimDeadline ?? null,
@@ -68,7 +71,8 @@ export async function getOrderPricingView(prisma: PrismaClient, actor: Actor, or
 
   return {
     pricing,
-    quoteHistory: order.merchantQuoteHistory,
+    legacyQuoteHistory: order.merchantQuoteHistory,
+    rescueHistory: order.rescueContributionEvents,
     tipHistory: order.riderTipEvents,
     subsidyHistory: order.subsidyRecords,
     assignments: order.deliveryTask?.assignments ?? [],
@@ -78,7 +82,7 @@ export async function getOrderPricingView(prisma: PrismaClient, actor: Actor, or
         status: order.deliveryTask.status,
         firstPublishedAt: order.deliveryTask.firstPublishedAt,
         claimDeadline: order.deliveryTask.claimDeadline,
-        payoutMinor: order.deliveryTask.payoutMinor,
+        riderGuaranteedPayoutMinor: order.deliveryTask.payoutMinor,
       }
       : null,
   };

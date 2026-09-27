@@ -18,6 +18,7 @@ import { transitionOrder } from '../orders/state-machine.js';
 import { conflict, forbidden, notFound } from '../shared/errors.js';
 import { verifyOrderCode } from '../verification/service.js';
 import { assertRiderCanClaim } from '../riders/restrictions.js';
+import { recordFirstNormalDelivery, resolveRiderCapacity } from '../riders/capacity.js';
 
 const taskSelect = {
   id: true,
@@ -37,13 +38,59 @@ const taskSelect = {
       shortCode: true,
       status: true,
       destinationLabelSnapshot: true,
+      destinationRegionSnapshot: true,
+      pickupLocationNameSnapshot: true,
+      pickupRegionSnapshot: true,
       deliveryMethod: true,
       merchantPreparationStatus: true,
       merchant: { select: { id: true, name: true } },
       destinationLocation: { select: { id: true, name: true, type: true } },
+      items: {
+        select: {
+          suggestedFoodType: true,
+          handlingTags: true,
+          quantity: true,
+        },
+      },
     },
   },
 } satisfies Prisma.DeliveryTaskSelect;
+
+type RiderTask = Prisma.DeliveryTaskGetPayload<{ select: typeof taskSelect }>;
+
+function presentRiderTask(task: RiderTask) {
+  const totalQuantity = task.order.items.reduce((sum, item) => sum + item.quantity, 0);
+  return {
+    id: task.id,
+    orderId: task.orderId,
+    status: task.status,
+    riderGuaranteedPayoutMinor: task.payoutMinor,
+    firstPublishedAt: task.firstPublishedAt,
+    claimDeadline: task.claimDeadline,
+    claimedAt: task.claimedAt,
+    pickedUpAt: task.pickedUpAt,
+    deliveredAt: task.deliveredAt,
+    pickup: {
+      merchant: task.order.merchant,
+      locationName: task.order.pickupLocationNameSnapshot,
+      region: task.order.pickupRegionSnapshot,
+    },
+    destination: {
+      label: task.order.destinationLabelSnapshot,
+      region: task.order.destinationRegionSnapshot,
+      location: task.order.destinationLocation,
+    },
+    carrying: {
+      totalQuantity,
+      lineItemCount: task.order.items.length,
+      foodTypes: [...new Set(task.order.items.map((item) => item.suggestedFoodType))],
+      handlingTags: [...new Set(task.order.items.flatMap((item) => item.handlingTags))],
+    },
+    preparationStatus: task.order.merchantPreparationStatus,
+    orderStatus: task.order.status,
+    shortCode: task.order.shortCode,
+  };
+}
 
 async function requireEvidence(
   tx: Prisma.TransactionClient,
@@ -67,8 +114,8 @@ async function requireEvidence(
   return evidence;
 }
 
-export function listAvailableTasks(prisma: PrismaClient, limit: number, offset: number) {
-  return prisma.deliveryTask.findMany({
+export async function listAvailableTasks(prisma: PrismaClient, limit: number, offset: number) {
+  const tasks = await prisma.deliveryTask.findMany({
     where: {
       status: DeliveryTaskStatus.OPEN,
       riderId: null,
@@ -79,17 +126,19 @@ export function listAvailableTasks(prisma: PrismaClient, limit: number, offset: 
     take: limit,
     skip: offset,
   });
+  return tasks.map(presentRiderTask);
 }
 
-export function listRiderTasks(prisma: PrismaClient, actor: Actor, limit: number, offset: number) {
+export async function listRiderTasks(prisma: PrismaClient, actor: Actor, limit: number, offset: number) {
   if (!actor.riderId) throw forbidden();
-  return prisma.deliveryTask.findMany({
+  const tasks = await prisma.deliveryTask.findMany({
     where: { assignments: { some: { riderId: actor.riderId } } },
     select: taskSelect,
     orderBy: { createdAt: 'desc' },
     take: limit,
     skip: offset,
   });
+  return tasks.map(presentRiderTask);
 }
 
 export async function claimTask(
@@ -97,6 +146,7 @@ export async function claimTask(
   actor: Actor,
   taskId: string,
   now = new Date(),
+  campusTimeZone = 'Asia/Shanghai',
 ) {
   if (!actor.riderId) throw forbidden();
   const riderId = actor.riderId;
@@ -113,6 +163,7 @@ export async function claimTask(
     const rider = await tx.rider.findUnique({ where: { id: riderId } });
     if (!rider || rider.status !== 'AVAILABLE') throw conflict('RIDER_UNAVAILABLE', 'Rider is not available to claim tasks');
     await assertRiderCanClaim(tx, riderId, now);
+    const capacity = await resolveRiderCapacity(tx, riderId, config, campusTimeZone, now);
 
     const activeCount = await tx.deliveryTask.count({
       where: {
@@ -120,11 +171,7 @@ export async function claimTask(
         status: { in: [DeliveryTaskStatus.CLAIMED, DeliveryTaskStatus.PICKED_UP] },
       },
     });
-    const effectiveLimit = Math.min(
-      rider.currentConcurrentOrderLimit,
-      config.platformMaxConcurrentOrdersPerRider,
-    );
-    if (activeCount >= effectiveLimit) {
+    if (activeCount >= capacity.effectiveCapacity) {
       throw conflict('RIDER_ORDER_LIMIT', 'Rider has reached the current concurrent order limit');
     }
 
@@ -170,18 +217,25 @@ export async function claimTask(
         orderId: task.orderId,
         riderId,
         claimedAt: now,
-        merchantQuoteMinorAtClaim: pricing.merchantDeliveryContributionMinor,
+        merchantQuoteMinorAtClaim: 0,
         customerTipMinorAtClaim: pricing.customerRiderTipMinor,
         platformSubsidyMinorAtClaim: pricing.platformSubsidyMinor,
-        riderPayoutMinorAtClaim: pricing.riderPayoutMinor,
-        quoteVersionAtClaim: pricing.merchantQuoteVersion,
+        riderPayoutMinorAtClaim: pricing.riderGuaranteedPayoutMinor,
+        riderGuaranteedPayoutMinorAtClaim: pricing.riderGuaranteedPayoutMinor,
+        quoteVersionAtClaim: pricing.merchantRescueContributionVersion,
+        customerDeliveryFeeMinorAtClaim: pricing.customerDeliveryFeeMinor,
+        riderBasePayoutMinorAtClaim: pricing.riderBasePayoutMinor,
+        merchantRescueContributionMinorAtClaim: pricing.merchantRescueContributionMinor,
+        deliveryPlatformContributionMinorAtClaim: pricing.deliveryPlatformContributionMinor,
+        pricingPolicyVersionAtClaim: pricing.pricingPolicyVersion,
+        pricingInputsSnapshotAtClaim: pricing.pricingInputsSnapshot ?? {},
         claimSampleType: pricing.platformSubsidyMinor > 0
           ? ClaimSampleType.SUBSIDIZED
           : ClaimSampleType.NATURAL,
         claimLatencySeconds,
       },
     });
-    return tx.deliveryTask.findUniqueOrThrow({ where: { id: taskId }, select: taskSelect });
+    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: taskId }, select: taskSelect }));
   });
 }
 
@@ -229,7 +283,7 @@ export async function pickUpTask(
       where: { id: task.id },
       data: { status: DeliveryTaskStatus.PICKED_UP, pickedUpAt: new Date() },
     });
-    return tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect });
+    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect }));
   });
 }
 
@@ -239,6 +293,7 @@ export async function deliverTask(
   taskId: string,
   input: { evidenceId?: string; code?: string },
   now = new Date(),
+  campusTimeZone = 'Asia/Shanghai',
 ) {
   if (!actor.riderId) throw forbidden();
   const { config } = await loadPolicyConfig(prisma);
@@ -316,7 +371,7 @@ export async function deliverTask(
       orderBy: { claimedAt: 'desc' },
     });
     if (!assignment) throw notFound('Delivery assignment');
-    const finalRiderPayoutMinor = assignment.riderPayoutMinorAtClaim + assignment.postClaimTipMinor;
+    const finalRiderPayoutMinor = assignment.riderGuaranteedPayoutMinorAtClaim + assignment.postClaimTipMinor;
     await tx.deliveryAssignment.update({
       where: { id: assignment.id },
       data: { status: DeliveryAssignmentStatus.COMPLETED, endedAt: now },
@@ -327,7 +382,8 @@ export async function deliverTask(
         status: SettlementStatus.FINALIZED,
         riderPayableMinor: finalRiderPayoutMinor,
         merchantPayableMinor: task.order.pricing.merchantSettlementMinor,
-        platformRevenueMinor: task.order.pricing.platformCommissionMinor - task.order.pricing.platformSubsidyMinor,
+        platformRevenueMinor: task.order.pricing.platformCommissionMinor
+          + task.order.pricing.deliveryPlatformContributionMinor,
         finalizedAt: now,
       },
     });
@@ -343,6 +399,7 @@ export async function deliverTask(
         ),
       },
     });
-    return tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect });
+    await recordFirstNormalDelivery(tx, actor.riderId, now, campusTimeZone);
+    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect }));
   });
 }

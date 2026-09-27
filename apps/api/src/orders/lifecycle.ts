@@ -40,6 +40,7 @@ export async function expireOpenDeliveryTask(
       customerRefundMinor,
       customerRiderTipRefundMinor: { increment: refundableTipMinor },
       customerRiderTipMinor: 0,
+      riderGuaranteedPayoutMinor: pricing.riderGuaranteedPayoutMinor - refundableTipMinor,
       riderPayoutMinor: pricing.riderPayoutMinor - refundableTipMinor,
     },
   });

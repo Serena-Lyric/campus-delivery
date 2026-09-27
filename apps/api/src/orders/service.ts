@@ -17,13 +17,15 @@ import {
   pickupVerificationFor,
 } from '../merchant-policy/policies.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
-import { multiplyMinor } from '../shared/money.js';
-import { initializeMerchantQuote } from '../pricing/service.js';
+import { basisPoints, multiplyMinor } from '../shared/money.js';
+import { initializeMerchantPricingForMarket } from '../pricing/service.js';
 import { getOrderPricingView } from '../pricing/views.js';
 import { assertOrderAccess } from './access.js';
 import { generateShortCode, shortCodeDay } from './short-code.js';
 import { transitionOrder } from './state-machine.js';
 import { openExceptionCase } from '../exception-cases/service.js';
+import { DeterministicItemClassifier, classifyItemSafely, type ItemClassifier } from '../item-classifier/classifier.js';
+import { defaultDeliveryPricingPolicy, type DeliveryPricingPolicy } from '../pricing/policy.js';
 
 export type CreateOrderInput = {
   merchantId: string;
@@ -54,7 +56,7 @@ function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown) {
       orderId: deliveryTask.orderId,
       status: deliveryTask.status,
       riderId: actor.role === 'RIDER' || actor.role === 'ADMIN' ? deliveryTask.riderId : undefined,
-      payoutMinor: actor.role === 'RIDER' || actor.role === 'ADMIN' ? deliveryTask.payoutMinor : undefined,
+      riderGuaranteedPayoutMinor: actor.role === 'RIDER' || actor.role === 'ADMIN' ? deliveryTask.payoutMinor : undefined,
       firstPublishedAt: deliveryTask.firstPublishedAt,
       claimDeadline: deliveryTask.claimDeadline,
       claimedAt: deliveryTask.claimedAt,
@@ -126,6 +128,8 @@ export async function createOrder(
   input: CreateOrderInput,
   campusTimeZone: string,
   now = new Date(),
+  classifier: ItemClassifier = new DeterministicItemClassifier(),
+  pricingPolicy: DeliveryPricingPolicy = defaultDeliveryPricingPolicy,
 ) {
   if (actor.role !== 'CUSTOMER') throw forbidden();
   if (input.items.length === 0) throw badRequest('EMPTY_ORDER', 'Order must contain at least one item');
@@ -138,7 +142,7 @@ export async function createOrder(
     quantities.set(item.productId, (quantities.get(item.productId) ?? 0) + item.quantity);
   }
 
-  const { config } = await loadPolicyConfig(prisma);
+  const { version: policyVersion, config } = await loadPolicyConfig(prisma);
   const codeDay = shortCodeDay(now, campusTimeZone);
   const coolingOffEndsAt = new Date(now.getTime() + config.coolingOffSeconds * 1000);
   const tipDeadline = new Date(now.getTime() + config.riderTipWindowSeconds * 1000);
@@ -148,9 +152,9 @@ export async function createOrder(
     try {
       return await prisma.$transaction(async (tx) => {
         const [merchant, location, products] = await Promise.all([
-          tx.merchant.findUnique({ where: { id: input.merchantId } }),
+          tx.merchant.findUnique({ where: { id: input.merchantId }, include: { campusLocation: true } }),
           tx.campusLocation.findUnique({ where: { id: input.destinationLocationId } }),
-          tx.product.findMany({ where: { id: { in: [...quantities.keys()] } } }),
+          tx.product.findMany({ where: { id: { in: [...quantities.keys()] } }, include: { category: { select: { name: true } } } }),
         ]);
         if (!merchant) throw notFound('Merchant');
         if (!location) throw notFound('Campus location');
@@ -185,20 +189,41 @@ export async function createOrder(
           }
         }
 
-        const itemData = products.map((product) => {
+        const itemData = await Promise.all(products.map(async (product) => {
           const quantity = quantities.get(product.id)!;
+          const classification = await classifyItemSafely(classifier, {
+            productName: product.name,
+            merchantCategoryName: product.category.name,
+          });
           return {
             productId: product.id,
             productNameSnapshot: product.name,
+            merchantCategoryNameSnapshot: product.category.name,
+            suggestedFoodType: classification.suggestedFoodType,
+            handlingTags: classification.handlingTags,
+            classificationSource: classification.source,
+            classificationVersion: classification.version,
+            classificationConfidenceBps: classification.confidenceBps,
             unitPriceMinor: product.priceMinor,
             quantity,
             subtotalMinor: multiplyMinor(product.priceMinor, quantity),
           };
-        });
+        }));
         const itemSubtotalMinor = itemData.reduce((sum, item) => sum + item.subtotalMinor, 0);
-    if (!Number.isSafeInteger(itemSubtotalMinor)) {
-      throw badRequest('MONEY_OVERFLOW', 'Money calculation overflowed');
-    }
+        if (!Number.isSafeInteger(itemSubtotalMinor)) {
+          throw badRequest('MONEY_OVERFLOW', 'Money calculation overflowed');
+        }
+        const totalQuantity = itemData.reduce((sum, item) => sum + item.quantity, 0);
+        const deliveryPricing = pricingPolicy.evaluate({
+          merchantId: merchant.id,
+          merchantBaseDeliveryPriceMinor: merchant.baseDeliveryPriceMinor,
+          merchantCategoryNames: [...new Set(itemData.map((item) => item.merchantCategoryNameSnapshot))],
+          pickupRegion: merchant.campusLocation.regionLabel,
+          destinationRegion: location.regionLabel,
+          suggestedFoodTypes: [...new Set(itemData.map((item) => item.suggestedFoodType))],
+          totalQuantity,
+        }, config);
+        const platformCommissionMinor = basisPoints(itemSubtotalMinor, config.platformCommissionBps);
 
         return tx.order.create({
           data: {
@@ -210,11 +235,29 @@ export async function createOrder(
             merchantId: merchant.id,
             destinationLocationId: location.id,
             destinationLabelSnapshot: location.name,
+            destinationRegionSnapshot: location.regionLabel,
+            pickupLocationNameSnapshot: merchant.campusLocation.name,
+            pickupRegionSnapshot: merchant.campusLocation.regionLabel,
             deliveryMethod: input.deliveryMethod,
             deliveryVerificationMode: deliveryVerificationFor(config, input.deliveryMethod),
             pickupVerificationMode: pickupVerificationFor(merchant.pickupVerificationMode),
             items: { create: itemData },
-            pricing: { create: { itemSubtotalMinor } },
+            pricing: {
+              create: {
+                itemSubtotalMinor,
+                customerDeliveryFeeMinor: deliveryPricing.customerDeliveryFeeMinor,
+                merchantBaseDeliveryPriceMinor: merchant.baseDeliveryPriceMinor,
+                riderBasePayoutMinor: deliveryPricing.riderBasePayoutMinor,
+                riderGuaranteedPayoutMinor: deliveryPricing.riderBasePayoutMinor,
+                riderPayoutMinor: deliveryPricing.riderBasePayoutMinor,
+                deliveryPlatformContributionMinor: deliveryPricing.deliveryPlatformContributionMinor,
+                platformCommissionMinor,
+                merchantSettlementMinor: itemSubtotalMinor - platformCommissionMinor,
+                pricingPolicyVersion: policyVersion,
+                pricingInputsSnapshot: deliveryPricing.inputsSnapshot,
+                pricingReason: deliveryPricing.reason,
+              },
+            },
             settlement: { create: {} },
             events: {
               create: {
@@ -288,15 +331,7 @@ export async function confirmOrder(
     await transitionOrder(tx, order.id, order.status, OrderStatus.MERCHANT_CONFIRMED, actor, {
       eventType: OrderEventType.MERCHANT_CONFIRMED,
     });
-    const pricing = await initializeMerchantQuote(
-      tx,
-      order.id,
-      order.merchantId,
-      actor.id,
-      order.merchant.deliveryContributionMinor,
-      config,
-      now,
-    );
+    const pricing = await initializeMerchantPricingForMarket(tx, order.id, now);
     await transitionOrder(tx, order.id, OrderStatus.MERCHANT_CONFIRMED, OrderStatus.READY_FOR_RIDER, actor, {
       eventType: OrderEventType.READY_FOR_RIDER,
       metadata: { firstPublishedAt: now.toISOString() },
@@ -311,7 +346,7 @@ export async function confirmOrder(
     await tx.deliveryTask.create({
       data: {
         orderId: order.id,
-        payoutMinor: pricing.riderPayoutMinor,
+        payoutMinor: pricing.riderGuaranteedPayoutMinor,
         firstPublishedAt: now,
         claimDeadline: new Date(now.getTime() + config.orderClaimWindowSeconds * 1000),
         finalUserWarningAt: new Date(
@@ -400,6 +435,7 @@ export async function cancelOrder(
           + refundableTipMinor,
         customerRiderTipRefundMinor: { increment: refundableTipMinor },
         customerRiderTipMinor: 0,
+        riderGuaranteedPayoutMinor: pricing.riderGuaranteedPayoutMinor - refundableTipMinor,
         riderPayoutMinor: pricing.riderPayoutMinor - refundableTipMinor,
       },
     });

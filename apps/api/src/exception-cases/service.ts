@@ -9,6 +9,7 @@ import {
 import { requireAdminLevel, type Actor } from '../auth/auth.js';
 import { conflict, forbidden, notFound } from '../shared/errors.js';
 import { DeterministicExceptionClassifier, type ExceptionClassifier } from '../exceptions/classifier.js';
+import { assertExceptionCaseAction } from './state-machine.js';
 
 export async function openExceptionCase(
   tx: Prisma.TransactionClient,
@@ -186,6 +187,7 @@ export async function releaseExceptionCase(
   return prisma.$transaction(async (tx) => {
     const current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
     if (!current) throw notFound('Exception case');
+    assertExceptionCaseAction(current.status, 'RELEASE');
     if (current.currentHandlerAdminId !== actor.id && actor.adminLevel !== 'SUPER_ADMIN') throw forbidden();
     const updated = await tx.exceptionCase.updateMany({
       where: { id: caseId, version: expectedVersion, currentHandlerAdminId: current.currentHandlerAdminId },
@@ -222,6 +224,7 @@ export async function escalateExceptionCase(
   return prisma.$transaction(async (tx) => {
     const current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
     if (!current) throw notFound('Exception case');
+    assertExceptionCaseAction(current.status, 'ESCALATE');
     if (current.currentHandlerAdminId !== actor.id && actor.adminLevel !== 'SUPER_ADMIN') throw forbidden();
     const now = new Date();
     const updated = await tx.exceptionCase.updateMany({
@@ -254,8 +257,12 @@ export async function takeoverExceptionCase(
   return prisma.$transaction(async (tx) => {
     const current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
     if (!current) throw notFound('Exception case');
+    assertExceptionCaseAction(current.status, 'TAKEOVER');
     const target = await tx.user.findUnique({ where: { id: nextHandlerAdminId }, include: { adminProfile: true } });
     if (!target?.adminProfile || target.role !== 'ADMIN') throw conflict('INVALID_ADMIN_HANDLER', 'Target user is not an administrator');
+    if (current.status === ExceptionCaseStatus.ESCALATED && nextHandlerAdminId !== actor.id) {
+      throw conflict('ESCALATED_CASE_REQUIRES_SUPER_ADMIN', 'An escalated case must first be taken over by the super admin');
+    }
     const now = new Date();
     const updated = await tx.exceptionCase.updateMany({
       where: { id: caseId, version: expectedVersion },
@@ -294,6 +301,7 @@ export async function transferExceptionCase(
   return prisma.$transaction(async (tx) => {
     const current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
     if (!current) throw notFound('Exception case');
+    assertExceptionCaseAction(current.status, 'TRANSFER');
     if (current.currentHandlerAdminId !== actor.id && actor.adminLevel !== 'SUPER_ADMIN') throw forbidden();
     const target = await tx.user.findUnique({ where: { id: nextHandlerAdminId }, include: { adminProfile: true } });
     if (!target?.adminProfile || target.role !== 'ADMIN') throw conflict('INVALID_ADMIN_HANDLER', 'Target user is not an administrator');
@@ -328,6 +336,7 @@ export async function resolveNonEconomicCase(
   return prisma.$transaction(async (tx) => {
     const current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
     if (!current) throw notFound('Exception case');
+    assertExceptionCaseAction(current.status, 'RESOLVE');
     if (current.currentHandlerAdminId !== actor.id && actor.adminLevel !== 'SUPER_ADMIN') throw forbidden();
     const waiting = resolutionType === ExceptionResolutionType.WAITING_FOR_INFORMATION;
     const now = new Date();

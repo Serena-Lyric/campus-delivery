@@ -37,8 +37,8 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
     openapi: {
       info: {
         title: 'campus-delivery API',
-        description: 'Campus delivery market, rider exceptions, compensation ledger, operations queue, and settlement API',
-        version: '0.5.0',
+        description: 'Campus delivery market, rider capacity, order-pool facts, split delivery pricing, exceptions, and settlement API',
+        version: '0.6.0',
       },
       components: {
         securitySchemes: {

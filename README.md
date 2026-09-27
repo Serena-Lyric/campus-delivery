@@ -4,7 +4,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 ## 当前阶段
 
-本阶段仍是模块化单体 REST API。当前重点是骑手未取餐取消/冷却、取餐后严重餐损或丢失、异常共享池、赔付 reservation，以及 OPERATOR / SUPER_ADMIN 最小权限边界。
+本阶段仍是模块化单体 REST API。当前重点是骑手并发容量 1→2→5、订单池决策事实、低风险物品分类，以及配送参考价/真实救单出资/平台价差的明确拆分。
 
 ## 技术栈
 
@@ -19,6 +19,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
       prisma/                 数据模型、migration、Seed
       src/auth/               开发认证
       src/catalog/            商家和商品
+      src/item-classifier/    物品粗分类 adapter 与安全 fallback
       src/orders/             订单、冷静期、短码
       src/delivery/           订单池、持单限制、履约
       src/evidence/           Evidence 和媒体抽象
@@ -30,6 +31,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
       src/verification/       一次性码
       src/timeline/           角色化时间线
       src/settlements/        骑手待结算
+      src/pricing/            价格视图、资金变更与可配置定价 policy
       tests/                  单元和 PostgreSQL 集成测试
     docs/superpowers/specs/   设计规范
     CODEX_REPORT.md           本轮交接报告
@@ -62,7 +64,10 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 - coolingOffSeconds：Seed 为 60 秒。
 - riderSettlementPendingSeconds：Seed 为 5 天。
-- platformMaxConcurrentOrdersPerRider：Seed 为 3。
+- platformMaxConcurrentOrdersPerRider：第一版全局绝对上限 Seed 为 10。
+- deliveryPricingDefaultCustomerFeeMinor / deliveryPricingDefaultRiderBasePayoutMinor：用户基础配送费与骑手基础保证收益独立 DEMO 默认值。
+- deliveryPricingAdditionalItemCustomerFeeMinor / deliveryPricingAdditionalItemRiderPayoutMinor：按额外件数增加的第一版规则参数。
+- deliveryPricingMerchantOverrides：SUPER_ADMIN 管理的商家级绝对覆盖；仍受非负基础价差校验。
 - verificationCodeTtlSeconds：Seed 为 10 分钟。
 - customerUnreachableWaitSeconds：只预留，不用于自动判责。
 - riderTipWindowSeconds：Seed 演示为 86400 秒，创建订单时快照到 tipDeadline。
@@ -160,13 +165,15 @@ DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除�
 
 限制状态保存类型、来源、开始/结束、状态和审计。只有 SUPER_ADMIN 可以创建、提前解除或调整跨订单限制；OPERATOR 无权修改。
 
-## 市场报价与价格快照
+## 配送定价、救单与价格快照
 
-商家确认订单时，订单使用商家当前默认配送报价进入骑手池。商家可在未接单前修改订单级报价；每次修改记录版本、旧值、新值、操作者、时间和原因，并受配置化冷却时间限制。
+配送价格明确区分商家基础/reference price、用户基础配送费、骑手基础收益、商家真实救单出资、用户红包、平台补贴、骑手保证收益和平台配送贡献。reference price 只是策略输入，不再从商家结算中等额扣除。
 
-骑手接单事务锁定 DeliveryTask，并把当时的商家报价、用户激励、平台补贴、报价版本和总收益原子写入 DeliveryAssignment。接单后商家和平台不能向下修改已接受的金额。
+第一版确定性 policy 使用全局默认、商家 override 和总数量计算彼此独立的 customerDeliveryFee / riderBasePayout，并拒绝负基础价差。merchant category、取餐/目的地区域、reference price 和 classifier foodType 当前只进入 inputs snapshot，尚未影响金额。
 
-角色价格视图彼此隔离：商家只看自己的报价历史；用户只看自己的费用、激励和退款；骑手主要看保证总收益；管理员看完整资金来源和快照。
+未接单前商家可以增加真实 rescue contribution；只允许增加，增量 100% 进入骑手保证收益并从商家结算扣除，平台配送贡献不扩大。兼容 endpoint `/delivery-quote` 已在 OpenAPI 标记 `newRescueContributionMinor` 语义。
+
+骑手接单事务原子冻结 customer fee、rider base、merchant rescue、tip、subsidy、guaranteed payout、platform contribution、policy version 和 inputs snapshot。角色价格视图彼此隔离：用户只看自己的费用/tip，商家只看 base/reference 与 rescue/history，骑手只看保证收益，SUPER_ADMIN 看完整账务。
 
 ## 用户骑手激励
 
@@ -182,7 +189,7 @@ DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除�
 
 自然接单样本只包含补贴介入前接单的 DeliveryAssignment；补贴后接单记录为 SUBSIDIZED，不进入自然接单基线。
 
-补贴服务只更新 subsidyUsageBps 这一事实指标，不再直接修改 Merchant.exposureState。旧 riskScore 语义已通过 migration 改名，旧 exposureForUsage 正常业务路径已删除。
+补贴服务只更新 subsidyUsageBps 这一事实指标，不再直接修改 Merchant.exposureState。每增加 X 补贴，骑手保证收益增加 X，平台配送贡献减少 X；预算/步长/间隔限制保持不变。
 
 ## 商家履约风险与曝光
 
@@ -204,11 +211,15 @@ timeRisk 与 completionRisk 独立返回。曝光策略实际使用完成/无人
 
 异常分类提供类型化 `ExceptionClassifier`、确定性 fallback 和 manual fallback。分类来源/版本/置信度与管理员最终结论分开保存；当前没有真实 Jev 网络调用，AI 不执行资金或责任动作。
 
-## 骑手持单限制
+## 骑手容量与订单池信息
 
-Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平台绝对上限。有效额度取两者较小值。
+新骑手个人容量按校园自然日经历 1→2→5：未正常完成首单为 1；首单 DELIVERED 后同日为 2；下一校园自然日起为 5。5 后不自动升级。SUPER_ADMIN 可设置个人 override；有效容量始终为 `min(personal, globalAbsolute)`，第一版全局 Seed 为 10。
 
-抢单事务锁定骑手行，再统计 CLAIMED 和 PICKED_UP 任务，因此同一骑手的并发请求不能绕过额度。平台仍采用订单池和骑手自主选单。
+claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/PICKED_UP，两个并发请求竞争最后一个槽位只能成功一个。调低额度不破坏已持订单。骑手可通过 `/riders/me/capacity` 查看阶段、有效额度和升级/override 事件。
+
+可接订单 DTO 只返回骑手决策所需事实：保证收益、取餐商家/地点/区域、目的地快照/区域、foodType、handlingTags、总数量和行项目数；不返回 customer、平台价差或资金来源拆分。平台不据此规划路线或推荐拼单。
+
+物品分类保存原始商品名、商家原始分类与 suggestedFoodType/handlingTags/source/version/confidence。当前只有 deterministic/manual fallback，没有真实 Jev 网络调用；分类失败回退 UNKNOWN 且不阻塞订单，也不影响钱、容量、责任或曝光。
 
 ## 待结算资金
 
@@ -237,7 +248,7 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 | GET | /orders/:orderId/pricing | 订单相关方 | 角色隔离价格视图 |
 | POST | /orders/:orderId/rider-tip-adjustments | 用户 | 调整或追加骑手激励 |
 | POST | /merchant/orders/:orderId/confirm | 商家 | 确认并立即发布到骑手池 |
-| PATCH | /merchant/orders/:orderId/delivery-quote | 商家 | 未接单前修改订单报价 |
+| PATCH | /merchant/orders/:orderId/delivery-quote | 商家 | 未接单前增加真实救单出资（兼容路径名） |
 | POST | /merchant/orders/:orderId/ready | 商家 | 更新可取自报信号 |
 | GET | /delivery-tasks/available | 骑手 | 查看公开任务 |
 | GET | /delivery-tasks/mine | 骑手 | 查看参与过的任务 |
@@ -248,6 +259,7 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 | POST | /delivery-tasks/:taskId/deliver | 骑手 | 验证并送达 |
 | GET | /riders/me/settlements | 骑手 | 查看待结算资金 |
 | GET | /riders/me/restrictions | 骑手 | 查看取消计数、warning、暂停和冷却 |
+| GET | /riders/me/capacity | 骑手 | 查看 1→2→5 阶段、有效容量和通知 |
 | POST | /rider/orders/:orderId/severe-exception | 骑手 | 报告严重餐损或丢失 |
 | POST | /exception-cases/:caseId/remake-proposal | 骑手 | 提出补餐继续 |
 | POST | /exception-cases/:caseId/voluntary-compensation | 骑手 | 主动选择原价赔付 |
@@ -271,6 +283,7 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 | POST | /admin/merchants/:merchantId/exposure/evaluate | SUPER_ADMIN | 评估或明确强制曝光状态 |
 | POST | /admin/riders/:riderId/restrictions | SUPER_ADMIN | 创建人工骑手限制 |
 | GET | /admin/riders/:riderId/restrictions | SUPER_ADMIN | 查看取消计数、限制和完整审计 |
+| PUT | /admin/riders/:riderId/capacity-override | SUPER_ADMIN | 设置/清除个人容量 override 并审计 |
 | PATCH | /admin/rider-restrictions/:restrictionId | SUPER_ADMIN | 解除或调整限制 |
 | PUT | /admin/users/:userId/admin-profile | SUPER_ADMIN | 管理管理员级别 |
 
@@ -281,7 +294,7 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
     pnpm test:integration
     pnpm build
 
-集成测试使用真实 PostgreSQL，覆盖既有订单/报价/结算流程，以及 TRIAL 灰度、角色 DTO 负向泄漏、终态/rescue 样本、取餐前取消、校园时区日界、两条冷却路径、限制 override、补餐确认、异常并发领取、处理权转移、幂等退款/释放、并发 reservation、平台垫付、管理员分权和 OpenAPI 路径。
+集成测试使用真实 PostgreSQL，覆盖既有订单/异常/结算流程、审核补丁状态矩阵，以及容量 1→2→5、并发最后槽位、global/override 取 min、订单池 DTO、classifier fallback、参考价/救单出资拆分、rescue/tip/subsidy 精确传递、claim 价格快照、角色资金隔离和 Super Admin 权限。
 
 ## 已实现
 
@@ -293,10 +306,12 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 - 独立 Evidence 与 MockMediaStorage
 - 结构化异常事实
 - 角色化订单时间线
-- 商家订单级报价、版本历史和改价冷却
+- 商家 base/reference price 与真实 rescue contribution/history/cooldown 分离
+- 可配置 DeliveryPricingPolicy：全局默认、商家 override、数量规则和输入快照
 - 用户骑手激励独立账本
 - 服务端 24 小时骑手激励窗口和订单 tipDeadline 快照
 - 骑手接单原子价格快照
+- customer fee、rider base、merchant rescue、tip、subsidy、guarantee、platform contribution 原子快照
 - 固定首次发布时间和接单截止时间
 - NO_RIDER_ACCEPTED 与退款记录边界
 - 平台逐步补贴和三类策略接口
@@ -315,7 +330,9 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 - 补贴使用事实与曝光状态解耦
 - 管理员配置版本和审计
 - 角色隔离价格视图
-- 骑手个人额度与平台绝对上限
+- 骑手容量 1→2→5、个人 override、平台绝对上限 10 和可读升级事件
+- 骑手订单池 guaranteed payout / pickup / destination / foodType / quantity 显式 DTO
+- 低风险物品分类 telemetry 与不可用 fallback（无真实 Jev 调用）
 - DeliveryAssignment 责任记录
 - RiderSettlement PENDING、AVAILABLE、HELD
 - PostgreSQL migration、幂等 Seed、OpenAPI 和自动化测试
@@ -325,9 +342,8 @@ Rider.currentConcurrentOrderLimit 保存个人额度，BusinessConfig 保存平�
 
 - 冷静期最终秒数
 - 骑手待结算最终天数
-- 骑手具体并发额度
-- 骑手额度升级规则
-- 商家配送报价默认值来源
+- 5 单之后是否自动升级、哪些事实会触发自动降额度
+- 各商家/品类/区域的正式配送定价参数与长期算法
 - 平台补贴正式步长、间隔、单订单上限和预算比例
 - 40 分钟窗口内更细的提醒与补贴顺序
 - 接单后激励在异常争议下的退款边界

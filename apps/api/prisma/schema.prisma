@@ -57,6 +57,29 @@ enum RiderStatus {
   SUSPENDED
 }
 
+enum RiderCapacityStage {
+  TUTORIAL
+  FIRST_DELIVERY_SAME_DAY
+  STANDARD
+}
+
+enum RiderCapacityEventType {
+  FIRST_DELIVERY_UPGRADE
+  NEXT_DAY_UPGRADE
+  ADMIN_OVERRIDE_SET
+  ADMIN_OVERRIDE_CLEARED
+}
+
+enum FoodType {
+  DRINK
+  RICE_MEAL
+  NOODLE
+  SOUP
+  CAKE_DESSERT
+  OTHER
+  UNKNOWN
+}
+
 enum DeliveryMethod {
   DESIGNATED_POINT
   DOOR
@@ -268,33 +291,35 @@ enum CompensationFundingSource {
 }
 
 model User {
-  id                   String                     @id @default(uuid()) @db.Uuid
-  displayName          String
-  role                 UserRole
-  active               Boolean                    @default(true)
-  merchant             Merchant?
-  rider                Rider?
-  customerOrders       Order[]                    @relation("CustomerOrders")
-  operatedEvents       OrderEvent[]               @relation("OrderEventOperator")
-  evidence             Evidence[]
-  reportedExceptions   ExceptionEvent[]           @relation("ExceptionReporter")
-  issuedCodes          VerificationCode[]         @relation("VerificationIssuer")
-  verifiedCodes        VerificationCode[]         @relation("VerificationVerifier")
-  merchantQuoteChanges MerchantDeliveryQuote[]    @relation("MerchantQuoteOperator")
-  riderTipEvents       RiderTipEvent[]            @relation("RiderTipCustomer")
-  configAudits         BusinessConfigAudit[]      @relation("BusinessConfigAuditActor")
-  exposureDecisions    MerchantExposureDecision[] @relation("MerchantExposureDecisionActor")
-  adminProfile         AdminProfile?
-  handledCases         ExceptionCase[]            @relation("ExceptionCaseHandler")
-  caseActions          ExceptionCaseAction[]      @relation("ExceptionCaseActionActor")
-  previousCaseActions  ExceptionCaseAction[]      @relation("ExceptionCasePreviousHandler")
-  nextCaseActions      ExceptionCaseAction[]      @relation("ExceptionCaseNextHandler")
-  restrictionAudits    RiderRestrictionAudit[]    @relation("RiderRestrictionAuditActor")
-  compensationActions  CompensationObligation[]   @relation("CompensationActor")
-  adminProfileAudits   AdminProfileAudit[]        @relation("AdminProfileAuditActor")
-  adminProfileChanges  AdminProfileAudit[]        @relation("AdminProfileAuditTarget")
-  createdAt            DateTime                   @default(now())
-  updatedAt            DateTime                   @updatedAt
+  id                        String                            @id @default(uuid()) @db.Uuid
+  displayName               String
+  role                      UserRole
+  active                    Boolean                           @default(true)
+  merchant                  Merchant?
+  rider                     Rider?
+  customerOrders            Order[]                           @relation("CustomerOrders")
+  operatedEvents            OrderEvent[]                      @relation("OrderEventOperator")
+  evidence                  Evidence[]
+  reportedExceptions        ExceptionEvent[]                  @relation("ExceptionReporter")
+  issuedCodes               VerificationCode[]                @relation("VerificationIssuer")
+  verifiedCodes             VerificationCode[]                @relation("VerificationVerifier")
+  merchantQuoteChanges      MerchantDeliveryQuote[]           @relation("MerchantQuoteOperator")
+  riderTipEvents            RiderTipEvent[]                   @relation("RiderTipCustomer")
+  configAudits              BusinessConfigAudit[]             @relation("BusinessConfigAuditActor")
+  exposureDecisions         MerchantExposureDecision[]        @relation("MerchantExposureDecisionActor")
+  adminProfile              AdminProfile?
+  handledCases              ExceptionCase[]                   @relation("ExceptionCaseHandler")
+  caseActions               ExceptionCaseAction[]             @relation("ExceptionCaseActionActor")
+  previousCaseActions       ExceptionCaseAction[]             @relation("ExceptionCasePreviousHandler")
+  nextCaseActions           ExceptionCaseAction[]             @relation("ExceptionCaseNextHandler")
+  restrictionAudits         RiderRestrictionAudit[]           @relation("RiderRestrictionAuditActor")
+  compensationActions       CompensationObligation[]          @relation("CompensationActor")
+  adminProfileAudits        AdminProfileAudit[]               @relation("AdminProfileAuditActor")
+  adminProfileChanges       AdminProfileAudit[]               @relation("AdminProfileAuditTarget")
+  capacityEvents            RiderCapacityEvent[]              @relation("RiderCapacityEventActor")
+  rescueContributionChanges MerchantRescueContributionEvent[]
+  createdAt                 DateTime                          @default(now())
+  updatedAt                 DateTime                          @updatedAt
 }
 
 model CampusLocation {
@@ -302,6 +327,7 @@ model CampusLocation {
   name                     String
   type                     CampusLocationType
   description              String?
+  regionLabel              String?
   supportedDeliveryMethods DeliveryMethod[]   @default([DESIGNATED_POINT, DOOR, FACE_TO_FACE])
   merchants                Merchant[]
   destinationOrders        Order[]
@@ -322,6 +348,7 @@ model Merchant {
   trialExposureOverrideBps  Int?
   maxConcurrentOrders       Int                        @default(0)
   deliveryContributionMinor Int                        @default(0)
+  baseDeliveryPriceMinor    Int                        @default(0)
   supportedDeliveryMethods  DeliveryMethod[]           @default([DESIGNATED_POINT, DOOR, FACE_TO_FACE])
   pickupVerificationMode    PickupVerificationMode     @default(CONFIRMATION)
   categories                ProductCategory[]
@@ -372,6 +399,8 @@ model Rider {
   user                        User                     @relation(fields: [userId], references: [id])
   status                      RiderStatus              @default(OFFLINE)
   currentConcurrentOrderLimit Int                      @default(1)
+  firstNormalDeliveredAt      DateTime?
+  capacityOverride            Int?
   deliveryTasks               DeliveryTask[]
   assignments                 DeliveryAssignment[]
   settlements                 RiderSettlement[]
@@ -381,28 +410,32 @@ model Rider {
   createdAt                   DateTime                 @default(now())
   updatedAt                   DateTime                 @updatedAt
   remakeProposals             RemakeProposal[]
+  capacityEvents              RiderCapacityEvent[]
 }
 
 model Order {
-  id                           String                    @id @default(uuid()) @db.Uuid
+  id                           String                            @id @default(uuid()) @db.Uuid
   shortCode                    String
-  shortCodeDay                 DateTime                  @db.Date
+  shortCodeDay                 DateTime                          @db.Date
   coolingOffEndsAt             DateTime
   tipDeadline                  DateTime
-  customerId                   String                    @db.Uuid
-  customer                     User                      @relation("CustomerOrders", fields: [customerId], references: [id])
-  merchantId                   String                    @db.Uuid
-  merchant                     Merchant                  @relation(fields: [merchantId], references: [id])
-  destinationLocationId        String                    @db.Uuid
-  destinationLocation          CampusLocation            @relation(fields: [destinationLocationId], references: [id])
+  customerId                   String                            @db.Uuid
+  customer                     User                              @relation("CustomerOrders", fields: [customerId], references: [id])
+  merchantId                   String                            @db.Uuid
+  merchant                     Merchant                          @relation(fields: [merchantId], references: [id])
+  destinationLocationId        String                            @db.Uuid
+  destinationLocation          CampusLocation                    @relation(fields: [destinationLocationId], references: [id])
   destinationLabelSnapshot     String
+  destinationRegionSnapshot    String?
+  pickupLocationNameSnapshot   String
+  pickupRegionSnapshot         String?
   deliveryMethod               DeliveryMethod
   deliveryVerificationMode     DeliveryVerificationMode
   pickupVerificationMode       PickupVerificationMode
-  deliveryEvidenceRequired     Boolean                   @default(false)
-  merchantPreparationStatus    MerchantPreparationStatus @default(PREPARING)
+  deliveryEvidenceRequired     Boolean                           @default(false)
+  merchantPreparationStatus    MerchantPreparationStatus         @default(PREPARING)
   merchantPreparationUpdatedAt DateTime?
-  status                       OrderStatus               @default(CREATED)
+  status                       OrderStatus                       @default(CREATED)
   items                        OrderItem[]
   events                       OrderEvent[]
   deliveryTask                 DeliveryTask?
@@ -419,8 +452,9 @@ model Order {
   exceptionCases               ExceptionCase[]
   remakeProposals              RemakeProposal[]
   compensationObligations      CompensationObligation[]
-  createdAt                    DateTime                  @default(now())
-  updatedAt                    DateTime                  @updatedAt
+  rescueContributionEvents     MerchantRescueContributionEvent[]
+  createdAt                    DateTime                          @default(now())
+  updatedAt                    DateTime                          @updatedAt
   riderCancellationEvents      RiderCancellationEvent[]
 
   @@unique([shortCodeDay, shortCode])
@@ -430,15 +464,21 @@ model Order {
 }
 
 model OrderItem {
-  id                  String  @id @default(uuid()) @db.Uuid
-  orderId             String  @db.Uuid
-  order               Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  productId           String  @db.Uuid
-  product             Product @relation(fields: [productId], references: [id])
-  productNameSnapshot String
-  unitPriceMinor      Int
-  quantity            Int
-  subtotalMinor       Int
+  id                           String   @id @default(uuid()) @db.Uuid
+  orderId                      String   @db.Uuid
+  order                        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId                    String   @db.Uuid
+  product                      Product  @relation(fields: [productId], references: [id])
+  productNameSnapshot          String
+  merchantCategoryNameSnapshot String
+  suggestedFoodType            FoodType
+  handlingTags                 String[] @default([])
+  classificationSource         String
+  classificationVersion        String
+  classificationConfidenceBps  Int
+  unitPriceMinor               Int
+  quantity                     Int
+  subtotalMinor                Int
 
   @@index([orderId])
 }
@@ -488,29 +528,36 @@ model DeliveryTask {
 }
 
 model DeliveryAssignment {
-  id                          String                   @id @default(uuid()) @db.Uuid
-  taskId                      String                   @db.Uuid
-  task                        DeliveryTask             @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  orderId                     String                   @db.Uuid
-  order                       Order                    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  riderId                     String                   @db.Uuid
-  rider                       Rider                    @relation(fields: [riderId], references: [id])
-  status                      DeliveryAssignmentStatus @default(ACTIVE)
-  claimedAt                   DateTime                 @default(now())
-  endedAt                     DateTime?
-  reason                      String?
-  merchantQuoteMinorAtClaim   Int
-  customerTipMinorAtClaim     Int
-  platformSubsidyMinorAtClaim Int
-  riderPayoutMinorAtClaim     Int
-  postClaimTipMinor           Int                      @default(0)
-  quoteVersionAtClaim         Int
-  claimSampleType             ClaimSampleType
-  claimLatencySeconds         Int
-  tipEvents                   RiderTipEvent[]
-  cancellationEvents          RiderCancellationEvent[]
-  createdAt                   DateTime                 @default(now())
-  updatedAt                   DateTime                 @updatedAt
+  id                                       String                   @id @default(uuid()) @db.Uuid
+  taskId                                   String                   @db.Uuid
+  task                                     DeliveryTask             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  orderId                                  String                   @db.Uuid
+  order                                    Order                    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  riderId                                  String                   @db.Uuid
+  rider                                    Rider                    @relation(fields: [riderId], references: [id])
+  status                                   DeliveryAssignmentStatus @default(ACTIVE)
+  claimedAt                                DateTime                 @default(now())
+  endedAt                                  DateTime?
+  reason                                   String?
+  merchantQuoteMinorAtClaim                Int
+  customerTipMinorAtClaim                  Int
+  platformSubsidyMinorAtClaim              Int
+  riderPayoutMinorAtClaim                  Int
+  riderGuaranteedPayoutMinorAtClaim        Int
+  customerDeliveryFeeMinorAtClaim          Int
+  riderBasePayoutMinorAtClaim              Int
+  merchantRescueContributionMinorAtClaim   Int
+  deliveryPlatformContributionMinorAtClaim Int
+  pricingPolicyVersionAtClaim              Int
+  pricingInputsSnapshotAtClaim             Json
+  postClaimTipMinor                        Int                      @default(0)
+  quoteVersionAtClaim                      Int
+  claimSampleType                          ClaimSampleType
+  claimLatencySeconds                      Int
+  tipEvents                                RiderTipEvent[]
+  cancellationEvents                       RiderCancellationEvent[]
+  createdAt                                DateTime                 @default(now())
+  updatedAt                                DateTime                 @updatedAt
 
   @@index([riderId, status])
   @@index([taskId, status])
@@ -524,10 +571,20 @@ model OrderPricing {
   itemSubtotalMinor                 Int
   customerDeliveryFeeMinor          Int       @default(0)
   merchantDeliveryContributionMinor Int       @default(0)
+  merchantBaseDeliveryPriceMinor    Int       @default(0)
+  riderBasePayoutMinor              Int       @default(0)
+  merchantRescueContributionMinor   Int       @default(0)
   customerRiderTipMinor             Int       @default(0)
   customerRiderTipRefundMinor       Int       @default(0)
   platformSubsidyMinor              Int       @default(0)
   riderPayoutMinor                  Int       @default(0)
+  riderGuaranteedPayoutMinor        Int       @default(0)
+  deliveryPlatformContributionMinor Int       @default(0)
+  pricingPolicyVersion              Int       @default(0)
+  pricingInputsSnapshot             Json?
+  pricingReason                     String?
+  merchantRescueContributionVersion Int       @default(0)
+  merchantRescueUpdatedAt           DateTime?
   merchantQuoteVersion              Int       @default(0)
   merchantQuoteUpdatedAt            DateTime?
   platformCommissionMinor           Int       @default(0)
@@ -536,6 +593,41 @@ model OrderPricing {
   exceptionCompensationMinor        Int       @default(0)
   createdAt                         DateTime  @default(now())
   updatedAt                         DateTime  @updatedAt
+}
+
+model RiderCapacityEvent {
+  id               String                 @id @default(uuid()) @db.Uuid
+  riderId          String                 @db.Uuid
+  rider            Rider                  @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  type             RiderCapacityEventType
+  stage            RiderCapacityStage
+  previousCapacity Int
+  newCapacity      Int
+  actorId          String?                @db.Uuid
+  actor            User?                  @relation("RiderCapacityEventActor", fields: [actorId], references: [id], onDelete: SetNull)
+  reason           String
+  stageEventKey    String?                @unique
+  metadata         Json?
+  createdAt        DateTime               @default(now())
+
+  @@index([riderId, createdAt])
+}
+
+model MerchantRescueContributionEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  orderId       String   @db.Uuid
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  version       Int
+  previousMinor Int
+  addedMinor    Int
+  newMinor      Int
+  operatorId    String   @db.Uuid
+  operator      User     @relation(fields: [operatorId], references: [id], onDelete: Restrict)
+  reason        String?
+  createdAt     DateTime @default(now())
+
+  @@unique([orderId, version])
+  @@index([orderId, createdAt])
 }
 
 model Settlement {

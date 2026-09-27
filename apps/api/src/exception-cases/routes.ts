@@ -131,6 +131,7 @@ export async function registerExceptionCaseRoutes(app: FastifyInstance, prisma: 
   }, async (request) => {
     if (request.body.resolutionType === ExceptionResolutionType.REFUND_AND_CLOSE) {
       return refundAndCloseExceptionCase(prisma, actorOf(request), request.params.caseId, {
+        expectedVersion: request.body.expectedVersion,
         idempotencyKey: request.body.idempotencyKey ?? `case:${request.params.caseId}:refund`,
         reason: request.body.note,
       });
@@ -177,12 +178,13 @@ export async function registerExceptionCaseRoutes(app: FastifyInstance, prisma: 
 
   app.post<{
     Params: { caseId: string };
-    Body: { idempotencyKey: string; voluntaryPaymentMinor?: number; reason: string };
+    Body: { expectedVersion: number; idempotencyKey: string; voluntaryPaymentMinor?: number; reason: string };
   }>('/exception-cases/:caseId/voluntary-compensation', {
     preHandler: rider,
     schema: {
       tags: ['rider-exceptions'], params: CaseParams,
       body: Type.Object({
+        expectedVersion: Type.Integer({ minimum: 0 }),
         idempotencyKey: Type.String({ minLength: 8, maxLength: 200 }),
         voluntaryPaymentMinor: Type.Optional(Type.Integer({ minimum: 0 })),
         reason: Type.String({ minLength: 1, maxLength: 500 }),
@@ -202,12 +204,13 @@ export async function registerExceptionCaseRoutes(app: FastifyInstance, prisma: 
 
   app.post<{
     Params: { caseId: string };
-    Body: { idempotencyKey: string; reason: string };
+    Body: { expectedVersion: number; idempotencyKey: string; reason: string };
   }>('/admin/exception-cases/:caseId/release-compensation', {
     preHandler: admin,
     schema: {
       tags: ['exception-cases'], params: CaseParams,
       body: Type.Object({
+        expectedVersion: Type.Integer({ minimum: 0 }),
         idempotencyKey: Type.String({ minLength: 8, maxLength: 200 }),
         reason: Type.String({ minLength: 1, maxLength: 500 }),
       }),
@@ -216,6 +219,7 @@ export async function registerExceptionCaseRoutes(app: FastifyInstance, prisma: 
     prisma,
     actorOf(request),
     request.params.caseId,
+    request.body.expectedVersion,
     request.body.idempotencyKey,
     request.body.reason,
   ));

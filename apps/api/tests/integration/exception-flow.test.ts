@@ -67,7 +67,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
         pickupVerificationMode: PickupVerificationMode.CONFIRMATION,
       },
     });
-    await prisma.rider.updateMany({ data: { status: RiderStatus.AVAILABLE, currentConcurrentOrderLimit: 5 } });
+    await prisma.rider.updateMany({ data: { status: RiderStatus.AVAILABLE, capacityOverride: 5 } });
   });
 
   afterAll(async () => {
@@ -167,6 +167,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
           merchantId: seedIds.merchant,
           destinationLocationId: seedIds.dormLocation,
           destinationLabelSnapshot: '宿舍',
+          pickupLocationNameSnapshot: '第一食堂',
           deliveryMethod: DeliveryMethod.DESIGNATED_POINT,
           deliveryVerificationMode: DeliveryVerificationMode.DELIVERY_PHOTO,
           pickupVerificationMode: PickupVerificationMode.CONFIRMATION,
@@ -202,7 +203,14 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
           customerTipMinorAtClaim: 0,
           platformSubsidyMinorAtClaim: subsidized ? 50 : 0,
           riderPayoutMinorAtClaim: 150,
+          riderGuaranteedPayoutMinorAtClaim: 150,
           quoteVersionAtClaim: 1,
+          customerDeliveryFeeMinorAtClaim: 150,
+          riderBasePayoutMinorAtClaim: 100,
+          merchantRescueContributionMinorAtClaim: 0,
+          deliveryPlatformContributionMinorAtClaim: subsidized ? 0 : 50,
+          pricingPolicyVersionAtClaim: 1,
+          pricingInputsSnapshotAtClaim: { source: 'METRIC_TEST' },
           claimSampleType: subsidized ? 'SUBSIDIZED' : 'NATURAL',
           claimLatencySeconds: 1,
         },
@@ -260,7 +268,14 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
         customerTipMinorAtClaim: pricing.customerRiderTipMinor,
         platformSubsidyMinorAtClaim: pricing.platformSubsidyMinor,
         riderPayoutMinorAtClaim: pricing.riderPayoutMinor,
+        riderGuaranteedPayoutMinorAtClaim: pricing.riderGuaranteedPayoutMinor,
         quoteVersionAtClaim: pricing.merchantQuoteVersion,
+        customerDeliveryFeeMinorAtClaim: pricing.customerDeliveryFeeMinor,
+        riderBasePayoutMinorAtClaim: pricing.riderBasePayoutMinor,
+        merchantRescueContributionMinorAtClaim: pricing.merchantRescueContributionMinor,
+        deliveryPlatformContributionMinorAtClaim: pricing.deliveryPlatformContributionMinor,
+        pricingPolicyVersionAtClaim: pricing.pricingPolicyVersion,
+        pricingInputsSnapshotAtClaim: pricing.pricingInputsSnapshot ?? {},
         claimSampleType: 'NATURAL',
         claimLatencySeconds: 1,
       },
@@ -289,6 +304,11 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     const secondCancel = await cancelBeforePickup(prisma, riderActor, second.taskId, { reason: 'VEHICLE_ISSUE' }, config);
     expect(secondCancel.summary).toMatchObject({ dailyCount: 2, warningCount: 1 });
     expect(secondCancel.summary.restrictions.some((item) => item.type === 'SAME_DAY_NEW_CLAIM_PAUSE')).toBe(true);
+    expect((await prisma.deliveryTask.findUniqueOrThrow({ where: { id: held.taskId } })).status).toBe('CLAIMED');
+    const thirdCancel = await app.inject({
+      method: 'POST', url: `/delivery-tasks/${held.taskId}/pre-pickup-cancel`, headers: headers(seedIds.riderAUser), payload: { reason: 'OTHER' },
+    });
+    expect(thirdCancel.statusCode).toBe(409);
     expect((await prisma.deliveryTask.findUniqueOrThrow({ where: { id: held.taskId } })).status).toBe('CLAIMED');
     const blocked = await createReady();
     expect((await claim(blocked.taskId)).statusCode).toBe(409);
@@ -407,7 +427,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
       },
     });
     expect(resolved.statusCode, resolved.body).toBe(200);
-    expect((await prisma.compensationObligation.findUniqueOrThrow({ where: { caseId } })).requiredCompensationMinor).toBe(2000);
+    expect((await prisma.compensationObligation.findUniqueOrThrow({ where: { caseId } })).requiredCompensationMinor).toBe(2320);
   });
 
   it('audits transfer, super-admin takeover, and release of case ownership', async () => {
@@ -436,6 +456,81 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
       .map((action) => action.type)).toEqual(['CREATED', 'CLASSIFIED', 'CLAIMED', 'TRANSFERRED', 'TAKEN_OVER', 'RELEASED']);
   });
 
+  it('keeps resolved cases terminal across release, transfer, takeover, and escalation', async () => {
+    const ready = await pickedUpOrder();
+    await app.inject({
+      method: 'POST', url: `/orders/${ready.orderId}/exceptions`, headers: headers(seedIds.customer),
+      payload: { type: 'DELIVERY_DISPUTE', description: 'Terminal state guard case' },
+    });
+    const exceptionCase = await prisma.exceptionCase.findFirstOrThrow({ where: { orderId: ready.orderId } });
+    await app.inject({ method: 'POST', url: `/admin/exception-cases/${exceptionCase.id}/claim`, headers: headers(seedIds.operator), payload: { expectedVersion: 0 } });
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${exceptionCase.id}/resolve`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 1, resolutionType: 'RESPONSIBILITY_UNDETERMINED', note: 'Terminal guard setup' },
+    });
+    const attempts = [
+      app.inject({ method: 'POST', url: `/admin/exception-cases/${exceptionCase.id}/release`, headers: headers(seedIds.operator), payload: { expectedVersion: 2, reason: 'stale release' } }),
+      app.inject({ method: 'POST', url: `/admin/exception-cases/${exceptionCase.id}/transfer`, headers: headers(seedIds.operator), payload: { expectedVersion: 2, nextHandlerAdminId: seedIds.admin, reason: 'stale transfer' } }),
+      app.inject({ method: 'POST', url: `/admin/exception-cases/${exceptionCase.id}/takeover`, headers: headers(seedIds.admin), payload: { expectedVersion: 2, nextHandlerAdminId: seedIds.admin, reason: 'stale takeover' } }),
+      app.inject({ method: 'POST', url: `/admin/exception-cases/${exceptionCase.id}/escalate`, headers: headers(seedIds.operator), payload: { expectedVersion: 2, reason: 'stale escalation' } }),
+    ];
+    expect((await Promise.all(attempts)).map((response) => response.statusCode)).toEqual([409, 409, 409, 409]);
+    expect((await prisma.exceptionCase.findUniqueOrThrow({ where: { id: exceptionCase.id } })).status).toBe('RESOLVED');
+  });
+
+  it('blocks stale refund and rider compensation after remake resolution', async () => {
+    const ready = await pickedUpOrder();
+    const reported = await app.inject({
+      method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'SEVERE_FOOD_DAMAGE', description: 'Stale refund case' },
+    });
+    const caseId = reported.json().id as string;
+    await app.inject({
+      method: 'POST', url: `/exception-cases/${caseId}/remake-proposal`, headers: headers(seedIds.riderAUser), payload: { message: 'Remake offered' },
+    });
+    await app.inject({
+      method: 'POST', url: `/exception-cases/${caseId}/remake-response`, headers: headers(seedIds.customer), payload: { accept: true },
+    });
+    const staleAdmin = await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/resolve`, headers: headers(seedIds.admin),
+      payload: { expectedVersion: 1, resolutionType: 'REFUND_AND_CLOSE', note: 'stale admin page', idempotencyKey: `stale-admin-${caseId}` },
+    });
+    const staleRider = await app.inject({
+      method: 'POST', url: `/exception-cases/${caseId}/voluntary-compensation`, headers: headers(seedIds.riderAUser),
+      payload: { expectedVersion: 1, idempotencyKey: `stale-rider-${caseId}`, reason: 'stale rider page' },
+    });
+    expect(staleAdmin.statusCode).toBe(409);
+    expect(staleRider.statusCode).toBe(409);
+    expect(await prisma.compensationObligation.count({ where: { caseId } })).toBe(0);
+  });
+
+  it('requires super-admin takeover before an escalated case can be refunded', async () => {
+    const ready = await pickedUpOrder();
+    const reported = await app.inject({
+      method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'FOOD_LOST', description: 'Escalation boundary case' },
+    });
+    const caseId = reported.json().id as string;
+    await app.inject({ method: 'POST', url: `/admin/exception-cases/${caseId}/claim`, headers: headers(seedIds.operator), payload: { expectedVersion: 0 } });
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/escalate`, headers: headers(seedIds.operator), payload: { expectedVersion: 1, reason: 'Needs super-admin decision' },
+    });
+    const operatorRefund = await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/resolve`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 2, resolutionType: 'REFUND_AND_CLOSE', note: 'operator after escalation', idempotencyKey: `escalated-op-${caseId}` },
+    });
+    expect(operatorRefund.statusCode).toBe(409);
+    expect((await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/takeover`, headers: headers(seedIds.admin),
+      payload: { expectedVersion: 2, nextHandlerAdminId: seedIds.admin, reason: 'Super-admin accepts escalation' },
+    })).statusCode).toBe(200);
+    const superRefund = await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/resolve`, headers: headers(seedIds.admin),
+      payload: { expectedVersion: 3, resolutionType: 'REFUND_AND_CLOSE', note: 'Super-admin approved refund', idempotencyKey: `escalated-super-${caseId}` },
+    });
+    expect(superRefund.statusCode, superRefund.body).toBe(200);
+  });
+
   it('records idempotent refund funding without changing RiderTip or over-reserving settlements', async () => {
     const fundingOrder = await prisma.order.create({
       data: {
@@ -447,6 +542,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
         merchantId: seedIds.merchant,
         destinationLocationId: seedIds.dormLocation,
         destinationLabelSnapshot: '宿舍',
+        pickupLocationNameSnapshot: '第一食堂',
         deliveryMethod: DeliveryMethod.DESIGNATED_POINT,
         deliveryVerificationMode: DeliveryVerificationMode.DELIVERY_PHOTO,
         pickupVerificationMode: PickupVerificationMode.CONFIRMATION,
@@ -474,22 +570,22 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     const caseId = reported.json().id as string;
     const request = () => app.inject({
       method: 'POST', url: `/exception-cases/${caseId}/voluntary-compensation`, headers: headers(seedIds.riderAUser),
-      payload: { idempotencyKey: `refund-${caseId}`, voluntaryPaymentMinor: 100, reason: 'Rider voluntarily chose original-price compensation' },
+      payload: { expectedVersion: 0, idempotencyKey: `refund-${caseId}`, voluntaryPaymentMinor: 100, reason: 'Rider voluntarily chose original-price compensation' },
     });
     const responses = await Promise.all([request(), request()]);
     expect(responses.every((response) => response.statusCode === 201)).toBe(true);
     expect(await prisma.compensationObligation.count({ where: { caseId } })).toBe(1);
     const obligation = await prisma.compensationObligation.findUniqueOrThrow({ where: { caseId }, include: { allocations: true } });
-    expect(obligation.requiredCompensationMinor).toBe(2000);
-    expect(obligation.customerRefundMinor).toBe(2000);
-    expect(obligation.currentOrderReservedMinor).toBe(130);
+    expect(obligation.requiredCompensationMinor).toBe(2320);
+    expect(obligation.customerRefundMinor).toBe(2320);
+    expect(obligation.currentOrderReservedMinor).toBe(250);
     expect(obligation.otherUnwithdrawnReservedMinor).toBe(500);
     expect(obligation.riderVoluntaryPaymentMinor).toBe(100);
-    expect(obligation.platformAdvancedMinor).toBe(1270);
-    expect(obligation.outstandingMinor).toBe(1270);
+    expect(obligation.platformAdvancedMinor).toBe(1470);
+    expect(obligation.outstandingMinor).toBe(1470);
     const pricing = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } });
     expect(pricing.customerRiderTipMinor).toBe(30);
-    expect(pricing.customerRefundMinor).toBe(2000);
+    expect(pricing.customerRefundMinor).toBe(2320);
     const settlements = await prisma.riderSettlement.findMany({ where: { riderId: seedIds.riderA } });
     expect(settlements.every((settlement) => settlement.reservedMinor <= settlement.amountMinor)).toBe(true);
     const customerView = await app.inject({ method: 'GET', url: `/orders/${ready.orderId}/exception-cases`, headers: headers(seedIds.customer) });
@@ -499,7 +595,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
 
     const release = () => app.inject({
       method: 'POST', url: `/admin/exception-cases/${caseId}/release-compensation`, headers: headers(seedIds.admin),
-      payload: { idempotencyKey: `release-${caseId}`, reason: 'Super admin determined rider reservation should be released' },
+      payload: { expectedVersion: 1, idempotencyKey: `release-${caseId}`, reason: 'Super admin determined rider reservation should be released' },
     });
     const releases = await Promise.all([release(), release()]);
     expect(releases.every((response) => response.statusCode === 200)).toBe(true);
@@ -507,7 +603,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect(released).toMatchObject({
       currentOrderReservedMinor: 0,
       otherUnwithdrawnReservedMinor: 0,
-      platformAdvancedMinor: 1900,
+      platformAdvancedMinor: 2220,
       outstandingMinor: 0,
       status: 'RESOLVED',
     });
@@ -526,7 +622,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     }
     const responses = await Promise.all(cases.map((caseId) => app.inject({
       method: 'POST', url: `/exception-cases/${caseId}/voluntary-compensation`, headers: headers(seedIds.riderAUser),
-      payload: { idempotencyKey: `concurrent-${caseId}`, reason: 'Concurrent reservation safety test' },
+      payload: { expectedVersion: 0, idempotencyKey: `concurrent-${caseId}`, reason: 'Concurrent reservation safety test' },
     })));
     expect(responses.every((response) => response.statusCode === 201)).toBe(true);
     const settlements = await prisma.riderSettlement.findMany({ where: { riderId: seedIds.riderA } });

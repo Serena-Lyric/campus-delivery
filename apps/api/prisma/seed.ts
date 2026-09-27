@@ -55,13 +55,17 @@ const scenarioIds = {
 } as const;
 
 export const demoPolicy = {
-  customerDeliveryFeeMinor: 0,
+  deliveryPricingDefaultCustomerFeeMinor: 300,
+  deliveryPricingDefaultRiderBasePayoutMinor: 200,
+  deliveryPricingAdditionalItemCustomerFeeMinor: 20,
+  deliveryPricingAdditionalItemRiderPayoutMinor: 20,
+  deliveryPricingMerchantOverrides: [],
   platformCommissionBps: 500,
   subsidyEnabled: true,
   coolingOffSeconds: 60,
   verificationCodeTtlSeconds: 600,
   riderSettlementPendingSeconds: 432000,
-  platformMaxConcurrentOrdersPerRider: 3,
+  platformMaxConcurrentOrdersPerRider: 10,
   customerUnreachableWaitSeconds: 300,
   riderTipWindowSeconds: 86400,
   merchantRepriceCooldownSeconds: 15,
@@ -126,6 +130,9 @@ async function seedScenarioOrders(client: PrismaClient) {
         deliveryMethod,
         deliveryVerificationMode,
         pickupVerificationMode: PickupVerificationMode.CONFIRMATION,
+        pickupLocationNameSnapshot: '第一食堂',
+        pickupRegionSnapshot: '东门片区',
+        destinationRegionSnapshot: '一期',
       },
       create: {
         id,
@@ -137,6 +144,9 @@ async function seedScenarioOrders(client: PrismaClient) {
         merchantId: seedIds.merchant,
         destinationLocationId: seedIds.dormLocation,
         destinationLabelSnapshot: '学生宿舍 3 号楼',
+        destinationRegionSnapshot: '一期',
+        pickupLocationNameSnapshot: '第一食堂',
+        pickupRegionSnapshot: '东门片区',
         status,
         deliveryMethod,
         deliveryVerificationMode,
@@ -145,48 +155,54 @@ async function seedScenarioOrders(client: PrismaClient) {
     });
     const seededPlatformSubsidyMinor = id === scenarioIds.requiresCode ? 50 : 0;
     const seededCustomerTipMinor = id === scenarioIds.delivering ? 20 : 0;
-    const seededPayoutMinor = 100 + seededPlatformSubsidyMinor + seededCustomerTipMinor;
-    const quoteVersion = status === OrderStatus.CREATED || status === OrderStatus.MERCHANT_PENDING ? 0 : 1;
+    const seededPayoutMinor = 200 + seededPlatformSubsidyMinor + seededCustomerTipMinor;
     await client.orderPricing.upsert({
       where: { orderId: id },
       update: {
-        merchantDeliveryContributionMinor: quoteVersion > 0 ? 100 : 0,
+        merchantDeliveryContributionMinor: 0,
+        merchantBaseDeliveryPriceMinor: 100,
+        riderBasePayoutMinor: 200,
+        merchantRescueContributionMinor: 0,
+        customerDeliveryFeeMinor: 300,
         customerRiderTipMinor: seededCustomerTipMinor,
         platformSubsidyMinor: seededPlatformSubsidyMinor,
-        riderPayoutMinor: quoteVersion > 0 ? seededPayoutMinor : seededCustomerTipMinor,
+        riderGuaranteedPayoutMinor: seededPayoutMinor,
+        riderPayoutMinor: seededPayoutMinor,
+        deliveryPlatformContributionMinor: 300 - 200 - seededPlatformSubsidyMinor,
+        pricingPolicyVersion: 1,
+        pricingInputsSnapshot: { source: 'SEED_DEMO' },
+        pricingReason: 'SEED_DEMO',
         platformCommissionMinor: 75,
-        merchantSettlementMinor: quoteVersion > 0 ? 1325 : 0,
-        merchantQuoteVersion: quoteVersion,
-        merchantQuoteUpdatedAt: quoteVersion > 0 ? now : null,
+        merchantSettlementMinor: 1425,
+        merchantRescueContributionVersion: 0,
+        merchantRescueUpdatedAt: now,
+        merchantQuoteVersion: 0,
+        merchantQuoteUpdatedAt: null,
       },
       create: {
         orderId: id,
         itemSubtotalMinor: 1500,
-        merchantDeliveryContributionMinor: quoteVersion > 0 ? 100 : 0,
+        merchantDeliveryContributionMinor: 0,
+        merchantBaseDeliveryPriceMinor: 100,
+        riderBasePayoutMinor: 200,
+        merchantRescueContributionMinor: 0,
+        customerDeliveryFeeMinor: 300,
         customerRiderTipMinor: seededCustomerTipMinor,
         platformSubsidyMinor: seededPlatformSubsidyMinor,
-        riderPayoutMinor: quoteVersion > 0 ? seededPayoutMinor : seededCustomerTipMinor,
+        riderGuaranteedPayoutMinor: seededPayoutMinor,
+        riderPayoutMinor: seededPayoutMinor,
+        deliveryPlatformContributionMinor: 300 - 200 - seededPlatformSubsidyMinor,
+        pricingPolicyVersion: 1,
+        pricingInputsSnapshot: { source: 'SEED_DEMO' },
+        pricingReason: 'SEED_DEMO',
         platformCommissionMinor: 75,
-        merchantSettlementMinor: quoteVersion > 0 ? 1325 : 0,
-        merchantQuoteVersion: quoteVersion,
-        merchantQuoteUpdatedAt: quoteVersion > 0 ? now : null,
+        merchantSettlementMinor: 1425,
+        merchantRescueContributionVersion: 0,
+        merchantRescueUpdatedAt: now,
+        merchantQuoteVersion: 0,
+        merchantQuoteUpdatedAt: null,
       },
     });
-    if (quoteVersion > 0) {
-      await client.merchantDeliveryQuote.upsert({
-        where: { orderId_version: { orderId: id, version: 1 } },
-        update: { newMinor: 100 },
-        create: {
-          orderId: id,
-          version: 1,
-          previousMinor: 0,
-          newMinor: 100,
-          operatorId: seedIds.merchantUser,
-          reason: 'SEED_DEMO_QUOTE',
-          createdAt: now,
-        },
-      });
-    }
     await client.settlement.upsert({
       where: { orderId: id },
       update: {},
@@ -221,7 +237,7 @@ async function seedScenarioOrders(client: PrismaClient) {
     const claimDeadline = new Date(firstPublishedAt.getTime() + demoPolicy.orderClaimWindowSeconds * 1000);
     const platformSubsidyMinor = orderId === scenarioIds.requiresCode ? 50 : 0;
     const customerTipMinor = orderId === scenarioIds.delivering ? 20 : 0;
-    const payoutMinor = 100 + platformSubsidyMinor + customerTipMinor;
+    const payoutMinor = 200 + platformSubsidyMinor + customerTipMinor;
     await client.deliveryTask.upsert({
       where: { id: taskId },
       update: {
@@ -258,11 +274,18 @@ async function seedScenarioOrders(client: PrismaClient) {
         where: { id: assignmentId },
         update: {
           status: status === DeliveryTaskStatus.COMPLETED ? DeliveryAssignmentStatus.COMPLETED : DeliveryAssignmentStatus.ACTIVE,
-          merchantQuoteMinorAtClaim: 100,
+          merchantQuoteMinorAtClaim: 0,
           customerTipMinorAtClaim: customerTipMinor,
           platformSubsidyMinorAtClaim: platformSubsidyMinor,
           riderPayoutMinorAtClaim: payoutMinor,
-          quoteVersionAtClaim: 1,
+          riderGuaranteedPayoutMinorAtClaim: payoutMinor,
+          quoteVersionAtClaim: 0,
+          customerDeliveryFeeMinorAtClaim: 300,
+          riderBasePayoutMinorAtClaim: 200,
+          merchantRescueContributionMinorAtClaim: 0,
+          deliveryPlatformContributionMinorAtClaim: 300 - 200 - platformSubsidyMinor,
+          pricingPolicyVersionAtClaim: 1,
+          pricingInputsSnapshotAtClaim: { source: 'SEED_DEMO' },
           claimSampleType: platformSubsidyMinor > 0 ? 'SUBSIDIZED' : 'NATURAL',
           claimLatencySeconds: 600,
         },
@@ -274,11 +297,18 @@ async function seedScenarioOrders(client: PrismaClient) {
           status: status === DeliveryTaskStatus.COMPLETED ? DeliveryAssignmentStatus.COMPLETED : DeliveryAssignmentStatus.ACTIVE,
           claimedAt: now,
           endedAt: status === DeliveryTaskStatus.COMPLETED ? now : null,
-          merchantQuoteMinorAtClaim: 100,
+          merchantQuoteMinorAtClaim: 0,
           customerTipMinorAtClaim: customerTipMinor,
           platformSubsidyMinorAtClaim: platformSubsidyMinor,
           riderPayoutMinorAtClaim: payoutMinor,
-          quoteVersionAtClaim: 1,
+          riderGuaranteedPayoutMinorAtClaim: payoutMinor,
+          quoteVersionAtClaim: 0,
+          customerDeliveryFeeMinorAtClaim: 300,
+          riderBasePayoutMinorAtClaim: 200,
+          merchantRescueContributionMinorAtClaim: 0,
+          deliveryPlatformContributionMinorAtClaim: 300 - 200 - platformSubsidyMinor,
+          pricingPolicyVersionAtClaim: 1,
+          pricingInputsSnapshotAtClaim: { source: 'SEED_DEMO' },
           claimSampleType: platformSubsidyMinor > 0 ? 'SUBSIDIZED' : 'NATURAL',
           claimLatencySeconds: 600,
         },
@@ -395,12 +425,14 @@ export async function seedDatabase(client: PrismaClient) {
       name: '第一食堂',
       type: CampusLocationType.CANTEEN,
       supportedDeliveryMethods: [DeliveryMethod.DESIGNATED_POINT, DeliveryMethod.DOOR, DeliveryMethod.FACE_TO_FACE],
+      regionLabel: '东门片区',
     },
     create: {
       id: seedIds.merchantLocation,
       name: '第一食堂',
       type: CampusLocationType.CANTEEN,
       supportedDeliveryMethods: [DeliveryMethod.DESIGNATED_POINT, DeliveryMethod.DOOR, DeliveryMethod.FACE_TO_FACE],
+      regionLabel: '东门片区',
     },
   });
   await client.campusLocation.upsert({
@@ -409,12 +441,14 @@ export async function seedDatabase(client: PrismaClient) {
       name: '学生宿舍 3 号楼',
       type: CampusLocationType.DORMITORY,
       supportedDeliveryMethods: [DeliveryMethod.DESIGNATED_POINT, DeliveryMethod.DOOR, DeliveryMethod.FACE_TO_FACE],
+      regionLabel: '一期',
     },
     create: {
       id: seedIds.dormLocation,
       name: '学生宿舍 3 号楼',
       type: CampusLocationType.DORMITORY,
       supportedDeliveryMethods: [DeliveryMethod.DESIGNATED_POINT, DeliveryMethod.DOOR, DeliveryMethod.FACE_TO_FACE],
+      regionLabel: '一期',
     },
   });
 
@@ -455,7 +489,8 @@ export async function seedDatabase(client: PrismaClient) {
       exposureState: MerchantExposureState.NORMAL,
       trialExposureOverrideBps: 10_000,
       maxConcurrentOrders: 20,
-      deliveryContributionMinor: 100,
+      deliveryContributionMinor: 0,
+      baseDeliveryPriceMinor: 100,
       supportedDeliveryMethods: [DeliveryMethod.DESIGNATED_POINT, DeliveryMethod.DOOR, DeliveryMethod.FACE_TO_FACE],
       pickupVerificationMode: PickupVerificationMode.CONFIRMATION,
     },
@@ -469,7 +504,8 @@ export async function seedDatabase(client: PrismaClient) {
       exposureState: MerchantExposureState.NORMAL,
       trialExposureOverrideBps: 10_000,
       maxConcurrentOrders: 20,
-      deliveryContributionMinor: 100,
+      deliveryContributionMinor: 0,
+      baseDeliveryPriceMinor: 100,
       supportedDeliveryMethods: [DeliveryMethod.DESIGNATED_POINT, DeliveryMethod.DOOR, DeliveryMethod.FACE_TO_FACE],
       pickupVerificationMode: PickupVerificationMode.CONFIRMATION,
     },
@@ -477,8 +513,20 @@ export async function seedDatabase(client: PrismaClient) {
   for (const [id, userId] of [[seedIds.riderA, seedIds.riderAUser], [seedIds.riderB, seedIds.riderBUser]] as const) {
     await client.rider.upsert({
       where: { id },
-      update: { userId, status: RiderStatus.AVAILABLE, currentConcurrentOrderLimit: 2 },
-      create: { id, userId, status: RiderStatus.AVAILABLE, currentConcurrentOrderLimit: 2 },
+      update: {
+        userId,
+        status: RiderStatus.AVAILABLE,
+        currentConcurrentOrderLimit: id === seedIds.riderA ? 5 : 1,
+        firstNormalDeliveredAt: id === seedIds.riderA ? new Date('2026-09-20T04:00:00.000Z') : null,
+        capacityOverride: null,
+      },
+      create: {
+        id,
+        userId,
+        status: RiderStatus.AVAILABLE,
+        currentConcurrentOrderLimit: id === seedIds.riderA ? 5 : 1,
+        firstNormalDeliveredAt: id === seedIds.riderA ? new Date('2026-09-20T04:00:00.000Z') : null,
+      },
     });
   }
   await client.productCategory.upsert({

@@ -69,7 +69,7 @@ describe('order handoff and settlement flow', () => {
       },
     });
     await prisma.rider.updateMany({
-      data: { status: RiderStatus.AVAILABLE, currentConcurrentOrderLimit: 2 },
+      data: { status: RiderStatus.AVAILABLE, capacityOverride: 2 },
     });
   });
 
@@ -266,7 +266,7 @@ describe('order handoff and settlement flow', () => {
     const taskId = confirmed.json().deliveryTask.id as string;
     await prisma.orderPricing.update({
       where: { orderId: order.id },
-      data: { merchantQuoteUpdatedAt: new Date(Date.now() - 20_000) },
+      data: { merchantRescueUpdatedAt: new Date(Date.now() - 20_000) },
     });
 
     const firstQuote = await app.inject({
@@ -287,11 +287,11 @@ describe('order handoff and settlement flow', () => {
       payload: { newMinor: 200 },
     });
     expect(cooldown.statusCode).toBe(409);
-    expect(await prisma.merchantDeliveryQuote.count({ where: { orderId: order.id } })).toBe(2);
+    expect(await prisma.merchantRescueContributionEvent.count({ where: { orderId: order.id } })).toBe(1);
 
     await prisma.orderPricing.update({
       where: { orderId: order.id },
-      data: { merchantQuoteUpdatedAt: new Date(Date.now() - 20_000) },
+      data: { merchantRescueUpdatedAt: new Date(Date.now() - 20_000) },
     });
     const [reprice, claimed] = await Promise.all([
       app.inject({
@@ -308,8 +308,10 @@ describe('order handoff and settlement flow', () => {
       prisma.orderPricing.findUniqueOrThrow({ where: { orderId: order.id } }),
       prisma.deliveryAssignment.findFirstOrThrow({ where: { taskId } }),
     ]);
-    expect(assignment.merchantQuoteMinorAtClaim).toBe(pricing.merchantDeliveryContributionMinor);
-    expect(assignment.quoteVersionAtClaim).toBe(pricing.merchantQuoteVersion);
+    expect(assignment.merchantRescueContributionMinorAtClaim).toBe(pricing.merchantRescueContributionMinor);
+    expect(assignment.quoteVersionAtClaim).toBe(pricing.merchantRescueContributionVersion);
+    expect(assignment.riderBasePayoutMinorAtClaim).toBe(pricing.riderBasePayoutMinor);
+    expect(assignment.deliveryPlatformContributionMinorAtClaim).toBe(pricing.deliveryPlatformContributionMinor);
     const afterClaim = await app.inject({
       method: 'PATCH',
       url: `/merchant/orders/${order.id}/delivery-quote`,
@@ -374,15 +376,15 @@ describe('order handoff and settlement flow', () => {
       prisma.settlement.findUniqueOrThrow({ where: { orderId: order.id } }),
       prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: order.id } }),
     ]);
-    expect(assignment.riderPayoutMinorAtClaim).toBe(160);
+    expect(assignment.riderPayoutMinorAtClaim).toBe(280);
     expect(assignment.postClaimTipMinor).toBe(25);
-    expect(settlement.riderPayableMinor).toBe(185);
-    expect(riderSettlement.amountMinor).toBe(185);
+    expect(settlement.riderPayableMinor).toBe(305);
+    expect(riderSettlement.amountMinor).toBe(305);
     const completedTask = await prisma.deliveryTask.findUniqueOrThrow({ where: { id: taskId } });
     expect(
       riderSettlement.pendingUntil.getTime() - completedTask.deliveredAt!.getTime(),
     ).toBe(demoPolicy.riderSettlementPendingSeconds * 1000);
-    expect(settlement.platformRevenueMinor).toBe(100);
+    expect(settlement.platformRevenueMinor).toBe(200);
 
     const afterDelivery = await app.inject({
       method: 'POST',
@@ -392,7 +394,7 @@ describe('order handoff and settlement flow', () => {
     });
     expect(afterDelivery.statusCode).toBe(201);
     expect((await prisma.deliveryAssignment.findFirstOrThrow({ where: { taskId } })).postClaimTipMinor).toBe(35);
-    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: order.id } })).amountMinor).toBe(195);
+    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: order.id } })).amountMinor).toBe(315);
   });
 
   it('enforces the snapshotted rider-tip deadline at the service boundary', async () => {
@@ -455,7 +457,7 @@ describe('order handoff and settlement flow', () => {
     expect(failedOrder.status).toBe('NO_RIDER_ACCEPTED');
     expect(failedTask.status).toBe('NO_RIDER_ACCEPTED');
     expect(failedTask.firstPublishedAt).toEqual(original.firstPublishedAt);
-    expect(pricing.customerRefundMinor).toBe(2080);
+    expect(pricing.customerRefundMinor).toBe(2400);
     expect(pricing.customerRiderTipMinor).toBe(0);
     expect(pricing.customerRiderTipRefundMinor).toBe(80);
     expect((await claim(taskId)).statusCode).toBe(409);
@@ -533,18 +535,18 @@ describe('order handoff and settlement flow', () => {
 
     await prisma.orderPricing.update({
       where: { orderId: order.id },
-      data: { merchantQuoteUpdatedAt: new Date(Date.now() - 20_000) },
+      data: { merchantRescueUpdatedAt: new Date(Date.now() - 20_000) },
     });
     const lowerQuote = await app.inject({
       method: 'PATCH',
       url: `/merchant/orders/${order.id}/delivery-quote`,
       headers: headers(seedIds.merchantUser),
-      payload: { newMinor: 50, reason: 'Merchant lowered own quote' },
+      payload: { newRescueContributionMinor: 50, reason: 'Merchant rescue contribution' },
     });
     expect(lowerQuote.statusCode).toBe(200);
     const afterLowering = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: order.id } });
     expect(afterLowering.platformSubsidyMinor).toBe(200);
-    expect(afterLowering.riderPayoutMinor).toBe(250);
+    expect(afterLowering.riderGuaranteedPayoutMinor).toBe(470);
 
     expect((await claim(taskId)).statusCode).toBe(200);
     const subsidized = await prisma.deliveryAssignment.findFirstOrThrow({ where: { taskId } });
@@ -714,14 +716,15 @@ describe('order handoff and settlement flow', () => {
     const merchant = (await app.inject({
       method: 'GET', url: `/orders/${order.id}/pricing`, headers: headers(seedIds.merchantUser),
     })).json();
-    expect(merchant.merchantDeliveryQuoteMinor).toBe(100);
+    expect(merchant.merchantBaseDeliveryPriceMinor).toBe(100);
+    expect(merchant.merchantRescueContributionMinor).toBe(0);
     expect(merchant.customerRiderTipMinor).toBeUndefined();
     expect(merchant.platformSubsidyMinor).toBeUndefined();
 
     const rider = (await app.inject({
       method: 'GET', url: `/orders/${order.id}/pricing`, headers: headers(seedIds.riderAUser),
     })).json();
-    expect(rider.guaranteedRiderPayoutMinor).toBe(180);
+    expect(rider.guaranteedRiderPayoutMinor).toBe(300);
     expect(rider.merchantDeliveryContributionMinor).toBeUndefined();
 
     const admin = (await app.inject({
@@ -729,7 +732,9 @@ describe('order handoff and settlement flow', () => {
     })).json();
     expect(admin.pricing.customerRiderTipMinor).toBe(30);
     expect(admin.pricing.platformSubsidyMinor).toBe(50);
-    expect(admin.pricing.merchantDeliveryContributionMinor).toBe(100);
+    expect(admin.pricing.merchantDeliveryContributionMinor).toBe(0);
+    expect(admin.pricing.merchantBaseDeliveryPriceMinor).toBe(100);
+    expect(admin.pricing.merchantRescueContributionMinor).toBe(0);
   });
 
   it('allows normal delivery without photo while keeping evidence available as an option', async () => {
@@ -746,7 +751,7 @@ describe('order handoff and settlement flow', () => {
   });
 
   it('prevents personal and platform rider limit violations', async () => {
-    await prisma.rider.update({ where: { id: seedIds.riderA }, data: { currentConcurrentOrderLimit: 1 } });
+    await prisma.rider.update({ where: { id: seedIds.riderA }, data: { capacityOverride: 1 } });
     const first = await makeReady();
     const second = await makeReady();
     expect((await claim(first.taskId)).statusCode).toBe(200);
@@ -756,7 +761,7 @@ describe('order handoff and settlement flow', () => {
     await prisma.deliveryAssignment.deleteMany();
     await prisma.deliveryTask.deleteMany();
     await prisma.order.deleteMany();
-    await prisma.rider.update({ where: { id: seedIds.riderA }, data: { currentConcurrentOrderLimit: 5 } });
+    await prisma.rider.update({ where: { id: seedIds.riderA }, data: { capacityOverride: 5 } });
     await prisma.businessConfig.update({
       where: { id: seedIds.policyConfig },
       data: { payload: { ...demoPolicy, platformMaxConcurrentOrdersPerRider: 1 } },
@@ -768,7 +773,7 @@ describe('order handoff and settlement flow', () => {
   });
 
   it('serializes concurrent claims by the same rider', async () => {
-    await prisma.rider.update({ where: { id: seedIds.riderA }, data: { currentConcurrentOrderLimit: 1 } });
+    await prisma.rider.update({ where: { id: seedIds.riderA }, data: { capacityOverride: 1 } });
     const first = await makeReady();
     const second = await makeReady();
     const results = await Promise.all([claim(first.taskId), claim(second.taskId)]);

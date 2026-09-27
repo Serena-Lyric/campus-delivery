@@ -9,83 +9,57 @@ import {
   type PrismaClient,
 } from '@prisma/client';
 import type { Actor } from '../auth/auth.js';
-import { loadPolicyConfig, type PolicyConfig } from '../merchant-policy/policies.js';
+import { loadPolicyConfig } from '../merchant-policy/policies.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
-import { addMinor, basisPoints } from '../shared/money.js';
+import { addMinor } from '../shared/money.js';
 
-export function riderPayoutMinor(pricing: {
-  customerDeliveryFeeMinor: number;
-  merchantDeliveryContributionMinor: number;
+export function riderGuaranteedPayoutMinor(pricing: {
+  riderBasePayoutMinor: number;
+  merchantRescueContributionMinor: number;
   customerRiderTipMinor: number;
   platformSubsidyMinor: number;
 }): number {
   return addMinor(
-    pricing.customerDeliveryFeeMinor,
-    pricing.merchantDeliveryContributionMinor,
+    pricing.riderBasePayoutMinor,
+    pricing.merchantRescueContributionMinor,
     pricing.customerRiderTipMinor,
     pricing.platformSubsidyMinor,
   );
 }
 
+export function deliveryPlatformContributionMinor(pricing: {
+  customerDeliveryFeeMinor: number;
+  riderBasePayoutMinor: number;
+  platformSubsidyMinor: number;
+}): number {
+  return pricing.customerDeliveryFeeMinor - pricing.riderBasePayoutMinor - pricing.platformSubsidyMinor;
+}
+
 export function merchantSettlementMinor(
   itemSubtotalMinor: number,
   platformCommissionMinor: number,
-  merchantQuoteMinor: number,
+  merchantRescueContributionMinor: number,
 ): number {
-  const value = itemSubtotalMinor - platformCommissionMinor - merchantQuoteMinor;
+  const value = itemSubtotalMinor - platformCommissionMinor - merchantRescueContributionMinor;
   if (value < 0) {
-    throw badRequest('MERCHANT_QUOTE_TOO_HIGH', 'Merchant quote exceeds the payable order subtotal');
+    throw badRequest('MERCHANT_RESCUE_TOO_HIGH', 'Merchant rescue contribution exceeds the payable order subtotal');
   }
   return value;
 }
 
-export async function initializeMerchantQuote(
+export async function initializeMerchantPricingForMarket(
   tx: Prisma.TransactionClient,
   orderId: string,
-  merchantId: string,
-  operatorId: string,
-  configuredQuoteMinor: number,
-  config: PolicyConfig,
   now: Date,
 ) {
   const pricing = await tx.orderPricing.findUnique({ where: { orderId } });
   if (!pricing) throw new AppError(500, 'MISSING_PRICING', 'Order pricing is missing');
-  const platformCommissionMinor = basisPoints(pricing.itemSubtotalMinor, config.platformCommissionBps);
-  const quoteVersion = 1;
-  const updated = await tx.orderPricing.update({
+  return tx.orderPricing.update({
     where: { orderId },
     data: {
-      customerDeliveryFeeMinor: config.customerDeliveryFeeMinor,
-      merchantDeliveryContributionMinor: configuredQuoteMinor,
-      platformSubsidyMinor: 0,
-      riderPayoutMinor: riderPayoutMinor({
-        customerDeliveryFeeMinor: config.customerDeliveryFeeMinor,
-        merchantDeliveryContributionMinor: configuredQuoteMinor,
-        customerRiderTipMinor: pricing.customerRiderTipMinor,
-        platformSubsidyMinor: 0,
-      }),
-      platformCommissionMinor,
-      merchantSettlementMinor: merchantSettlementMinor(
-        pricing.itemSubtotalMinor,
-        platformCommissionMinor,
-        configuredQuoteMinor,
-      ),
-      merchantQuoteVersion: quoteVersion,
-      merchantQuoteUpdatedAt: now,
+      merchantRescueUpdatedAt: now,
     },
   });
-  await tx.merchantDeliveryQuote.create({
-    data: {
-      orderId,
-      version: quoteVersion,
-      previousMinor: 0,
-      newMinor: configuredQuoteMinor,
-      operatorId,
-      reason: 'INITIAL_ORDER_QUOTE',
-      createdAt: now,
-    },
-  });
-  return updated;
 }
 
 export async function repriceOrder(
@@ -121,40 +95,43 @@ export async function repriceOrder(
     const pricing = await tx.orderPricing.findUnique({ where: { orderId } });
     if (!pricing) throw new AppError(500, 'MISSING_PRICING', 'Order pricing is missing');
     if (
-      pricing.merchantQuoteUpdatedAt
-      && now.getTime() < pricing.merchantQuoteUpdatedAt.getTime()
+      pricing.merchantRescueUpdatedAt
+      && now.getTime() < pricing.merchantRescueUpdatedAt.getTime()
         + (task.merchantRepriceCooldownSeconds ?? config.merchantRepriceCooldownSeconds) * 1000
     ) {
       throw conflict('MERCHANT_REPRICE_COOLDOWN', 'Merchant quote is still in its update cooldown');
     }
 
-    const version = pricing.merchantQuoteVersion + 1;
-    const nextPayout = riderPayoutMinor({
-      ...pricing,
-      merchantDeliveryContributionMinor: newMinor,
-    });
+    if (newMinor <= pricing.merchantRescueContributionMinor) {
+      throw conflict('RESCUE_CONTRIBUTION_MUST_INCREASE', 'Merchant rescue contribution can only increase before claim');
+    }
+    const addedMinor = newMinor - pricing.merchantRescueContributionMinor;
+    const version = pricing.merchantRescueContributionVersion + 1;
+    const nextPayout = riderGuaranteedPayoutMinor({ ...pricing, merchantRescueContributionMinor: newMinor });
     const updated = await tx.orderPricing.updateMany({
-      where: { orderId, merchantQuoteVersion: pricing.merchantQuoteVersion },
+      where: { orderId, merchantRescueContributionVersion: pricing.merchantRescueContributionVersion },
       data: {
-        merchantDeliveryContributionMinor: newMinor,
+        merchantRescueContributionMinor: newMinor,
         merchantSettlementMinor: merchantSettlementMinor(
           pricing.itemSubtotalMinor,
           pricing.platformCommissionMinor,
           newMinor,
         ),
+        riderGuaranteedPayoutMinor: nextPayout,
         riderPayoutMinor: nextPayout,
-        merchantQuoteVersion: version,
-        merchantQuoteUpdatedAt: now,
+        merchantRescueContributionVersion: version,
+        merchantRescueUpdatedAt: now,
       },
     });
     if (updated.count !== 1) throw conflict('PRICING_VERSION_CONFLICT', 'Order pricing changed concurrently');
 
     await tx.deliveryTask.update({ where: { id: task.id }, data: { payoutMinor: nextPayout } });
-    await tx.merchantDeliveryQuote.create({
+    await tx.merchantRescueContributionEvent.create({
       data: {
         orderId,
         version,
-        previousMinor: pricing.merchantDeliveryContributionMinor,
+        previousMinor: pricing.merchantRescueContributionMinor,
+        addedMinor,
         newMinor,
         operatorId: actor.id,
         ...(reason ? { reason } : {}),
@@ -171,11 +148,12 @@ export async function repriceOrder(
         operatorId: actor.id,
         operatorRole: actor.role,
         metadata: {
-          previousMinor: pricing.merchantDeliveryContributionMinor,
+          previousMinor: pricing.merchantRescueContributionMinor,
+          addedMinor,
           newMinor,
           version,
           platformSubsidyAlreadyActive: pricing.platformSubsidyMinor > 0,
-          merchantQuoteLowered: newMinor < pricing.merchantDeliveryContributionMinor,
+          semantic: 'MERCHANT_RESCUE_CONTRIBUTION',
         },
       },
     });
@@ -243,11 +221,12 @@ export async function adjustRiderTip(
       throw new AppError(500, 'MISSING_ASSIGNMENT', 'Claimed task is missing its assignment');
     }
 
-    const nextPayout = pricing.riderPayoutMinor + deltaMinor;
+    const nextPayout = pricing.riderGuaranteedPayoutMinor + deltaMinor;
     await tx.orderPricing.update({
       where: { orderId },
       data: {
         customerRiderTipMinor: balanceAfterMinor,
+        riderGuaranteedPayoutMinor: nextPayout,
         riderPayoutMinor: nextPayout,
       },
     });

@@ -116,6 +116,9 @@ export async function cancelBeforePickup(
       tx.riderCancellationEvent.count({ where: { riderId, createdAt: { gte: rollingStart } } }),
       tx.riderCancellationEvent.count({ where: { riderId, createdAt: { gte: rollingStart }, warningIssued: true } }),
     ]);
+    if (dailyBefore >= config.riderDailyFreeCancelLimit) {
+      throw conflict('RIDER_DAILY_FREE_CANCEL_LIMIT', 'Daily responsibility-free cancellation limit has been reached');
+    }
     const dailyCount = dailyBefore + 1;
     const rollingCount = rollingBefore + 1;
     const warningIssued = dailyCount === config.riderDailyFreeCancelLimit;

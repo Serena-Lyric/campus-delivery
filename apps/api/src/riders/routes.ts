@@ -10,6 +10,7 @@ import {
   getRiderRestrictionAdminView,
   overrideRiderRestriction,
 } from './restrictions.js';
+import { getMyCapacity, setRiderCapacityOverride } from './capacity.js';
 
 const TaskParams = Type.Object({ taskId: Type.String({ format: 'uuid' }) });
 const RiderParams = Type.Object({ riderId: Type.String({ format: 'uuid' }) });
@@ -38,6 +39,33 @@ export async function registerRiderRoutes(app: FastifyInstance, prisma: PrismaCl
     preHandler: rider,
     schema: { tags: ['rider-exceptions'] },
   }, async (request) => getMyRiderRestrictions(prisma, actorOf(request), config));
+
+  app.get('/riders/me/capacity', {
+    preHandler: rider,
+    schema: { tags: ['rider-capacity'] },
+  }, async (request) => getMyCapacity(prisma, actorOf(request), config));
+
+  app.put<{
+    Params: { riderId: string };
+    Body: { capacityOverride: number | null; reason: string };
+  }>('/admin/riders/:riderId/capacity-override', {
+    preHandler: superAdmin,
+    schema: {
+      tags: ['admin-rider-capacity'],
+      params: RiderParams,
+      body: Type.Object({
+        capacityOverride: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
+        reason: Type.String({ minLength: 1, maxLength: 500 }),
+      }),
+    },
+  }, async (request) => setRiderCapacityOverride(
+    prisma,
+    actorOf(request),
+    request.params.riderId,
+    request.body.capacityOverride,
+    request.body.reason,
+    config,
+  ));
 
   app.post<{
     Params: { riderId: string };

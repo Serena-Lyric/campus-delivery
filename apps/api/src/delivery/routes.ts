@@ -38,7 +38,7 @@ export async function registerDeliveryRoutes(app: FastifyInstance, prisma: Prism
   app.post<{ Params: { taskId: string } }>('/delivery-tasks/:taskId/claim', {
     preHandler: rider,
     schema: { tags: ['delivery'], params: TaskIdParams },
-  }, async (request) => claimTask(prisma, actorOf(request), request.params.taskId));
+  }, async (request) => claimTask(prisma, actorOf(request), request.params.taskId, undefined, config.campusTimeZone));
 
   app.post<{ Params: { taskId: string }; Body: { evidenceId?: string } }>('/delivery-tasks/:taskId/pick-up', {
     preHandler: rider,
@@ -48,5 +48,5 @@ export async function registerDeliveryRoutes(app: FastifyInstance, prisma: Prism
   app.post<{ Params: { taskId: string }; Body: { evidenceId?: string; code?: string } }>('/delivery-tasks/:taskId/deliver', {
     preHandler: rider,
     schema: { tags: ['delivery'], params: TaskIdParams, body: DeliverBody },
-  }, async (request) => deliverTask(prisma, actorOf(request), request.params.taskId, request.body));
+  }, async (request) => deliverTask(prisma, actorOf(request), request.params.taskId, request.body, undefined, config.campusTimeZone));
 }
