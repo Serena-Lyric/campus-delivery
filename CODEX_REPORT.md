@@ -2,174 +2,145 @@
 
 ## 1. 任务、提交与结论
 
-- 任务：执行最新 `CODEX_TASK.md`，修复 `AUDIT_SECOND_PASS_2026-09-27.md` 确认的严重异常状态机、异常入口、订单池商家快照与文档漂移。
-- 同步后的起始提交：`180d67c5d5fba6b0680ac6c9688a6e73ad23c757`（`docs: assign second-pass audit fixes`）。
-- 实现结束提交：`2c458b6349a934bec497f54ce75491a9319a74d8`（`fix: close severe exception state gaps`）。
+- 任务：执行最新 `CODEX_TASK.md`，修复 `AUDIT_THIRD_PASS_2026-09-27.md` 确认的 severe 并发、DELIVERY_DISPUTE 资金生命周期、remake reject 审计语义与角色文档问题。
+- 同步后的起始提交：`c89a3197e837b92d8a581de904e95f7c73d75c1d`（`docs: assign third-pass exception lifecycle fixes`）。
+- 实现结束提交：`7b5183ed0efceec67d1cd65ba430eb372fcafcd6`（`fix: close exception concurrency and dispute lifecycle gaps`）。
 - 分支：`main`；实现与报告使用普通 push，不使用 force push。
 - 开始时工作树干净；未 reset、discard、checkout-away 或覆盖既有未提交工作。
 
-本轮任务 1–9 已完成对应 runtime、migration、test 与 truth-source 修补。商家初始配送金额、严重失败订单 rider base 是否 earned、平台垫付长期追偿等未决事项没有被修改或重新解释。
+最新任务 1–4 均已完成 runtime/test/documentation 修补。任务明确禁止的异常 outcome 模型、商家初始配送资金、严重失败骑手收益和长期追偿等事项没有被自行设计或修改。
 
 ## 2. Implementation truthfulness
 
 ### Enforced behavior
 
-- 通用 exception endpoint 和 service 都拒绝 `SEVERE_FOOD_DAMAGE / FOOD_LOST`；severe self-report 只能由责任骑手在 PICKED_UP 后通过 dedicated route 创建。
-- Severe order 送达前检查该订单所有 severe cases；每一条都必须是 customer-confirmed `REMAKE_AND_CONTINUE` 才能放行。
-- Admin `CONTINUE_FULFILLMENT` 不能解除 severe delivery block；非 severe case 仍可使用该普通结果。
-- Remake reject 根据 handler 恢复为 IN_PROGRESS 或 OPEN，并清除陈旧 resolution metadata。
-- Public admin resolve 不接受 `ESCALATED_OTHER`；真正升级必须走 audited `/escalate`。
-- `WRONG_ADDRESS` 只记录 ExceptionEvent，不自动创建 ExceptionCase 或改变订单状态。
-- Rider order-pool 返回订单创建时的 merchant name/pickup/destination snapshots 与稳定 ids。
+- Dedicated severe report 与 normal deliver 按同一 `Order → DeliveryTask` 行锁顺序串行化，不会产生 DELIVERED/COMPLETED + unresolved severe case。
+- ExceptionCase terminal resolution、linked ExceptionEvent resolution 与 DELIVERY_DISPUTE hold recovery 在同一业务事务内完成。
+- 同订单存在其他 unresolved DELIVERY_DISPUTE 时不提前解 hold；只处理 `holdReason=DELIVERY_DISPUTE`。
+- Dispute hold 恢复尊重 `pendingUntil`，保留 `reservedMinor`，并由 settlement sweep 幂等 reconciliation。
+- Customer remake reject 使用独立 `REMAKE_REJECTED` action；admin release 继续独占 `RELEASED`。
 
 ### Data / telemetry available
 
-- WRONG_ADDRESS 结构化事实继续保留；后续 DELIVERY_DISPUTE 可独立创建 admin case。
-- Severe cases、participant proposal/response、handler、version 与 action audit 继续保留。
-- `Order.pickupMerchantNameSnapshot` 保存创建时商家显示名称。
+- ExceptionCase/ExceptionEvent terminal 时间保持一致；WAITING/ESCALATED/reject 不写 event resolvedAt。
+- RiderSettlement 的 PENDING/AVAILABLE/HELD、heldAt/holdReason、reservedMinor 继续提供可审计资金状态。
+- `REMAKE_REJECTED` metadata 保存 proposal id 与 resulting case status。
 
 ### Policy hook / placeholder
 
-- `ESCALATED_OTHER` 数据库 enum 为历史兼容保留，但 public resolve 不可使用。
-- Item/Exception classifier 仍只有 deterministic/manual safe fallback；真实 Jev 未激活。
+- Item/Exception classifier 仍只有 deterministic/manual fallback；真实 Jev 未激活。
 - Pricing policy 的 merchant initial/category/region/foodType 等输入仍为 reserved/not active。
 
 ### Not implemented / intentionally unresolved
 
-- 商家初始配送金额是真实商家成本、纯 reference 还是混合概念，以及 50→45 假设与 pre-claim 完整调价规则。
-- 严重异常未正常送达时 rider base payout 是否 earned。
-- 平台垫付后的长期追偿、future-income deduction、write-off、真实钱包/支付。
-- 正式商品佣金、支付通道费、税费、真实 Jev、动态定价、5 单后自动升降容量。
+- Severe case 中“责任判断结果”和“订单操作结果”是否拆成两个字段/状态轴。
+- stopsDelivery exception 的完整 CONTINUE_FULFILLMENT order/task/assignment 恢复流程。
+- 商家初始配送金额是真实成本、reference 还是混合概念。
+- Severe failure 未正常送达时 rider base payout 是否 earned。
+- 平台垫付长期追偿、future-income deduction、write-off、真实钱包/支付。
+- 正式佣金、通道费、税费、真实 Jev、动态定价、5 单后自动升降容量。
 
-## 3. 任务 1：关闭通用 severe report 绕过
+## 3. 任务 1：序列化 severe report 与 deliver
 
-### Runtime
+### Runtime enforcement
 
-- 通用 `/orders/:orderId/exceptions` OpenAPI schema 排除 severe damage/loss。
-- `createExceptionEvent()` 同时在 service boundary 返回 `SEVERE_EXCEPTION_REQUIRES_DEDICATED_ROUTE`，防止非 HTTP 调用绕过。
-- 新 `createSevereRiderExceptionEvent()` 在创建 event/case 的同一事务内验证：actor 是 rider、类型是 severe、当前 DeliveryTask 责任 rider 匹配、task 已 PICKED_UP。
-- Dedicated `/rider/orders/:orderId/severe-exception` 使用该事务内集中校验，消除旧的“先查再另事务创建”窗口。
+- `createSevereRiderExceptionEvent()` 的事务先按 `Order → DeliveryTask` 顺序执行 `FOR UPDATE`，与 `deliverTask()` 完全一致。
+- 取得锁后重新加载 order/task，再验证当前责任 rider 与 `PICKED_UP`；之后才创建 ExceptionEvent/ExceptionCase，并持锁至提交。
+- 若 report 先持锁，deliver 等待后能看到 blocking severe case 并返回 `SEVERE_EXCEPTION_UNRESOLVED`。
+- 若 deliver 先持锁并完成，report 等待后重新看到 task 已非 PICKED_UP，返回 `SEVERE_EXCEPTION_STAGE_INVALID`。
+- 未使用反向锁序或仅二次普通 read。
+
+### Controlled concurrency test
+
+- 使用 fake classifier barrier 控制“report 先进入临界区”，并发 deliver 被真实数据库行锁阻塞；report 提交后 deliver 失败，order 保持 PICKED_UP、case OPEN。
+- 使用 delivery lock barrier 控制“deliver 先进入临界区”，并发 report 等待；deliver 提交后 report 失败，order/task 为 DELIVERED/COMPLETED 且无 severe case。
+- Barrier 使用 promise/setImmediate 协调，不依赖随机时序或长 sleep。
+
+## 4. 任务 2：DELIVERY_DISPUTE 资金生命周期
+
+### Linked event terminal resolution
+
+新增共享 `resolveLinkedExceptionEvent()`，在原业务事务内由以下 terminal 路径调用：
+
+- `resolveNonEconomicCase()` 的非 WAITING terminal 分支；
+- customer accepted remake 的 RESOLVED 分支；
+- `refundAndCloseExceptionCase()` 的 REFUND_AND_CLOSE 分支。
+
+WAITING_FOR_PARTICIPANT、OPEN、IN_PROGRESS、ESCALATED、customer reject、release/transfer/takeover 不设置 linked event `resolvedAt`。
+
+### Dispute hold recovery
+
+- Terminal DELIVERY_DISPUTE 先设置 linked event resolvedAt，再锁定该订单 RiderSettlement。
+- 锁内重新统计同订单 unresolved DELIVERY_DISPUTE；只在数量为 0 时恢复。
+- 仅匹配 `status=HELD AND holdReason=DELIVERY_DISPUTE`：
+  - `pendingUntil > now` → PENDING；
+  - `pendingUntil <= now` → AVAILABLE；
+  - 清理 heldAt/holdReason；
+  - `reservedMinor` 原样保留。
+- COMPENSATION_OBLIGATION 和其他 hold reason 不自动解除。
+- 多 dispute terminal resolution 通过 settlement row lock 串行化；最后一个 resolved transaction 才能恢复资金状态。
+
+### Sweep reconciliation
+
+- `releaseAvailableRiderSettlements()` 同时扫描到期 PENDING 与 `HELD + DELIVERY_DISPUTE`。
+- 对 dispute-only HELD settlement，在 row lock 内重新核对 unresolved events，幂等恢复 PENDING/AVAILABLE。
+- 已恢复记录不会重复计数；未知/compensation hold 不受影响。
+
+### PostgreSQL tests
+
+1. AVAILABLE → dispute → HELD → terminal resolve → AVAILABLE。
+2. PENDING → dispute → terminal resolve → PENDING → 到期 sweep → AVAILABLE。
+3. 两个 dispute：解决一个仍 HELD，全部解决才 AVAILABLE。
+4. dispute + `reservedMinor=50`：恢复 AVAILABLE 后 reservation 仍为 50，rider DTO withdrawable 继续扣除 50。
+5. WAITING 和 ESCALATED：event unresolved，settlement 继续 HELD。
+6. 模拟历史 case/event 已 resolved 但 settlement 仍 dispute-held：sweep 首次修复、再次运行返回 0。
+7. `holdReason=COMPENSATION_OBLIGATION`：sweep 不触碰。
+8. Customer accepted remake 与 refund-and-close 路径均断言 linked event resolvedAt 已写入。
+
+## 5. 任务 3：remake reject 审计语义
+
+### Runtime/migration
+
+- Prisma enum 新增 `ExceptionCaseActionType.REMAKE_REJECTED`。
+- 新增 migration `20260927000400_exception_lifecycle_fixes`；未修改已执行 migration。
+- Customer reject 无论回 IN_PROGRESS 还是 OPEN，均写 `REMAKE_REJECTED`，metadata 包含 proposalId 与 resultingCaseStatus。
+- `/admin/.../release` 仍使用 `RELEASED`，不与 participant rejection 混义。
 
 ### Tests
 
-- Customer 经通用 endpoint 提交 severe 被拒且不创建 event/case。
-- 已 claim 但未 pickup 的 rider 经通用 endpoint 提交 FOOD_LOST 被拒且不创建事实。
-- 责任 rider pickup 后走 dedicated route 成功创建 severe case。
+- Handler-preserving reject：存在 REMAKE_REJECTED(resulting=IN_PROGRESS)，不存在 RELEASED。
+- No-handler reject：action 顺序包含 REMAKE_REJECTED(resulting=OPEN)。
+- 既有 admin transfer/takeover/release 测试继续证明真正 release 仍记录 RELEASED。
 
-## 4. 任务 2–3：封死 severe continue 与多 case 覆盖
+## 6. 任务 4：普通管理员角色文档
 
-### Runtime
+- `ROLE_RESPONSIBILITIES.md` 已改为：普通管理员可处理和核对补餐继续流程；对于严重餐损/丢失，不能替代用户确认继续等待，只有用户明确接受 proposal 后才形成 `REMAKE_AND_CONTINUE`。
+- `EXCEPTION_HANDLING.md` 同步避免“管理员确认补餐继续”的歧义，并记录 severe 并发锁与 dispute hold 生命周期。
+- README 同步 severe serialization、REMAKE_REJECTED audit 与 dispute settlement recovery。
 
-- `resolveNonEconomicCase()` 对 severe + `CONTINUE_FULFILLMENT` 返回 `SEVERE_REMAKE_CONFIRMATION_REQUIRED`。
-- `deliverTask()` 查询订单全部 severe cases，不再只取最新一条。
-- 每个 severe case 的唯一放行组合为：`status=RESOLVED` 且 `resolutionType=REMAKE_AND_CONTINUE`。
-- `CONTINUE_FULFILLMENT`、RESPONSIBILITY_UNDETERMINED、OPEN、WAITING、IN_PROGRESS、ESCALATED 等都不能让 severe case 放行。
+## 7. 第二遍安全边界回归
 
-### Tests
+全量 PostgreSQL integration 继续通过：
 
-- Operator claim severe case 后尝试 CONTINUE 被拒，deliver 仍被阻止；rider proposal + customer accept 后可 deliver。
-- 较早 severe case 仍 OPEN、较新 case 已 REMAKE_AND_CONTINUE 时 deliver 仍被阻止；两条均取得 customer acceptance 后才可 deliver。
-- `MINOR_DAMAGE_OR_DELAY` 的普通 CONTINUE_FULFILLMENT 仍能 resolve 并继续 deliver，未误伤非 severe 流程。
+- general endpoint/service 不能创建 severe self-report；dedicated severe 要求责任 rider + PICKED_UP；
+- severe admin CONTINUE 被拒；delivery 检查全部 severe cases；customer accepted remake 才放行；
+- remake reject handler/state invariant；ESCALATED_OTHER 被拒且真实升级走 `/escalate`；
+- WRONG_ADDRESS 只记事实；merchant/pickup/destination snapshots 不漂移；
+- default commission=0；compensation release 不 write-off；non-zero self-reported payment 被拒；
+- pause/cooldown 只阻止新 claim；capacity、pricing、rescue、tip、subsidy、classifier、role isolation 回归通过。
 
-## 5. 任务 4：remake reject handler/state invariant
-
-### Runtime
-
-- Rider propose remake 进入 WAITING 时清理旧 `resolutionType/resolutionNote/resolvedAt`。
-- Customer reject 时：
-  - 有 handler → 回 IN_PROGRESS，保留原 handler/claimedAt；
-  - 无 handler → 回 OPEN，并保证 handler/claimedAt 为 null；
-  - 两条路径都清理 resolution metadata，ESCALATED guard 保持不变。
-
-### Tests
-
-- Operator claim → WAITING_FOR_INFORMATION → rider propose → customer reject：case 回 IN_PROGRESS、handler 不变、旧 WAITING metadata 清空，原 operator 可继续合法 resolve。
-- 无 handler proposal → reject：case 回干净 OPEN 状态，随后普通 operator 可按新 version 重新 claim。
-
-## 6. 任务 5：禁止 ESCALATED_OTHER 伪升级
-
-### Runtime
-
-- Public `/admin/exception-cases/:caseId/resolve` schema 排除 `ESCALATED_OTHER` 与 participant-only `REMAKE_AND_CONTINUE`。
-- Service 仍有 `USE_ESCALATION_ACTION` defense-in-depth，防止内部调用把 ESCALATED_OTHER 当终态。
-- 真正升级继续使用 `/escalate`，写 `status=ESCALATED`、version 与 action audit，随后由 Super Admin takeover/reassign。
-
-### Test
-
-- OPERATOR 的 ESCALATED_OTHER public resolve 返回稳定 validation rejection，case 保持 IN_PROGRESS/version 不变；随后 `/escalate` 正常进入 ESCALATED。
-
-## 7. 任务 6：恢复不可漂移的取餐商家名称
-
-### Schema/runtime
-
-- `Order` 新增非空 `pickupMerchantNameSnapshot`。
-- `createOrder()` 与 Seed 在订单创建时快照 `Merchant.name`。
-- Rider DTO pickup 返回：
-  - stable `merchantId`；
-  - snapshot `merchantName`；
-  - snapshot `locationName` / `region`。
-- Destination 继续返回 stable `locationId` + snapshot label/region；未重新引入 live Merchant/CampusLocation name。
-
-### Migration
-
-- 新增 `20260927000300_order_pickup_merchant_snapshot`，不修改旧 migration。
-- 对 pre-production 历史订单用当前 `Merchant.name` 做 best-effort backfill；无法匹配时写 `LEGACY_UNKNOWN` 后设 NOT NULL。
-- 该 backfill 只是历史缺失快照的兼容近似，不能证明订单创建时真实店名，也不是生产审计迁移范式。
-
-### Test
-
-- 创建订单后同时修改 Merchant.name、pickup CampusLocation.name 与 destination CampusLocation.name；rider pool 仍返回原商家/取餐点/目的地 snapshots 和稳定 ids，且不含三个 live 新名称。
-
-## 8. 任务 7：WRONG_ADDRESS 不自动进入 admin pool
-
-### Runtime
-
-- `createExceptionEventInternal()` 对 WRONG_ADDRESS 创建 ExceptionEvent、可绑定 evidence，但跳过 `openExceptionCase()`。
-- WRONG_ADDRESS 不进入 stopsDelivery、退款、处罚或商家风险归因路径，也不改变订单状态。
-- 后续真实投诉仍可通过 DELIVERY_DISPUTE 创建独立 ExceptionCase。
-
-### Test
-
-- WRONG_ADDRESS 上报后 event 存在、case 数量为 0、订单仍 READY_FOR_RIDER。
-- 随后的 DELIVERY_DISPUTE 成功创建一条 admin case，原订单状态不被地址事实自动改写。
-
-## 9. 任务 8：产品与角色文档同步
-
-- `PRODUCT_DECISIONS.md`：暂停/冷却只阻止新 claim，不取消、不回池、不改变已持订单；WRONG_ADDRESS 明确为用户责任且不作为商家责任信号。
-- `ROLE_RESPONSIBILITIES.md`：骑手章节明确已持订单继续原履约/异常流程，并从待补充列表删除该已决边界。
-- README 同步暂停/冷却语义、WRONG_ADDRESS 事实入口、severe customer-confirmed remake、merchant snapshot 与 migration 限定。
-- `EXCEPTION_HANDLING.md` 明确 severe continue、WRONG_ADDRESS admin pool 与 audited escalation 边界。
-- `ORDER_POOL_DECISIONS.md` / `IMPLEMENTATION_PLAN.md` 明确 merchant name、pickup、destination 使用订单快照并保留稳定 ids。
-
-## 10. 任务 9：上一轮安全边界回归
-
-全量 PostgreSQL integration 继续通过以下既有行为：
-
-- default commission=0；
-- compensation release 保留 platform advance/outstanding，不 write-off；
-- non-zero rider self-reported payment 被拒；
-- terminal/ESCALATED guards 与 Super Admin A→B reassignment；
-- capacity 1→2→5、history backfill、global/override cap；
-- daily no-fault cancellation cap；
-- merchant rescue 与 user tip 100% pass-through、platform subsidy accounting；
-- item/exception classifier fallback，无真实 Jev dependency；
-- role-facing DTO funding isolation。
-
-## 11. Requirement-to-code checklist
+## 8. Requirement-to-code checklist
 
 | Task | Runtime enforcement point | Verification |
 |---|---|---|
-| 1 severe entry | general/dedicated schemas + `createExceptionEvent` / `createSevereRiderExceptionEvent` | customer/rider negative + dedicated positive integration |
-| 2 severe continue | `resolveNonEconomicCase`, `deliverTask` | admin continue rejected + customer remake accepted |
-| 3 all severe cases | `deliverTask` all-case query | older open + newer resolved regression |
-| 4 reject invariant | `proposeRemake`, `respondToRemake` | handler/no-handler flows + metadata assertions |
-| 5 fake escalation | public resolve schema + service guard | public reject + actual `/escalate` success |
-| 6 merchant snapshot | Order schema/create/DTO + migration | three-name rename regression |
-| 7 wrong address | `createExceptionEventInternal` case creation branch | fact/no-case/status + later dispute |
-| 8 docs | root truth/role/README/topic docs | cross-document text audit |
-| 9 regressions | unchanged runtime plus full suites | 28 unit + 70 PostgreSQL integration tests |
+| 1 severe concurrency | `createExceptionEventInternal` Order→Task locks; `deliverTask` same locks | two controlled concurrent interleavings |
+| 2 linked event | `resolveLinkedExceptionEvent` called by three terminal paths | terminal and non-terminal resolvedAt assertions |
+| 2 dispute recovery | settlement row lock + unresolved-dispute query | available/pending/multiple/reservation tests |
+| 2 reconciliation | `releaseAvailableRiderSettlements` HELD branch | idempotent legacy repair + other-hold negative |
+| 3 audit action | REMAKE_REJECTED enum/service/migration | handler/no-handler action assertions; admin RELEASED regression |
+| 4 role docs | ROLE/EXCEPTION_HANDLING/README | text audit |
 
-## 12. Validation results
+## 9. Validation results
 
 ### Docker preflight
 
@@ -179,30 +150,29 @@
 
 ### Targeted first
 
-- Targeted state-machine unit：2 files / 6 tests 通过。
-- Targeted PostgreSQL integration：exception-flow + pricing-capacity，2 files / 43 tests 通过。
-- Public resolve schema 调整后再次单跑 exception-flow：33 tests 通过。
+- Targeted state-machine unit：1 file / 3 tests 通过。
+- Targeted PostgreSQL integration：exception-flow + order-flow，2 files / 67 tests 通过。
+- 定向测试包含两种可控并发时序及完整 dispute lifecycle/reconciliation。
 
 ### Full validation
 
 - `pnpm typecheck`：通过。
 - `pnpm test`：10 files / 28 tests 通过。
-- `pnpm test:integration`：3 files / 70 tests 通过，包含 migrate deploy + Seed。
+- `pnpm test:integration`：3 files / 77 tests 通过，包含 migrate deploy + Seed。
 - `pnpm build`：通过。
-- Current DB：16 migrations，schema up to date；`pickupMerchantNameSnapshot IS NULL` 数量为 0。
+- Current DB：17 migrations，schema up to date。
 - Migration/schema drift：`No difference detected.`
-- Empty DB：全部 16 migrations 顺序应用成功。
+- Empty DB：全部 17 migrations 顺序应用成功。
 - Empty DB Seed：连续两次成功。
-- Empty DB post-check：16 migrations finished、snapshot null count=0、active `platformCommissionBps=0`。
-- OpenAPI/角色边界：general severe 与 public ESCALATED_OTHER 已从相应 request schema 排除；dedicated severe、admin escalation、participant、资金隔离路径由 PostgreSQL integration 验证。
+- Empty DB post-check：17 migrations finished、`REMAKE_REJECTED` enum 存在、active `platformCommissionBps=0`。
 - 临时 shadow/empty verification databases 已按明确名称删除；项目数据库与 Docker volume 未删除。
 
 上述为本地验证结果，不等于独立 CI 验证；本报告不声称实现提交已有独立 GitHub Actions status。
 
-## 13. Intentional omissions / unresolved
+## 10. Intentional omissions / unresolved
 
-- 没有决定或修改 merchant initial delivery funding；当前 reference-only runtime 仍是 provisional。
-- 没有决定 severe failure 未正常送达时 rider base payout 是否 earned。
-- 没有新增追偿、future-income deduction、write-off、钱包或外部支付。
-- 没有改变正式佣金、支付通道费、税费、真实 Jev、动态定价或 5 单后容量规则。
-- 没有删除历史兼容 enum/legacy 字段，也没有进入下一阶段产品设计。
+- Severe + RESPONSIBILITY_UNDETERMINED 的“责任结论 vs 订单操作结果”单轴冲突仍未设计；本轮没有拆字段、重开 terminal case 或新增 outcome。
+- stopsDelivery exception 的 CONTINUE_FULFILLMENT 尚无完整恢复 order/task/assignment 规则；本轮没有恢复状态机。
+- Merchant initial delivery funding、50→45 假设和 pre-claim 完整调价仍待 W/真实运营验证。
+- Severe failure rider base 是否 earned、平台垫付长期追偿/write-off、正式佣金/通道费/税费仍未决定。
+- 未接真实 Jev、未新增动态定价或 5 单后容量规则，也未进入下一阶段。
