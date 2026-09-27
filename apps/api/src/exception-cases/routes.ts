@@ -30,6 +30,13 @@ import { conflict } from '../shared/errors.js';
 const CaseParams = Type.Object({ caseId: Type.String({ format: 'uuid' }) });
 const OrderParams = Type.Object({ orderId: Type.String({ format: 'uuid' }) });
 const VersionBody = Type.Object({ expectedVersion: Type.Integer({ minimum: 0 }) });
+const PublicAdminResolutionType = Type.Exclude(
+  Type.Enum(ExceptionResolutionType),
+  Type.Union([
+    Type.Literal(ExceptionResolutionType.REMAKE_AND_CONTINUE),
+    Type.Literal(ExceptionResolutionType.ESCALATED_OTHER),
+  ]),
+);
 
 export async function registerExceptionCaseRoutes(app: FastifyInstance, prisma: PrismaClient, config: AppConfig) {
   const admin = adminGuard(prisma, config);
@@ -123,7 +130,7 @@ export async function registerExceptionCaseRoutes(app: FastifyInstance, prisma: 
       tags: ['exception-cases'], params: CaseParams,
       body: Type.Object({
         expectedVersion: Type.Integer({ minimum: 0 }),
-        resolutionType: Type.Enum(ExceptionResolutionType),
+        resolutionType: PublicAdminResolutionType,
         note: Type.String({ minLength: 1, maxLength: 1000 }),
         idempotencyKey: Type.Optional(Type.String({ minLength: 8, maxLength: 200 })),
       }),
@@ -138,6 +145,9 @@ export async function registerExceptionCaseRoutes(app: FastifyInstance, prisma: 
     }
     if (request.body.resolutionType === ExceptionResolutionType.REMAKE_AND_CONTINUE) {
       throw conflict('CUSTOMER_CONFIRMATION_REQUIRED', 'REMAKE_AND_CONTINUE requires customer confirmation');
+    }
+    if (request.body.resolutionType === ExceptionResolutionType.ESCALATED_OTHER) {
+      throw conflict('USE_ESCALATION_ACTION', 'Escalation must use the audited escalate action');
     }
     return resolveNonEconomicCase(
       prisma,

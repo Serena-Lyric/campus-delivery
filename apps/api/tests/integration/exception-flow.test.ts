@@ -170,6 +170,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
           merchantId: seedIds.merchant,
           destinationLocationId: seedIds.dormLocation,
           destinationLabelSnapshot: '宿舍',
+          pickupMerchantNameSnapshot: '校园饭堂演示店',
           pickupLocationNameSnapshot: '第一食堂',
           deliveryMethod: DeliveryMethod.DESIGNATED_POINT,
           deliveryVerificationMode: DeliveryVerificationMode.DELIVERY_PHOTO,
@@ -368,6 +369,52 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect(await prisma.riderRestriction.count({ where: { riderId: seedIds.riderA, type: 'ROLLING_WARNING_COOLDOWN' } })).toBe(1);
   });
 
+  it('keeps severe self-reports behind the responsible-rider-after-pickup route', async () => {
+    const ready = await createReady();
+    const customerAttempt = await app.inject({
+      method: 'POST', url: `/orders/${ready.orderId}/exceptions`, headers: headers(seedIds.customer),
+      payload: { type: 'SEVERE_FOOD_DAMAGE', description: 'Customer must use a dispute rather than forge a rider report' },
+    });
+    expect(customerAttempt.statusCode).toBe(400);
+    expect(await prisma.exceptionEvent.count({ where: { orderId: ready.orderId } })).toBe(0);
+
+    expect((await claim(ready.taskId)).statusCode).toBe(200);
+    const beforePickupAttempt = await app.inject({
+      method: 'POST', url: `/orders/${ready.orderId}/exceptions`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'FOOD_LOST', description: 'Rider has not picked up the order' },
+    });
+    expect(beforePickupAttempt.statusCode).toBe(400);
+    expect(await prisma.exceptionEvent.count({ where: { orderId: ready.orderId } })).toBe(0);
+
+    expect((await pickup(ready.taskId)).statusCode).toBe(200);
+    const dedicated = await app.inject({
+      method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'FOOD_LOST', description: 'Responsible rider reports after pickup' },
+    });
+    expect(dedicated.statusCode, dedicated.body).toBe(201);
+    expect(await prisma.exceptionCase.count({ where: { orderId: ready.orderId } })).toBe(1);
+  });
+
+  it('records wrong address as a user-responsibility fact without opening an admin case', async () => {
+    const ready = await createReady();
+    const wrongAddress = await app.inject({
+      method: 'POST', url: `/orders/${ready.orderId}/exceptions`, headers: headers(seedIds.customer),
+      payload: { type: 'WRONG_ADDRESS', description: 'Customer selected the wrong campus location' },
+    });
+    expect(wrongAddress.statusCode, wrongAddress.body).toBe(201);
+    expect(await prisma.exceptionEvent.count({ where: { orderId: ready.orderId, type: 'WRONG_ADDRESS' } })).toBe(1);
+    expect(await prisma.exceptionCase.count({ where: { orderId: ready.orderId } })).toBe(0);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: ready.orderId } })).status).toBe('READY_FOR_RIDER');
+
+    const dispute = await app.inject({
+      method: 'POST', url: `/orders/${ready.orderId}/exceptions`, headers: headers(seedIds.customer),
+      payload: { type: 'DELIVERY_DISPUTE', description: 'A later dispute requires admin review' },
+    });
+    expect(dispute.statusCode, dispute.body).toBe(201);
+    expect(await prisma.exceptionCase.count({ where: { orderId: ready.orderId } })).toBe(1);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: ready.orderId } })).status).toBe('READY_FOR_RIDER');
+  });
+
   it('requires customer acceptance before remake fulfillment can continue', async () => {
     const ready = await pickedUpOrder();
     const reported = await app.inject({
@@ -387,7 +434,96 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${ready.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {} })).statusCode).toBe(200);
   });
 
-  it('keeps ordinary remake rejection available before escalation', async () => {
+  it('does not let admin CONTINUE_FULFILLMENT bypass customer confirmation for a severe case', async () => {
+    const ready = await pickedUpOrder();
+    const reported = await app.inject({
+      method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'SEVERE_FOOD_DAMAGE', description: 'Severe case requires customer-confirmed remake' },
+    });
+    const caseId = reported.json().id as string;
+    expect((await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/claim`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 0 },
+    })).statusCode).toBe(200);
+    const adminContinue = await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/resolve`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 1, resolutionType: 'CONTINUE_FULFILLMENT', note: 'Cannot replace customer confirmation' },
+    });
+    expect(adminContinue.statusCode).toBe(409);
+    expect(adminContinue.json()).toMatchObject({ code: 'SEVERE_REMAKE_CONFIRMATION_REQUIRED' });
+    expect((await app.inject({
+      method: 'POST', url: `/delivery-tasks/${ready.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {},
+    })).statusCode).toBe(409);
+
+    expect((await app.inject({
+      method: 'POST', url: `/exception-cases/${caseId}/remake-proposal`, headers: headers(seedIds.riderAUser),
+      payload: { message: 'Merchant will remake the order' },
+    })).statusCode).toBe(201);
+    expect((await app.inject({
+      method: 'POST', url: `/exception-cases/${caseId}/remake-response`, headers: headers(seedIds.customer), payload: { accept: true },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: 'POST', url: `/delivery-tasks/${ready.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {},
+    })).statusCode).toBe(200);
+  });
+
+  it('keeps delivery blocked while any earlier severe incident remains unresolved', async () => {
+    const ready = await pickedUpOrder();
+    const older = await app.inject({
+      method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'FOOD_LOST', description: 'Earlier severe incident' },
+    });
+    const newer = await app.inject({
+      method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'SEVERE_FOOD_DAMAGE', description: 'Later severe incident' },
+    });
+    const olderCaseId = older.json().id as string;
+    const newerCaseId = newer.json().id as string;
+    await app.inject({
+      method: 'POST', url: `/exception-cases/${newerCaseId}/remake-proposal`, headers: headers(seedIds.riderAUser),
+      payload: { message: 'Resolve only the newer incident first' },
+    });
+    await app.inject({
+      method: 'POST', url: `/exception-cases/${newerCaseId}/remake-response`, headers: headers(seedIds.customer), payload: { accept: true },
+    });
+    expect((await app.inject({
+      method: 'POST', url: `/delivery-tasks/${ready.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {},
+    })).statusCode).toBe(409);
+
+    await app.inject({
+      method: 'POST', url: `/exception-cases/${olderCaseId}/remake-proposal`, headers: headers(seedIds.riderAUser),
+      payload: { message: 'Resolve the earlier incident too' },
+    });
+    await app.inject({
+      method: 'POST', url: `/exception-cases/${olderCaseId}/remake-response`, headers: headers(seedIds.customer), payload: { accept: true },
+    });
+    expect((await app.inject({
+      method: 'POST', url: `/delivery-tasks/${ready.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {},
+    })).statusCode).toBe(200);
+  });
+
+  it('keeps CONTINUE_FULFILLMENT available for a non-severe case', async () => {
+    const ready = await pickedUpOrder();
+    await app.inject({
+      method: 'POST', url: `/orders/${ready.orderId}/exceptions`, headers: headers(seedIds.customer),
+      payload: { type: 'MINOR_DAMAGE_OR_DELAY', description: 'Minor issue can continue under ordinary admin handling' },
+    });
+    const exceptionCase = await prisma.exceptionCase.findFirstOrThrow({ where: { orderId: ready.orderId } });
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${exceptionCase.id}/claim`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 0 },
+    });
+    const continued = await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${exceptionCase.id}/resolve`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 1, resolutionType: 'CONTINUE_FULFILLMENT', note: 'Minor issue resolved without remake' },
+    });
+    expect(continued.statusCode, continued.body).toBe(200);
+    expect((await app.inject({
+      method: 'POST', url: `/delivery-tasks/${ready.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {},
+    })).statusCode).toBe(200);
+  });
+
+  it('returns an unhandled rejected remake to a clean, claimable shared-pool state', async () => {
     const ready = await pickedUpOrder();
     const reported = await app.inject({
       method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
@@ -401,7 +537,55 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect((await app.inject({
       method: 'POST', url: `/exception-cases/${caseId}/remake-response`, headers: headers(seedIds.customer), payload: { accept: false },
     })).statusCode).toBe(200);
-    expect((await prisma.exceptionCase.findUniqueOrThrow({ where: { id: caseId } })).status).toBe('OPEN');
+    expect((await prisma.exceptionCase.findUniqueOrThrow({ where: { id: caseId } }))).toMatchObject({
+      status: 'OPEN',
+      currentHandlerAdminId: null,
+      claimedAt: null,
+      resolutionType: null,
+      resolutionNote: null,
+      resolvedAt: null,
+    });
+    expect((await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/claim`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 2 },
+    })).statusCode).toBe(200);
+  });
+
+  it('returns a handled rejected remake to its operator without stale resolution metadata', async () => {
+    const ready = await pickedUpOrder();
+    const reported = await app.inject({
+      method: 'POST', url: `/rider/orders/${ready.orderId}/severe-exception`, headers: headers(seedIds.riderAUser),
+      payload: { type: 'SEVERE_FOOD_DAMAGE', description: 'Handled remake rejection case' },
+    });
+    const caseId = reported.json().id as string;
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/claim`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 0 },
+    });
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/resolve`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 1, resolutionType: 'WAITING_FOR_INFORMATION', note: 'Stale metadata must be cleared' },
+    });
+    await app.inject({
+      method: 'POST', url: `/exception-cases/${caseId}/remake-proposal`, headers: headers(seedIds.riderAUser),
+      payload: { message: 'Customer can choose whether to wait' },
+    });
+    await app.inject({
+      method: 'POST', url: `/exception-cases/${caseId}/remake-response`, headers: headers(seedIds.customer), payload: { accept: false },
+    });
+    const rejected = await prisma.exceptionCase.findUniqueOrThrow({ where: { id: caseId } });
+    expect(rejected).toMatchObject({
+      status: 'IN_PROGRESS',
+      currentHandlerAdminId: seedIds.operator,
+      resolutionType: null,
+      resolutionNote: null,
+      resolvedAt: null,
+    });
+    const resolved = await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/resolve`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: rejected.version, resolutionType: 'RESPONSIBILITY_UNDETERMINED', note: 'Operator remains able to handle the case' },
+    });
+    expect(resolved.statusCode, resolved.body).toBe(200);
   });
 
   it('blocks rider remake proposals after escalation', async () => {
@@ -475,6 +659,35 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     });
     expect(resolved.statusCode, resolved.body).toBe(200);
     expect((await prisma.exceptionCase.findUniqueOrThrow({ where: { id: exceptionCase.id } })).status).toBe('RESOLVED');
+  });
+
+  it('rejects ESCALATED_OTHER as a terminal resolve and preserves the audited escalation path', async () => {
+    const ready = await pickedUpOrder();
+    await app.inject({
+      method: 'POST', url: `/orders/${ready.orderId}/exceptions`, headers: headers(seedIds.customer),
+      payload: { type: 'DELIVERY_DISPUTE', description: 'Must use the audited escalation action' },
+    });
+    const exceptionCase = await prisma.exceptionCase.findFirstOrThrow({ where: { orderId: ready.orderId } });
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${exceptionCase.id}/claim`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 0 },
+    });
+    const fakeEscalation = await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${exceptionCase.id}/resolve`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 1, resolutionType: 'ESCALATED_OTHER', note: 'This must not become a resolved case' },
+    });
+    expect(fakeEscalation.statusCode).toBe(400);
+    expect(fakeEscalation.json()).toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect((await prisma.exceptionCase.findUniqueOrThrow({ where: { id: exceptionCase.id } }))).toMatchObject({
+      status: 'IN_PROGRESS', version: 1, resolutionType: null,
+    });
+
+    const escalated = await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${exceptionCase.id}/escalate`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 1, reason: 'Use the actual escalation transition' },
+    });
+    expect(escalated.statusCode, escalated.body).toBe(200);
+    expect(escalated.json()).toMatchObject({ status: 'ESCALATED', version: 2 });
   });
 
   it('lets the assigned operator execute the predefined refund-and-close action without choosing an arbitrary amount', async () => {
@@ -674,6 +887,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
         merchantId: seedIds.merchant,
         destinationLocationId: seedIds.dormLocation,
         destinationLabelSnapshot: '宿舍',
+        pickupMerchantNameSnapshot: '校园饭堂演示店',
         pickupLocationNameSnapshot: '第一食堂',
         deliveryMethod: DeliveryMethod.DESIGNATED_POINT,
         deliveryVerificationMode: DeliveryVerificationMode.DELIVERY_PHOTO,

@@ -9,7 +9,7 @@ import {
 import type { Actor } from '../auth/auth.js';
 import { assertOrderAccess } from '../orders/access.js';
 import { conflict, forbidden, notFound } from '../shared/errors.js';
-import { createExceptionEvent } from './service.js';
+import { createSevereRiderExceptionEvent } from './service.js';
 import { assertExceptionCaseAction } from '../exception-cases/state-machine.js';
 
 const severeTypes: ExceptionType[] = [ExceptionType.SEVERE_FOOD_DAMAGE, ExceptionType.FOOD_LOST];
@@ -20,13 +20,7 @@ export async function reportSevereRiderException(
   orderId: string,
   input: { type: ExceptionType; description: string },
 ) {
-  if (!actor.riderId || !severeTypes.includes(input.type)) throw forbidden();
-  const order = await prisma.order.findUnique({ where: { id: orderId }, include: { deliveryTask: true } });
-  if (!order) throw notFound('Order');
-  if (order.deliveryTask?.riderId !== actor.riderId || order.deliveryTask.status !== 'PICKED_UP') {
-    throw conflict('SEVERE_EXCEPTION_STAGE_INVALID', 'Severe damage or loss can be reported only by the responsible rider after pickup');
-  }
-  const event = await createExceptionEvent(prisma, actor, orderId, input);
+  const event = await createSevereRiderExceptionEvent(prisma, actor, orderId, input);
   return prisma.exceptionCase.findUniqueOrThrow({
     where: { exceptionEventId: event.id },
     select: { id: true, orderId: true, category: true, priority: true, status: true, createdAt: true },
@@ -58,7 +52,14 @@ export async function proposeRemake(
     });
     await tx.exceptionCase.update({
       where: { id: caseId },
-      data: { status: ExceptionCaseStatus.WAITING_FOR_PARTICIPANT, lastActionAt: now, version: { increment: 1 } },
+      data: {
+        status: ExceptionCaseStatus.WAITING_FOR_PARTICIPANT,
+        resolutionType: null,
+        resolutionNote: null,
+        resolvedAt: null,
+        lastActionAt: now,
+        version: { increment: 1 },
+      },
     });
     await tx.exceptionCaseAction.create({
       data: { caseId, type: ExceptionCaseActionType.REQUESTED_INFORMATION, actorId: actor.id, reason: 'REMAKE_PROPOSED', metadata: { proposalId: proposal.id } },
@@ -113,8 +114,15 @@ export async function respondToRemake(
           version: { increment: 1 },
         }
         : {
-          status: ExceptionCaseStatus.OPEN,
-          resolutionNote: 'Customer rejected remake proposal',
+          status: exceptionCase.currentHandlerAdminId
+            ? ExceptionCaseStatus.IN_PROGRESS
+            : ExceptionCaseStatus.OPEN,
+          ...(!exceptionCase.currentHandlerAdminId
+            ? { currentHandlerAdminId: null, claimedAt: null }
+            : {}),
+          resolutionType: null,
+          resolutionNote: null,
+          resolvedAt: null,
           lastActionAt: now,
           version: { increment: 1 },
         },

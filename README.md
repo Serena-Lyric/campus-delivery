@@ -156,6 +156,8 @@ Evidence 只提供争议事实，不自动代表任何一方有责。普通低�
 
 普通固定地址/校园位置节点订单正常情况下不要求骑手先联系用户或等待本人出现；骑手按订单地址/位置快照正确送达即完成正常履约。地址填写/选择错误属于用户侧责任，额外转送由用户与骑手自愿协商，骑手拒绝不构成履约失败。仅必须本人交接、强制交付码等特殊模式下的失联等待与最终处理仍待确定。
 
+`WRONG_ADDRESS` 只记录结构化事实，不自动创建共享管理员 case 或改变订单状态；后续如产生真实投诉，使用 `DELIVERY_DISPUTE` 进入人工处理。严重餐损/丢失只能由责任骑手在取餐后通过 dedicated route 上报；正常继续履约只认可用户明确接受补餐形成的 `REMAKE_AND_CONTINUE`，不能由通用 admin continue 代替。
+
 允许无人接触投递时，用户失联订单可在骑手提交 DELIVERY_PHOTO 后完成。不允许无人接触投递时，订单进入 EXCEPTION。系统不自动判责或扣款。
 
 DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除历史余额。
@@ -164,7 +166,7 @@ DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除�
 
 ## 骑手未取餐取消与限制
 
-每次未取餐取消保存不可变事件、结构化原因、校园自然日、当日计数、7 天计数和 warning 事实。单日第 2 次暂停当天新 claim；7 天累计 4 次或累计 2 次 warning 分别进入配置化冷却。claim 服务只阻止新接单，不改写骑手已经持有的其他任务。
+每次未取餐取消保存不可变事件、结构化原因、校园自然日、当日计数、7 天计数和 warning 事实。单日第 2 次暂停当天新 claim；7 天累计 4 次或累计 2 次 warning 分别进入配置化冷却。暂停/冷却只阻止新 claim，不取消、不回池、不改变骑手已经持有的订单；已持订单继续按原履约或异常流程处理。
 
 限制状态保存类型、来源、开始/结束、状态和审计。只有 SUPER_ADMIN 可以创建、提前解除或调整跨订单限制；OPERATOR 无权修改。
 
@@ -224,13 +226,15 @@ timeRisk 与 completionRisk 独立返回。曝光策略实际使用完成/无人
 
 claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/PICKED_UP，两个并发请求竞争最后一个槽位只能成功一个。调低额度不破坏已持订单。骑手可通过 `/riders/me/capacity` 查看阶段、有效额度和升级/override 事件。
 
-可接订单 DTO 只返回骑手决策所需事实：保证收益、稳定 merchant/location id、订单创建时的取餐地点/区域与目的地 label/区域快照、foodType、handlingTags、总数量和行项目数；不混入可变的 live 商家/地点名称，也不返回 customer、平台价差或资金来源拆分。平台不据此规划路线或推荐拼单。
+可接订单 DTO 只返回骑手决策所需事实：保证收益、稳定 merchant/location id、订单创建时的商家名称、取餐地点/区域与目的地 label/区域快照、foodType、handlingTags、总数量和行项目数；不混入可变的 live 商家/地点名称，也不返回 customer、平台价差或资金来源拆分。平台不据此规划路线或推荐拼单。
 
 物品分类保存原始商品名、商家原始分类与 suggestedFoodType/handlingTags/source/version/confidence。潜在远程分类调用在订单写事务之前执行，事务内会重新校验商品事实，变化时安全拒绝重试。当前只有 deterministic/manual fallback，没有真实 Jev 网络调用；分类失败回退 UNKNOWN 且不阻塞订单，也不影响钱、容量、责任或曝光。
 
 ## Migration 约束
 
 `20260926000400_capacity_pool_pricing` 对开发/demo 历史 settlement 与 BusinessConfig 做过 semantic rewrite。项目尚未进入真实生产账务，因此本轮不为 demo 历史构造复杂反迁移；该 migration 明确只属于 pre-production 语义迁移，不是未来生产财务 migration 模板。真实生产后，已 FINALIZED 财务事实和已生效历史配置必须通过保留审计历史的版本化 correction/event/明确迁移策略修正，不能由普通 migration 静默原地重写。
+
+`20260927000300_order_pickup_merchant_snapshot` 为历史缺失的商家名称快照使用当前 `Merchant.name` 做 best-effort pre-production backfill；它只能提供兼容近似，不能证明历史订单创建时的真实店名，也不是生产审计迁移范式。
 
 ## 待结算资金
 

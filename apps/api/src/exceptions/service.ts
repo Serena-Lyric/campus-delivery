@@ -11,7 +11,7 @@ import type { Actor } from '../auth/auth.js';
 import { allowsUnattendedDelivery, loadPolicyConfig } from '../merchant-policy/policies.js';
 import { assertOrderAccess } from '../orders/access.js';
 import { transitionOrder } from '../orders/state-machine.js';
-import { badRequest, forbidden, notFound } from '../shared/errors.js';
+import { badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
 import { openExceptionCase } from '../exception-cases/service.js';
 import { DeterministicExceptionClassifier, type ExceptionClassifier } from './classifier.js';
 
@@ -21,12 +21,42 @@ export type CreateExceptionInput = {
   evidenceIds?: string[];
 };
 
+const severeTypes: ExceptionType[] = [ExceptionType.SEVERE_FOOD_DAMAGE, ExceptionType.FOOD_LOST];
+
 export async function createExceptionEvent(
   prisma: PrismaClient,
   actor: Actor,
   orderId: string,
   input: CreateExceptionInput,
   classifier: ExceptionClassifier = new DeterministicExceptionClassifier(),
+) {
+  if (severeTypes.includes(input.type)) {
+    throw conflict(
+      'SEVERE_EXCEPTION_REQUIRES_DEDICATED_ROUTE',
+      'Severe damage or loss must be reported by the responsible rider through the dedicated route after pickup',
+    );
+  }
+  return createExceptionEventInternal(prisma, actor, orderId, input, classifier, false);
+}
+
+export async function createSevereRiderExceptionEvent(
+  prisma: PrismaClient,
+  actor: Actor,
+  orderId: string,
+  input: CreateExceptionInput,
+  classifier: ExceptionClassifier = new DeterministicExceptionClassifier(),
+) {
+  if (!actor.riderId || !severeTypes.includes(input.type)) throw forbidden();
+  return createExceptionEventInternal(prisma, actor, orderId, input, classifier, true);
+}
+
+async function createExceptionEventInternal(
+  prisma: PrismaClient,
+  actor: Actor,
+  orderId: string,
+  input: CreateExceptionInput,
+  classifier: ExceptionClassifier,
+  severeRiderReport: boolean,
 ) {
   const { config } = await loadPolicyConfig(prisma);
   return prisma.$transaction(async (tx) => {
@@ -39,6 +69,20 @@ export async function createExceptionEvent(
     });
     if (!order) throw notFound('Order');
     assertOrderAccess(actor, order);
+
+    if (
+      severeRiderReport
+      && (
+        !order.deliveryTask
+        || order.deliveryTask.riderId !== actor.riderId
+        || order.deliveryTask.status !== DeliveryTaskStatus.PICKED_UP
+      )
+    ) {
+      throw conflict(
+        'SEVERE_EXCEPTION_STAGE_INVALID',
+        'Severe damage or loss can be reported only by the responsible rider after pickup',
+      );
+    }
 
     if (
       input.type === ExceptionType.CUSTOMER_UNREACHABLE
@@ -66,7 +110,9 @@ export async function createExceptionEvent(
         description: input.description,
       },
     });
-    await openExceptionCase(tx, exception, classifier);
+    if (input.type !== ExceptionType.WRONG_ADDRESS) {
+      await openExceptionCase(tx, exception, classifier);
+    }
     if (evidenceIds.length > 0) {
       await tx.evidence.updateMany({
         where: { id: { in: evidenceIds }, orderId: order.id },

@@ -177,7 +177,12 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
     const task = response.json().find((candidate: { id: string }) => candidate.id === ready.taskId);
     expect(task).toMatchObject({
       riderGuaranteedPayoutMinor: 220,
-      pickup: { merchantId: seedIds.merchant, locationName: '第一食堂', region: '东门片区' },
+      pickup: {
+        merchantId: seedIds.merchant,
+        merchantName: '校园饭堂演示店',
+        locationName: '第一食堂',
+        region: '东门片区',
+      },
       destination: { locationId: seedIds.dormLocation, label: '学生宿舍 3 号楼', region: '一期' },
       carrying: { totalQuantity: 2, lineItemCount: 2 },
     });
@@ -201,7 +206,12 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
       const response = await app.inject({ method: 'GET', url: '/delivery-tasks/available', headers: headers(seedIds.riderAUser) });
       const task = response.json().find((candidate: { id: string }) => candidate.id === ready.taskId);
       expect(task).toMatchObject({
-        pickup: { merchantId: seedIds.merchant, locationName: '第一食堂', region: '东门片区' },
+        pickup: {
+          merchantId: seedIds.merchant,
+          merchantName: '校园饭堂演示店',
+          locationName: '第一食堂',
+          region: '东门片区',
+        },
         destination: { locationId: seedIds.dormLocation, label: '学生宿舍 3 号楼', region: '一期' },
       });
       expect(JSON.stringify(task)).not.toMatch(/改名后的商家|改名后的取餐点|改名后的目的地/);

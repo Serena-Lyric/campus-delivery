@@ -39,6 +39,7 @@ const taskSelect = {
       status: true,
       destinationLabelSnapshot: true,
       destinationRegionSnapshot: true,
+      pickupMerchantNameSnapshot: true,
       pickupLocationNameSnapshot: true,
       pickupRegionSnapshot: true,
       deliveryMethod: true,
@@ -72,6 +73,7 @@ function presentRiderTask(task: RiderTask) {
     deliveredAt: task.deliveredAt,
     pickup: {
       merchantId: task.order.merchantId,
+      merchantName: task.order.pickupMerchantNameSnapshot,
       locationName: task.order.pickupLocationNameSnapshot,
       region: task.order.pickupRegionSnapshot,
     },
@@ -312,17 +314,15 @@ export async function deliverTask(
     if (task.status !== DeliveryTaskStatus.PICKED_UP) throw conflict('TASK_STATE_CONFLICT', 'Task is not ready for delivery');
     if (!task.order.pricing) throw notFound('Order pricing');
 
-    const severeCase = await tx.exceptionCase.findFirst({
+    const severeCases = await tx.exceptionCase.findMany({
       where: { orderId: task.orderId, category: { in: ['SEVERE_FOOD_DAMAGE', 'FOOD_LOST'] } },
-      orderBy: { createdAt: 'desc' },
+      select: { status: true, resolutionType: true },
     });
-    if (
-      severeCase
-      && !(
-        severeCase.status === 'RESOLVED'
-        && ['REMAKE_AND_CONTINUE', 'CONTINUE_FULFILLMENT'].includes(severeCase.resolutionType ?? '')
-      )
-    ) {
+    const hasBlockingSevereCase = severeCases.some((exceptionCase) => !(
+      exceptionCase.status === 'RESOLVED'
+      && exceptionCase.resolutionType === 'REMAKE_AND_CONTINUE'
+    ));
+    if (hasBlockingSevereCase) {
       throw conflict('SEVERE_EXCEPTION_UNRESOLVED', 'Severe damage or loss must be resolved before delivery can continue');
     }
 

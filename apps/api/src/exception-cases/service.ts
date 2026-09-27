@@ -2,6 +2,7 @@ import {
   ExceptionCaseActionType,
   ExceptionCaseStatus,
   ExceptionResolutionType,
+  ExceptionType,
   type ExceptionEvent,
   type Prisma,
   type PrismaClient,
@@ -342,6 +343,21 @@ export async function resolveNonEconomicCase(
     if (!current) throw notFound('Exception case');
     assertExceptionCaseAction(current.status, 'RESOLVE');
     if (current.currentHandlerAdminId !== actor.id && actor.adminLevel !== 'SUPER_ADMIN') throw forbidden();
+    if (resolutionType === ExceptionResolutionType.ESCALATED_OTHER) {
+      throw conflict('USE_ESCALATION_ACTION', 'Escalation must use the audited escalate action');
+    }
+    if (
+      resolutionType === ExceptionResolutionType.CONTINUE_FULFILLMENT
+      && (
+        current.category === ExceptionType.SEVERE_FOOD_DAMAGE
+        || current.category === ExceptionType.FOOD_LOST
+      )
+    ) {
+      throw conflict(
+        'SEVERE_REMAKE_CONFIRMATION_REQUIRED',
+        'Severe damage or loss can continue only after the customer accepts a remake',
+      );
+    }
     const waiting = resolutionType === ExceptionResolutionType.WAITING_FOR_INFORMATION;
     const now = new Date();
     const updated = await tx.exceptionCase.updateMany({

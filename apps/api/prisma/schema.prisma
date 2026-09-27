@@ -427,6 +427,7 @@ model Order {
   destinationLocation          CampusLocation                    @relation(fields: [destinationLocationId], references: [id])
   destinationLabelSnapshot     String
   destinationRegionSnapshot    String?
+  pickupMerchantNameSnapshot   String
   pickupLocationNameSnapshot   String
   pickupRegionSnapshot         String?
   deliveryMethod               DeliveryMethod

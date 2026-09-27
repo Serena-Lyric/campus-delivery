@@ -6,6 +6,13 @@ import type { AppConfig } from '../config.js';
 import { createExceptionEvent } from './service.js';
 
 const OrderIdParams = Type.Object({ orderId: Type.String({ format: 'uuid' }) });
+const GeneralExceptionType = Type.Exclude(
+  Type.Enum(ExceptionType),
+  Type.Union([
+    Type.Literal(ExceptionType.SEVERE_FOOD_DAMAGE),
+    Type.Literal(ExceptionType.FOOD_LOST),
+  ]),
+);
 
 export async function registerExceptionRoutes(app: FastifyInstance, prisma: PrismaClient, config: AppConfig) {
   const authenticated = authGuard(prisma, config);
@@ -18,7 +25,7 @@ export async function registerExceptionRoutes(app: FastifyInstance, prisma: Pris
       tags: ['exceptions'],
       params: OrderIdParams,
       body: Type.Object({
-        type: Type.Enum(ExceptionType),
+        type: GeneralExceptionType,
         description: Type.String({ minLength: 1, maxLength: 1000 }),
         evidenceIds: Type.Optional(Type.Array(Type.String({ format: 'uuid' }), { maxItems: 20 })),
       }),

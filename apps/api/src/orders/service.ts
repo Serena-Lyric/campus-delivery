@@ -273,6 +273,7 @@ export async function createOrder(
             destinationLocationId: location.id,
             destinationLabelSnapshot: location.name,
             destinationRegionSnapshot: location.regionLabel,
+            pickupMerchantNameSnapshot: merchant.name,
             pickupLocationNameSnapshot: merchant.campusLocation.name,
             pickupRegionSnapshot: merchant.campusLocation.regionLabel,
             deliveryMethod: input.deliveryMethod,
