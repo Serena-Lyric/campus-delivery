@@ -1,252 +1,262 @@
 # CODEX_REPORT
 
-## 1. 范围、提交与结论
+## 1. 任务、提交与结果
 
-- 执行任务：`IMPLEMENTATION_PLAN.md` 中“审核修正 + 骑手容错 + 异常订单池 + 管理员分权”。
-- 起始提交：`6f7e689a720b7c7bd73247870c4273dd6047dff1`。
-- 实现提交：`a6655b1`（`feat: add rider exception operations`）。
-- 分支：`main`。
-- 实现提交已使用普通 `git push origin main` 推送；未 force push，未 reset/discard/覆盖既有工作。
+- 任务：审核补丁 + 骑手容量 + 订单池决策信息 + 配送定价语义拆分。
+- 起始提交：`04f167e8040feff9f2755d5509f0c9db97b60c48`。
+- 实现提交：`d0edaf1`（`feat: add capacity and split delivery pricing`）。
+- 分支：`main`；实现提交已普通 push，未 force push。
+- 未 reset、discard、checkout 或覆盖已有工作。
 
-本轮计划内后端范围已完成。真实支付/Jev 网络调用/自动判责等明确排除项未实现，详见第 8 节。
+计划内后端实现与验证已完成。本报告生成后停止，不进入下一阶段。
 
-## 2. 实现真实性分类
+## 2. Implementation truthfulness
 
-### Enforced behavior（运行时已执行）
+### Enforced behavior
 
-- TRIAL catalog stable-hash 灰度、显式 100% override、HIDDEN/SUSPENDED 隐藏。
-- exposure policy 的 completion/no-rider 与 subsidy dependency + rescue health 分支。
-- 独立 recovery window/minimum sample。
-- customer/merchant/rider 显式 DTO 与角色权限隔离。
-- 取餐前有限无责取消、原 deadline 保留、日内 warning、两条 7 天冷却路径、新 claim 限制、SUPER_ADMIN override。
-- 严重餐损/丢失 report、补餐 proposal、用户接受/拒绝、未解决前禁止正常送达。
-- ExceptionCase 共享池、CAS 原子领取、release/transfer/takeover/escalate/resolve 审计。
-- refund-and-close、部分 settlement reservation、主动支付事实、平台垫付/outstanding、幂等退款和幂等 reservation release。
-- OPERATOR / SUPER_ADMIN 权限检查。
+- 每日取餐前无责取消次数真正封顶；已持第三单也不能继续使用免费取消入口。
+- ExceptionCase 显式状态机、terminal protection、ESCALATED 决策边界。
+- refund-and-close 的 version/status/idempotency/transaction 保护；rider voluntary compensation 仅限严重餐损/丢失合法状态。
+- 骑手容量 1→2→5、global cap、个人 override、原子 claim 限制与通知事件。
+- Rider order-pool 显式决策 DTO。
+- 拆分后的 delivery pricing、merchant rescue、tip、subsidy 和 claim 快照公式。
+- pricing/capacity 配置仅 SUPER_ADMIN 可写。
 
-### Data / telemetry available（记录事实，但不自动归责）
+### Data / telemetry available
 
-- `timeRisk`、结构化 `exceptionCounts`、claim latency、subsidy dependency/rescue、platform subsidy consumption。
-- cancellation/warning/restriction 历史。
-- classifier source/version/result/confidence。
-- compensation obligation、allocation、reservation、platform advance 与 outstanding。
+- 原始商品名、商家原始分类、suggested foodType、handlingTags、classifier source/version/confidence。
+- pricing policy version、reason、inputs snapshot；claim 时完整资金来源快照。
+- Rider firstNormalDeliveredAt、capacity stage/override events。
 
-### Policy hook / placeholder
+### Policy hook / adapter ready
 
-- `ExceptionClassifier` typed adapter、deterministic fallback、manual fallback 已就绪。
-- 没有真实 Jev 网络调用；分类只建议 category/priority/route，不能执行资金、责任或处罚动作。
-- exposure policy 由 SUPER_ADMIN evaluate API 执行；本轮没有新增后台定时批量评估器。
+- ItemClassifier typed adapter、deterministic fallback、manual/UNKNOWN fallback 已接入。
+- 没有真实 Jev endpoint/凭据或公网调用：`adapter/hook ready, not active`。
 
 ### Not implemented
 
-- 自动判责、自动处罚、AI 判责。
-- 真实退款/支付/提现。
-- 平台垫付后的未来收入自动抵扣、无限负余额、线下追偿或自动停单。
-- 自动分派异常、复杂 SLA/班组、完整后台 UI。
-- 普通业务账号多角色。
+- 真实支付/提现/退款网关。
+- 路线规划、导航、自动拼单。
+- 5 单后自动升级、异常自动降容量或骑手评分。
+- ML/黑箱动态定价。
+- category/region/foodType 对金额的正式调整矩阵。
 
-## 3. Migration
+## 3. 审核补丁
 
-新增正式 migration：
+### 3.1 每日免费取消封顶
 
-1. `20260926000100_audit_gap_fixes`
-   - Merchant `trialExposureOverrideBps`；
-   - TRIAL/recovery 配置兼容回填。
-2. `20260926000200_rider_exceptions_admin`
-   - ADMIN level、骑手取消/限制/审计；
-   - ExceptionCase/action/remake；
-   - Compensation obligation/allocation 与 `RiderSettlement.reservedMinor`；
-   - 数据库 check、unique、partial unique、index、FK；
-   - 已存在 ADMIN 安全 backfill 为 SUPER_ADMIN，未来 AdminProfile 默认 OPERATOR；
-   - 骑手取消/冷却配置兼容回填。
-3. `20260926000300_compensation_release_audit`
-   - AdminProfileAudit target FK 完整性。
+`cancelBeforePickup()` 在任何 assignment/task/order 修改前读取校园自然日计数；`dailyBefore >= riderDailyFreeCancelLimit` 时返回 `RIDER_DAILY_FREE_CANCEL_LIMIT`。配置值不是硬编码。
 
-开发验证中曾发现 `003` 与已应用 `002` 的枚举内容重复；该失败事务整体回滚。随后恢复 `002` 与当前库已应用内容一致，让 `003` 只承载真实增量。最终当前库和空库 migration 均成功，drift 为零。
+回归测试覆盖：骑手在触发第 2 次 warning 前已经持有第 3 单，第 3 次取消返回 409，第三单仍保持 CLAIMED。
 
-## 4. 19 项审核清单
+### 3.2 ExceptionCase 状态机
 
-### 1. 上轮 6 个审核缺口
+新增 `exception-cases/state-machine.ts`，逐动作约束：
 
-1. **TRIAL 灰度**：`catalog/visibility.ts` 使用稳定 hash，catalog 路由真实过滤；单元与 PostgreSQL 集成测试覆盖稳定性、用户差异、override、HIDDEN。
-2. **多因素 exposure**：`MerchantExposurePolicy` 同时使用 completion/no-rider 和 subsidy dependency + terminal rescue；单元测试证明补贴健康度可推动 REDUCED。
-3. **独立恢复窗口**：新增 recovery window/min sample 配置；policy 只使用独立 recovery terminal population 恢复；单元测试证明样本不足不能恢复。
-4. **rescue 口径**：更名为 `subsidizedClaimRescueRateBps`，只使用已到终态的补贴接单样本；集成测试加入多个进行中补贴单后仍保持正确分母。
-5. **catalog/raw ORM 泄漏**：catalog、order、delivery task、pricing mutation、settlement、exception view 均改为显式 select/DTO；负向测试检查敏感字段不存在。
-6. **rolling population 分离**：terminal、claim、terminal subsidized、published、exception、recovery 各自独立查询；进行中订单不再挤掉终态样本。
+- CLAIM：仅 OPEN；
+- RELEASE/TRANSFER/ESCALATE/RESOLVE/ADMIN_REFUND：仅 IN_PROGRESS 或 WAITING_FOR_PARTICIPANT；
+- TAKEOVER：OPEN/IN_PROGRESS/WAITING/ESCALATED；
+- RIDER_COMPENSATE：OPEN/IN_PROGRESS/WAITING。
 
-### 2. TRIAL 是否真实改变可见性
+RESOLVED/CLOSED 对 release、transfer、takeover、escalate、resolve、refund 全部 terminal。ESCALATED 后 operator resolve/refund 被拒绝；SUPER_ADMIN 必须先 audited takeover，且 ESCALATED takeover 不能直接重新分给 operator。
 
-是。CUSTOMER 目录通过 `SHA-256(merchantId:customerId)` 前 32 bit 对 10000 取模，与 `merchantTrialExposureBps`/merchant override 比较。同一用户稳定，不同用户可不同；Seed 商家显式 override 10000。HIDDEN/SUSPENDED 在查询层始终排除。
+纯单元矩阵和 PostgreSQL route 回归均通过。
 
-stable hash 是第一版 provisional 工程策略，不是永久产品规则；以后可以替换为区域、宿舍或订单样本策略。
+### 3.3 经济动作 stale-state 保护
 
-### 3. Exposure policy 实际使用与 reserved 输入
+Admin refund：
 
-实际使用：
+1. case row `FOR UPDATE`；
+2. handler permission；
+3. legal status；
+4. 实际比较 `expectedVersion`；
+5. conditional update 预占 version；
+6. 同一事务执行 obligation/reservation/refund/order close；
+7. final resolution 使用预占后的 version/status 条件。
 
-- current exposure state；
-- entry terminal sample count；
-- no-rider rate；
-- completionRisk；
-- subsidyDependencyBps；
-- terminal subsidized rescue rate；
-- recovery terminal sample count/no-rider rate；
-- recovery subsidy dependency/rescue；
-- forcedState。
+Rider voluntary compensation 也要求 expectedVersion，且只允许 `SEVERE_FOOD_DAMAGE` / `FOOD_LOST`。REMAKE_AND_CONTINUE/RESOLVED/CLOSED 不能被覆盖。
 
-`timeRisk` 真实用于用户风险提示，但在 exposure 状态迁移中 reserved，不因 SLOW 单独降级。`exceptionCounts` 是管理员事实/telemetry，在责任归因未确认前不参与自动降级。
+幂等 key 处理真正的同请求重试；version/status guard 独立处理陈旧页面。测试覆盖 remake 接受后的 stale admin refund、stale rider compensation、ESCALATED operator refund，以及相同 refund key 并发重试只生成一份 obligation。
 
-### 4. Rescue metric 口径
+Reservation release 同样要求 RESOLVED + REFUND_AND_CLOSE、expectedVersion 与 release idempotency key。
 
-- denominator：窗口内 `claimSampleType=SUBSIDIZED` 且订单已经进入 `DELIVERED` 或 `NO_RIDER_ACCEPTED` 的接单样本数。
-- numerator：上述 denominator 中最终 `DELIVERED` 的数量。
-- 进行中 CLAIMED/PICKED_UP/READY 等记录不进入 numerator 或 denominator。
-- 没有可判断终态补贴样本时返回 `null`，不伪装为 0% 救援率。
+## 4. 骑手容量
 
-### 5. Recovery sample/window
+### 4.1 阶段计算
 
-配置：`merchantExposureRecoveryWindowOrderCount` 和 `merchantExposureRecoveryMinimumSampleSize`。恢复查询只取最近 recovery-window 个可判断终态；样本不足、恢复 no-rider 未达阈值或恢复样本补贴健康度差时，当前降级状态保持不变。恢复逐级进行，不能靠一两单直接恢复 NORMAL。
+- 无 `firstNormalDeliveredAt`：TUTORIAL，个人容量 1。
+- 首单正常 DELIVERED 后同一 Asia/Shanghai 校园自然日：FIRST_DELIVERY_SAME_DAY，容量 2。
+- 下一校园自然日起：STANDARD，容量 5。
+- 5 后无自动升级。
 
-### 6. Customer catalog 泄漏
+首次正常送达事务写 `firstNormalDeliveredAt` 和唯一 FIRST_DELIVERY_UPGRADE 事件；首次在下一校园日读取/claim 时幂等写 NEXT_DAY_UPGRADE 事件。
 
-customer-safe DTO 不返回：
+### 4.2 Override、global cap 与并发
 
-- ownerId；
-- deliveryContributionMinor；
-- maxConcurrentOrders；
-- trialExposureOverrideBps；
-- exposureState；
-- pickupVerificationMode；
-- subsidyAccount；
-- order customerId/merchantId；
-- platformSubsidyMinor；
-- merchantDeliveryContributionMinor；
-- event operatorId/metadata。
+- Seed 全局 cap：10，位于版本化 ORDER_POLICY。
+- SUPER_ADMIN 可设置/清除 `capacityOverride`；每次写 RiderCapacityEvent，记录 actor、reason、前后容量和 metadata。
+- `effectiveCapacity = min(personalCapacity, platformMaxConcurrentOrdersPerRider)`。
+- claim 事务先锁 Rider，再计算 stage/override/global cap 与 active CLAIMED/PICKED_UP 数量。
+- 调低个人或 global cap 不取消已有任务，只阻止新 claim。
 
-集成测试 `returns customer-safe catalog and order DTOs without merchant internals` 对完整序列化 body 做负向断言。
+测试覆盖：新 rider 两个并发 claim 竞争唯一槽位仅一个成功；首单后同日 2、下一日 5；override/global min；个人/global 下调后已持单保留、新 claim 被拒；OPERATOR override 返回 403。
 
-### 7. Pre-pickup cancel 与原 deadline
+## 5. Rider order-pool DTO
 
-事务锁定 Rider、Order、DeliveryTask；仅当前 rider、CLAIMED、未 pickup、ACTIVE assignment 可执行。只修改 assignment 结束状态、task 当前 rider/claimedAt 和 order pool status；不更新 firstPublishedAt、claimDeadline、finalUserWarningAt、价格、补贴或 tip。
+`GET /delivery-tasks/available` 和 rider task response 返回显式 DTO：
 
-如果释放时原 deadline 已到，事务内立即调用固定 deadline 失败逻辑，进入 NO_RIDER_ACCEPTED。两种行为均有集成测试。
+- `riderGuaranteedPayoutMinor`；
+- pickup merchant、locationName、region；
+- destination label snapshot、region、location；
+- totalQuantity、lineItemCount；
+- foodTypes、handlingTags；
+- preparation/status/deadline 等既有履约事实。
 
-### 8. 日内、7 天、warning/cooldown 与时区
+取餐/目的地使用 Order 快照，基础资料后改不会漂移历史订单。负向测试确认 DTO 不含 customerId、customer fee、rider base、merchant rescue、platform subsidy 或 platform contribution。未做地图、路线或拼单建议。
 
-- `campusDay()` 使用配置时区，当前默认 Asia/Shanghai；测试覆盖 UTC 15:59/16:01 的跨校园自然日。
-- 每次取消写不可变 RiderCancellationEvent：campusDay、dailyCount、rollingCount、warningIssued。
-- 当日第 1 次只记录；第 2 次 warning + 到下一校园日零点的 SAME_DAY pause。
-- rolling window 由配置天数计算：第 2 个 warning 触发 warning cooldown；warning 未达到第 2 次但累计取消达到阈值时触发 cancellation cooldown，不补记 warning。
-- 所有阈值/时长来自 BusinessConfig。
+## 6. Item classifier / Jev
 
-### 9. Pause/cooldown 对已持订单
+- `FoodType`：DRINK/RICE_MEAL/NOODLE/SOUP/CAKE_DESSERT/OTHER/UNKNOWN。
+- OrderItem 分开保存原始商品名、商家分类、AI 建议、tags、source/version/confidence。
+- deterministic classifier 根据有限关键词产生低风险建议；adapter 抛错时 `classifyItemSafely()` 回退 MANUAL_FALLBACK/UNKNOWN。
+- classifier 失败的集成测试仍成功创建订单；原始事实保留，金额保持 pricing policy 结果。
+- classifier 输出没有被容量、责任、处罚、接单资格或曝光模块读取。
 
-限制检查只存在于 `claimTask` 的新 claim 路径。创建限制不更新或结束其他 CLAIMED/PICKED_UP task。集成测试先保留一个已持 task，再触发暂停，证明已持 task 仍为 CLAIMED，而新 claim 返回 409。
+真实 Jev：**未激活**。
 
-### 10. Compensation obligation 与资金来源
+## 7. 配送价格语义与 migration
 
-`CompensationObligation` 保存 required/current-order/other-unwithdrawn/voluntary/platform-advance/refund/outstanding/status/actor/reason；`CompensationAllocation` 逐笔关联 obligation 和可选 RiderSettlement。
+### 7.1 新语义
 
-`RiderSettlement.reservedMinor` 支持部分冻结。事务按固定 id 顺序锁定该 rider 的 settlement，使用 `amountMinor - reservedMinor` 计算可用额，并逐笔 reservation；数据库约束保证 reserved 在 `[0, amount]`，并发两笔 obligation 的集成测试证明总 reservation 不超过总余额。
+- `merchantBaseDeliveryPriceMinor`：参考输入，不是真实商家出资。
+- `customerDeliveryFeeMinor`：用户承担的基础配送费。
+- `riderBasePayoutMinor`：骑手基础保证收益。
+- `merchantRescueContributionMinor`：商家真实追加资金。
+- `customerRiderTipMinor`：用户红包。
+- `platformSubsidyMinor`：平台补贴。
+- `riderGuaranteedPayoutMinor`：骑手当前保证总收益。
+- `deliveryPlatformContributionMinor`：配送部分平台贡献。
 
-### 11. Refund-and-close 组成与 RiderTip 独立
+Runtime 公式：
 
-customer refund = `itemSubtotalMinor + customerDeliveryFeeMinor`，不包含 `customerRiderTipMinor`、商家出资或平台补贴。第一版为内部退款事实，不调用支付网关。
+`guarantee = riderBase + merchantRescue + tip + subsidy`
 
-退款事务只写 `customerRefundMinor`/`exceptionCompensationMinor`，不会清零、撤销或重算 RiderTip。集成测试在 tip=30 时执行 refund-and-close，随后仍为 30。
+`deliveryPlatformContribution = customerDeliveryFee - riderBase - subsidy`
 
-### 12. Platform advance/outstanding
+`platformRevenue = existing item commission fact + deliveryPlatformContribution`
 
-自愿支付与可 reservation 的本单/其他未提现资金不足时：
+商品佣金最终规则仍未决定；本轮未修改既有 commission 配置语义。
 
-- 差额写 `platformAdvancedMinor`；
-- 同额写 `outstandingMinor` 表示未结事实；
-- 用户退款事实立即完成，不等待 rider 补足。
+### 7.2 旧字段迁移
 
-未实现未来收入自动抵扣、自动停单、无限负余额或长期追偿。管理员幂等 release reservation 后，平台承担被释放部分并清零 rider outstanding。
+`20260926000400_capacity_pool_pricing`：
 
-### 13. Exactly-one-active-handler
+- 旧 merchant/order `merchantDeliveryContributionMinor` 复制为 reference/base 后置零；
+- 历史 pricing 的 rider base 由旧 guarantee - tip - subsidy 推导；
+- rescue 初始化为 0；旧 guarantee 保留；
+- merchant settlement 加回旧 reference amount，避免继续把参考价当真实商家欠款；
+- 已 FINALIZED Settlement merchant payable 同步加回 reference；
+- 保存 legacy migration input/reason；
+- 新建 rescue event、capacity event、location/classification snapshots。
 
-ExceptionCase 只有一个 `currentHandlerAdminId`。claim 使用 `updateMany where id + version + handler IS NULL + status OPEN` 的原子 CAS；成功后 version 自增。两管理员并发领取测试结果固定为一个 200、一个 409。
+旧 `MerchantDeliveryQuote` 与旧 snapshot 字段保留为 legacy audit compatibility，不参与新账务；新 rescue history 使用独立 `MerchantRescueContributionEvent`。
 
-### 14. 高风险动作幂等/版本保护
+`20260926000500_guaranteed_payout_snapshot` 增加显式 `riderGuaranteedPayoutMinorAtClaim`。
 
-- claim/release/transfer/takeover/escalate/non-economic resolve：version/CAS + transaction。
-- refund/freeze/close：case row lock + unique case obligation + unique idempotencyKey + transaction。
-- settlement reservation：row lock + reservedMinor + allocation unique/index/DB checks。
-- release reservation：case row lock + unique nullable releaseIdempotencyKey + releasedAt + transaction。
-- 并发重复 refund、并发不同 obligation 争抢余额、重复 release 均有集成测试。
+`20260927000100_drop_item_classification_backfill_defaults` 只移除历史回填默认值，使新 runtime 必须显式保存分类事实。
 
-### 15. `/admin/**` 权限矩阵
+## 8. Merchant rescue 100% pass-through
 
-| Endpoint | OPERATOR | SUPER_ADMIN |
-|---|---:|---:|
-| GET/PUT `/admin/business-configs/:key` | 禁止 | 允许 |
-| POST `/admin/orders/:orderId/platform-subsidies` | 禁止 | 允许 |
-| GET `/admin/merchants/:merchantId/fulfillment-risk` | 禁止 | 允许 |
-| POST `/admin/merchants/:merchantId/exposure/evaluate` | 禁止 | 允许 |
-| PUT `/admin/users/:userId/admin-profile` | 禁止 | 允许 |
-| GET/POST `/admin/riders/:riderId/restrictions` | 禁止 | 允许 |
-| PATCH `/admin/rider-restrictions/:restrictionId` | 禁止 | 允许 |
-| POST `/admin/orders/:orderId/exception` | 允许 | 允许 |
-| GET `/admin/exception-cases[/:caseId]` | 允许 | 允许 |
-| POST case `/claim` | 允许 | 允许 |
-| POST case `/release` | 自己处理的 case | 允许接管范围 |
-| POST case `/transfer` | 自己处理的 case | 允许 |
-| POST case `/escalate` | 自己处理的 case | 允许 |
-| POST case `/resolve` | 自己处理的标准结果 | 允许 |
-| POST case `/release-compensation` | 自己处理的 case | 允许 |
-| POST case `/takeover` | 禁止 | 允许 |
+兼容 endpoint `/merchant/orders/:orderId/delivery-quote` 内部已迁移为 rescue contribution；OpenAPI 主字段为 `newRescueContributionMinor`，`newMinor` 仅为 deprecated alias。
 
-Generic order/pricing/timeline admin access仅 SUPER_ADMIN；OPERATOR 通过 case detail 获得处理该异常所需的显式 DTO、时间线、证据和订单级资金事实。
+- 仅未 claim 且未过原 deadline 可增加；不能下降或原值重写。
+- 保留 cooldown、CAS version、row lock、history、actor/reason。
+- 增量 X：merchant rescue +X、merchant settlement -X、rider guarantee +X；platform contribution 不变。
+- 不更新 firstPublishedAt/claimDeadline。
 
-### 16. 普通管理员是否能真正处理
+测试证明 rescue +50 后 guarantee 220→270、merchant settlement 1900→1850、platform contribution 保持 100；下降到 40 被拒；claim 原子快照 rescue=50。
 
-能。OPERATOR 可自行领取、查看 detail、请求材料、作出 responsibility-undetermined/continue/wait 等人工判断、执行系统计算金额的 refund-and-close、释放 reservation、转交或升级。测试覆盖 OPERATOR 直接完成人工“证据不足”结论及标准退款，不要求所有案件升级 SUPER_ADMIN。
+## 9. Tip、subsidy 与 platform contribution
 
-### 17. Jev/AI 状态
+- Tip +X：customer tip +X、guarantee +X、platform contribution 不变。
+- Subsidy +X：platform subsidy +X、guarantee +X、platform contribution -X；原预算、步长、间隔和单订单上限继续执行。
+- Base/reference 不进入 merchant real funding，也不进入 guarantee 求和。
 
-**adapter/hook ready, not active**。
+集成测试最终快照：customer fee 320、rider base 220、rescue 50、tip 30、subsidy 50、guarantee 350、platform contribution 50。
 
-当前运行的是 deterministic classifier；manual fallback 可用。没有外部 Jev 请求、凭据或公网测试。classifier result 与最终 resolution 分字段保存。AI/分类器没有资金、责任、处罚或限制执行权限。
+## 10. Pricing policy
 
-### 18. 验证结果
+第一版 `ConfiguredDeliveryPricingPolicy` 为确定性、可替换 policy。
 
-- Docker Desktop：首次检查未运行；按 AGENTS.md 仅执行一次安全 `docker desktop start`，之后 `running`。
-- Docker Engine：ServerVersion `29.8.0`。
-- destructive Docker recovery：未执行；未删除项目 volume/data。
-- current DB migrate/status：11 migrations，up to date。
+实际生效 inputs：
+
+- global default customer fee；
+- global default rider base；
+- merchantId 对应的 SUPER_ADMIN override；
+- totalQuantity（额外件数增量）。
+
+已记录但 reserved/not active：
+
+- merchant base/reference price；
+- merchant category；
+- pickup region；
+- destination region；
+- suggested foodType。
+
+这些 reserved inputs 写入 snapshot，但不影响当前金额，特别是 AI foodType 不影响钱。配置校验禁止 default、quantity increment 或 merchant override 产生负基础贡献，并校验 merchant UUID/重复项。
+
+Pricing config 复用版本化 BusinessConfig + Audit；OPERATOR 写入 403，SUPER_ADMIN 可写。Seed 300/200/每额外件 20 等均明确是 DEMO，不是永久商业参数。
+
+## 11. 角色资金隔离
+
+- Customer：item subtotal、自己的 customer fee/tip/refund；看不到 rider base、rescue、subsidy、spread。
+- Merchant：自己的 base/reference、rescue current/version/history；看不到 customer fee/tip、platform subsidy。
+- Rider：订单池只看 guaranteed payout 和履约决策事实，不看资金来源/spread。
+- SUPER_ADMIN：完整 pricing、legacy audit、rescue/tip/subsidy/snapshot。
+
+完整 serialized response 有负向测试。
+
+## 12. Migration、Docker 与验证
+
+新增 migration：
+
+1. `20260926000400_capacity_pool_pricing`
+2. `20260926000500_guaranteed_payout_snapshot`
+3. `20260927000100_drop_item_classification_backfill_defaults`
+
+最终结果：
+
+- 当前数据库：14 migrations，up to date。
+- 空库：14 migrations 全量成功。
+- 空库 Seed：连续两次成功。
+- Prisma migration/schema drift：`No difference detected.`
 - typecheck：通过。
-- unit tests：6 files / 18 tests 通过。
-- PostgreSQL integration：2 files / 44 tests 通过。
+- unit：9 files / 24 tests 通过。
+- PostgreSQL integration：3 files / 54 tests 通过。
 - build：通过。
-- OpenAPI：新 exception/rider/admin paths 在集成测试中存在，权限测试通过。
-- empty DB：从零执行全部 11 migrations 成功。
-- empty DB Seed：连续两次成功。
-- migration/schema drift：`No difference detected.`
-- 临时 verify/shadow 数据库仅为本轮创建，验证后删除；项目数据库和 Docker volume 未删除。
+- OpenAPI：capacity、rescue compatibility 和既有权限路径在集成测试中验证。
 
-### 19. 已知问题与刻意未实现
+Docker：本轮首次 preflight 为 running，ServerVersion `29.8.0`。最终回归前 engine 曾停止，导致 Prisma `Schema engine error`；按 AGENTS.md 仅执行一次安全 `docker desktop start`，随后 postgres healthy、全部测试通过。未 factory reset、clean/purge、删除 volume 或数据目录。
 
-- stable-hash TRIAL 只是 provisional 第一版，不是永久产品规则。
-- exposure evaluate 不是后台自动批处理；由 SUPER_ADMIN 显式触发。
-- timeRisk 和 exceptionCounts 不参与 exposure 自动降级，前者只作用户提示，后者等待责任归因规则。
-- minor damage/delay 若双方私下协商一致无需建 case；只有主动调用异常 API 才记录正式 case。
-- voluntary payment、customer refund、platform advance 当前都是内部账务事实，没有真实 wallet/payment gateway。
-- 平台垫付后的追偿、未来收入抵扣和恢复接单规则未实现。
-- Admin 第一版只有 level，没有更细 capability/二次审批。
-- 没有真实 Jev、自动下派、SLA、完整 UI、真实媒体存储或微信登录。
-- 未定义严重餐损/丢失固定责任比例或商家分摊。
+临时 verify/shadow 数据库仅为本轮创建，验证后删除；项目数据库和 volume 未删除。
 
-## 5. 测试覆盖与主要文件
+## 13. 权限
 
-- 审核缺口策略：`merchant-risk/*`、`catalog/visibility.ts`、`catalog-visibility.test.ts`、`policies.test.ts`。
-- 角色 DTO：catalog/order/delivery/pricing/settlement/exception services 与 `exception-flow.test.ts` 负向断言。
-- 骑手取消/限制：`riders/restrictions.ts`、`riders/routes.ts`。
-- 异常池：`exception-cases/service.ts`、`exception-cases/routes.ts`。
-- 赔付：`compensation/service.ts`。
-- 分类：`exceptions/classifier.ts`。
-- 端到端安全测试：`tests/integration/exception-flow.test.ts`。
+- ORDER_POLICY（含 global capacity / pricing defaults / merchant overrides）：SUPER_ADMIN 写；OPERATOR 403。
+- 单 rider capacity override：SUPER_ADMIN；OPERATOR 403；Rider 只读自己的 capacity/events。
+- Merchant rescue：仅订单所属 Merchant，未 claim/未过期/只增。
+- Platform subsidy：SUPER_ADMIN，继续受预算策略限制。
+- Item classifier：无高风险写权限，仅订单创建时保存建议。
 
-本轮完成后停止，未进入微信登录、真实支付、自动下派或下一阶段设计。
+## 14. Intentional omissions / unresolved
+
+- 没有真实 Jev runtime integration。
+- 没有 category/region/foodType 金额矩阵；这些输入仅 snapshot/reserved。
+- 没有成熟动态定价、统计优化或机器学习定价。
+- 没有 5 之后自动升级或异常自动降容量。
+- 没有路线规划、导航或自动拼单。
+- 没有真实支付、提现或退款网关。
+- 用户配送费、rider base、merchant/category/region 正式数值和长期算法仍待真实运营数据确认。
+- 商品佣金、支付通道费、税费的最终口径未决定。
+
+本轮完成后停止，未自行进入下一阶段。
