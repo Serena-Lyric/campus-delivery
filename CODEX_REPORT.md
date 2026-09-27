@@ -2,225 +2,207 @@
 
 ## 1. 任务、提交与结论
 
-- 任务：执行根目录 `CODEX_TASK.md`，只修复 `AUDIT_HANDOFF_2026-09-27.md` 已确认可修复的代码、测试、migration 与文档问题。
-- 同步后的起始提交：`98dfbfd04f99e33dd3bd06ca6bb957f322c01b7d`（`docs: assign audited safety and consistency fixes`）。
-- 实现结束提交：`9b648de3845355ee383ae0fb477a6207d5884969`（`fix: close audited safety and consistency gaps`）。
-- 分支：`main`；实现提交与本报告提交使用普通 push，不使用 force push。
-- 工作树开始时干净；未 reset、discard、checkout-away 或覆盖既有未提交工作。
+- 任务：执行最新 `CODEX_TASK.md`，修复 `AUDIT_SECOND_PASS_2026-09-27.md` 确认的严重异常状态机、异常入口、订单池商家快照与文档漂移。
+- 同步后的起始提交：`180d67c5d5fba6b0680ac6c9688a6e73ad23c757`（`docs: assign second-pass audit fixes`）。
+- 实现结束提交：`2c458b6349a934bec497f54ce75491a9319a74d8`（`fix: close severe exception state gaps`）。
+- 分支：`main`；实现与报告使用普通 push，不使用 force push。
+- 开始时工作树干净；未 reset、discard、checkout-away 或覆盖既有未提交工作。
 
-本轮 `CODEX_TASK.md` 第 1–12 项均已完成对应的 runtime/test/documentation 修补。商家初始配送金额真实结算语义仍待 W/真实运营经验验证；本轮没有把当前 reference-only runtime 升级为产品事实，也没有进入定价算法、商家结算模型或下一阶段功能。
+本轮任务 1–9 已完成对应 runtime、migration、test 与 truth-source 修补。商家初始配送金额、严重失败订单 rider base 是否 earned、平台垫付长期追偿等未决事项没有被修改或重新解释。
 
 ## 2. Implementation truthfulness
 
 ### Enforced behavior
 
-- 正常默认配置 `platformCommissionBps=0`；默认订单不扣商品佣金。
-- compensation reservation release 只解冻 reservation，释放金额继续形成 platform advance/outstanding，义务不因 release 自动结清。
-- public rider compensation API 拒绝非零、无可验证资金来源的 `voluntaryPaymentMinor`。
-- rider/customer remake participant actions 受 ExceptionCase 状态机约束，不能越过 ESCALATED。
-- ESCALATED case 只能 takeover/reassign 给 SUPER_ADMIN，但发起人可以指定另一位 SUPER_ADMIN。
-- Item classifier 在订单写事务外执行；写事务重新校验商品事实，变化时拒绝创建。
-- Exception classifier 抛错时 case 仍以 MANUAL_FALLBACK 创建。
-- rider order-pool 只返回稳定 id 与订单地点快照，不混入可变 live 名称。
+- 通用 exception endpoint 和 service 都拒绝 `SEVERE_FOOD_DAMAGE / FOOD_LOST`；severe self-report 只能由责任骑手在 PICKED_UP 后通过 dedicated route 创建。
+- Severe order 送达前检查该订单所有 severe cases；每一条都必须是 customer-confirmed `REMAKE_AND_CONTINUE` 才能放行。
+- Admin `CONTINUE_FULFILLMENT` 不能解除 severe delivery block；非 severe case 仍可使用该普通结果。
+- Remake reject 根据 handler 恢复为 IN_PROGRESS 或 OPEN，并清除陈旧 resolution metadata。
+- Public admin resolve 不接受 `ESCALATED_OTHER`；真正升级必须走 audited `/escalate`。
+- `WRONG_ADDRESS` 只记录 ExceptionEvent，不自动创建 ExceptionCase 或改变订单状态。
+- Rider order-pool 返回订单创建时的 merchant name/pickup/destination snapshots 与稳定 ids。
 
 ### Data / telemetry available
 
-- Exception/item classifier 的 source、version、confidence 与 typed result。
-- Compensation reservation、platform advance、outstanding、allocation 与 release audit。
-- Rider `firstNormalDeliveredAt`、capacity stage 与事件。
-- Pricing inputs snapshot 继续保存 merchant/category/region/foodType 等事实。
+- WRONG_ADDRESS 结构化事实继续保留；后续 DELIVERY_DISPUTE 可独立创建 admin case。
+- Severe cases、participant proposal/response、handler、version 与 action audit 继续保留。
+- `Order.pickupMerchantNameSnapshot` 保存创建时商家显示名称。
 
 ### Policy hook / placeholder
 
-- 商品 commission 字段、配置和计算 plumbing 仍存在，但默认值为 0；正式费率未决定。
-- Item/Exception classifier adapter 已有安全边界，但真实 Jev endpoint/credential/network adapter 未激活。
-- Pricing policy 仍只实际使用 global defaults、merchant override 与 quantity；merchant initial amount、category、region、foodType 等输入仍为 reserved/not active。
+- `ESCALATED_OTHER` 数据库 enum 为历史兼容保留，但 public resolve 不可使用。
+- Item/Exception classifier 仍只有 deterministic/manual safe fallback；真实 Jev 未激活。
+- Pricing policy 的 merchant initial/category/region/foodType 等输入仍为 reserved/not active。
 
 ### Not implemented / intentionally unresolved
 
-- 商家初始配送金额是纯 reference、商家真实成本还是混合概念，以及是否从商品款扣除、如何支付、pre-claim 是否可降低。
-- 正式商品佣金、支付通道费、税费与完整平台贡献口径。
-- 平台垫付后的长期追偿、未来收入自动抵扣、write-off、钱包或外部支付。
-- 严重异常未正常送达时 rider base payout 是否 earned；本轮没有修改当前相关路径。
-- 真实 Jev、真实退款/支付/提现、成熟动态定价、5 单后自动升级与异常自动降容量。
+- 商家初始配送金额是真实商家成本、纯 reference 还是混合概念，以及 50→45 假设与 pre-claim 完整调价规则。
+- 严重异常未正常送达时 rider base payout 是否 earned。
+- 平台垫付后的长期追偿、future-income deduction、write-off、真实钱包/支付。
+- 正式商品佣金、支付通道费、税费、真实 Jev、动态定价、5 单后自动升降容量。
 
-## 3. 第 1 项：未确认商品佣金默认归零
-
-### Runtime
-
-- `demoPolicy.platformCommissionBps` 从 500 调整为 0。
-- Seed order pricing 的 `platformCommissionMinor` 改为 0，`merchantSettlementMinor` 恢复为完整商品小计。
-- 新 migration `20260927000200_audit_handoff_safety_fixes` 将当前 active `ORDER_POLICY.platformCommissionBps` 中性化为 0；不修改旧 migration 文件。
-- Commission 字段/配置能力保留，明确只是未来 policy hook。
-
-### Tests
-
-- 默认两商品订单断言 `platformCommissionMinor=0`、`merchantSettlementMinor=2000`。
-- 完成订单断言 `merchantPayableMinor=2000`，平台收入只含当前配送贡献 100，不凭空产生 100 商品 commission revenue。
-- 空库连续 Seed 后直接查询 active commission 为 0。
-
-## 4. 第 2 项：reservation release 不再隐式核销
+## 3. 任务 1：关闭通用 severe report 绕过
 
 ### Runtime
 
-- `releaseCompensationReservations()` 仍幂等、version/status guarded、事务化并审计。
-- 释放 settlement reservation 后：
-  - reservation bucket 清零；
-  - `platformAdvancedMinor += releasedMinor`；
-  - `outstandingMinor += releasedMinor`；
-  - obligation 保持 `PARTIALLY_FUNDED`；
-  - `resolvedAt` 保持 null。
-- release 不再把 obligation 标为 `RESOLVED`，也不再将 outstanding 清零；未新增 write-off 或追偿规则。
+- 通用 `/orders/:orderId/exceptions` OpenAPI schema 排除 severe damage/loss。
+- `createExceptionEvent()` 同时在 service boundary 返回 `SEVERE_EXCEPTION_REQUIRES_DEDICATED_ROUTE`，防止非 HTTP 调用绕过。
+- 新 `createSevereRiderExceptionEvent()` 在创建 event/case 的同一事务内验证：actor 是 rider、类型是 severe、当前 DeliveryTask 责任 rider 匹配、task 已 PICKED_UP。
+- Dedicated `/rider/orders/:orderId/severe-exception` 使用该事务内集中校验，消除旧的“先查再另事务创建”窗口。
 
 ### Tests
 
-- 精确覆盖已有 outstanding 1570 + 释放 reservation 750 → platform advance/outstanding 都为 2320。
-- 覆盖本单与其他未提现 settlement reservation 全部释放且 settlement `reservedMinor=0`。
-- 两个相同 idempotency key 的并发 release 都返回成功，但只生成一个 `RESERVATION_RELEASED` action，金额不重复增加。
+- Customer 经通用 endpoint 提交 severe 被拒且不创建 event/case。
+- 已 claim 但未 pickup 的 rider 经通用 endpoint 提交 FOOD_LOST 被拒且不创建事实。
+- 责任 rider pickup 后走 dedicated route 成功创建 severe case。
 
-## 5. 第 3 项：禁止无资金支撑的 voluntary payment
+## 4. 任务 2–3：封死 severe continue 与多 case 覆盖
 
 ### Runtime
 
-- `voluntaryPaymentMinor > 0` 在进入经济事务前返回 400 `VOLUNTARY_PAYMENT_UNFUNDED`。
-- 0/省略该字段仍表示骑手选择原价赔付业务动作；退款继续由可验证 settlement reservation + platform temporary advance 支撑。
-- OpenAPI 字段说明明确：真实 rider payment source 上线前暂时只允许 0。
+- `resolveNonEconomicCase()` 对 severe + `CONTINUE_FULFILLMENT` 返回 `SEVERE_REMAKE_CONFIRMATION_REQUIRED`。
+- `deliverTask()` 查询订单全部 severe cases，不再只取最新一条。
+- 每个 severe case 的唯一放行组合为：`status=RESOLVED` 且 `resolutionType=REMAKE_AND_CONTINUE`。
+- `CONTINUE_FULFILLMENT`、RESPONSIBILITY_UNDETERMINED、OPEN、WAITING、IN_PROGRESS、ESCALATED 等都不能让 severe case 放行。
 
 ### Tests
 
-- non-zero 请求返回稳定错误码；不创建 obligation/allocation、不改变 case 状态，也不能减少 platform advance/outstanding。
-- 正常省略字段的赔付、并发幂等与 reservation 测试继续通过；没有 `RIDER_VOLUNTARY_PAYMENT` allocation。
+- Operator claim severe case 后尝试 CONTINUE 被拒，deliver 仍被阻止；rider proposal + customer accept 后可 deliver。
+- 较早 severe case 仍 OPEN、较新 case 已 REMAKE_AND_CONTINUE 时 deliver 仍被阻止；两条均取得 customer acceptance 后才可 deliver。
+- `MINOR_DAMAGE_OR_DELAY` 的普通 CONTINUE_FULFILLMENT 仍能 resolve 并继续 deliver，未误伤非 severe 流程。
 
-## 6. 第 4–5 项：ExceptionCase participant transitions 与 ESCALATED takeover
+## 5. 任务 4：remake reject handler/state invariant
 
 ### Runtime
 
-- 状态机新增 `RIDER_PROPOSE_REMAKE`、`CUSTOMER_ACCEPT_REMAKE`、`CUSTOMER_REJECT_REMAKE`。
-- propose 只允许 OPEN/IN_PROGRESS/WAITING；customer response 只允许 WAITING。
-- ESCALATED 后 rider proposal、customer accept/reject 都返回 `CASE_STATE_CONFLICT`，不会修改 proposal 或 case。
-- ESCALATED takeover target 必须具有 `AdminProfile.level=SUPER_ADMIN`；不再要求 target 等于发起 actor。
+- Rider propose remake 进入 WAITING 时清理旧 `resolutionType/resolutionNote/resolvedAt`。
+- Customer reject 时：
+  - 有 handler → 回 IN_PROGRESS，保留原 handler/claimedAt；
+  - 无 handler → 回 OPEN，并保证 handler/claimedAt 为 null；
+  - 两条路径都清理 resolution metadata，ESCALATED guard 保持不变。
 
 ### Tests
 
-- ESCALATED → rider propose 被拒，case 保持 ESCALATED，proposal 不创建。
-- pending remake → takeover/administrative escalate → customer accept 与 reject 均被拒，proposal 保持 PENDING，case 保持 ESCALATED。
-- 正常 proposal/accept 继续完成 REMAKE_AND_CONTINUE；正常 reject 回 OPEN。
-- Super Admin A 可将 ESCALATED case 交给 Super Admin B；以 OPERATOR 为 target 被拒；`TAKEN_OVER` action 记录 actor/next handler/reason。
+- Operator claim → WAITING_FOR_INFORMATION → rider propose → customer reject：case 回 IN_PROGRESS、handler 不变、旧 WAITING metadata 清空，原 operator 可继续合法 resolve。
+- 无 handler proposal → reject：case 回干净 OPEN 状态，随后普通 operator 可按新 version 重新 claim。
 
-## 7. 第 6–7 项：truth-source 与 production migration 约束
+## 6. 任务 5：禁止 ESCALATED_OTHER 伪升级
 
-- `PRODUCT_DECISIONS.md`、`IMPLEMENTATION_PLAN.md`、`DELIVERY_PRICING_DECISIONS.md`、`ROLE_RESPONSIBILITIES.md`、`EXCEPTION_HANDLING.md`、README 已同步：
-  - 商家初始配送金额真实资金语义仍未确认；
-  - 当前 reference-only 行为是 provisional runtime，不是产品事实；
-  - merchant rescue 新增出资第一版 100% 给 rider；tip 100% 给 rider；platform subsidy 独立；
-  - 普通固定地址/位置节点正常履约无需联系/等待；地址错误属于用户责任，额外转送自愿协商；
-  - 只有特殊本人交接/强制交付码场景的失联边界仍未决定；
-  - non-zero voluntary payment 是支付能力未实现前的安全限制，不是未来支付方式决定。
-- `AGENTS.md` 明确：真实生产后不得用普通 migration 静默原地重写已 FINALIZED 财务事实或已生效历史配置；应使用版本化 correction/event/明确迁移策略保留审计历史。
-- 旧 `20260926000400_capacity_pool_pricing` 明确标记为 **pre-production semantic rewrite**，不是未来生产财务 migration 范式。本轮未修改该历史 migration，也没有为 demo 历史构造复杂反迁移。
+### Runtime
 
-## 8. 第 8 项：rider capacity history backfill
-
-### Migration
-
-`20260927000200_audit_handoff_safety_fixes` 仅在 `Rider.firstNormalDeliveredAt IS NULL` 时回填最早可证明的正常完成时间。可靠条件为同一 assignment/task/order 同时满足：
-
-- `DeliveryAssignment.status = COMPLETED`；
-- `DeliveryTask.status = COMPLETED`；
-- `DeliveryTask.deliveredAt IS NOT NULL`；
-- `Order.status = DELIVERED`。
-
-CANCELLED、EXCEPTION、ABANDONED、无 deliveredAt 或状态不一致的记录不参与回填；已有非 null 事实不被覆盖。
+- Public `/admin/exception-cases/:caseId/resolve` schema 排除 `ESCALATED_OTHER` 与 participant-only `REMAKE_AND_CONTINUE`。
+- Service 仍有 `USE_ESCALATION_ACTION` defense-in-depth，防止内部调用把 ESCALATED_OTHER 当终态。
+- 真正升级继续使用 `/escalate`，写 `status=ESCALATED`、version 与 action audit，随后由 Super Admin takeover/reassign。
 
 ### Test
 
-- Integration test 创建真实 completed assignment + completed task + delivered order，清空 rider facts 后执行 migration SQL；有历史 rider 回填并在下一校园自然日解析为 STANDARD/5，无历史 rider 仍为 null/TUTORIAL。
+- OPERATOR 的 ESCALATED_OTHER public resolve 返回稳定 validation rejection，case 保持 IN_PROGRESS/version 不变；随后 `/escalate` 正常进入 ESCALATED。
 
-## 9. 第 9–10 项：Jev 安全基础设施与 operator routing
+## 7. 任务 6：恢复不可漂移的取餐商家名称
 
-### Exception classifier
+### Schema/runtime
 
-- 新增 `classifyExceptionSafely()`；adapter throw/timeout-like error 时回到 `ManualFallbackClassifier`。
-- case 保存 fallback 的真实 `source=MANUAL_FALLBACK`、`version=1`、`confidence=0`，而不是错误记录失败 adapter 的来源。
-- deterministic priority 仍保留事实排序，但 `routeSuggestion` 默认 `OPERATOR_POOL`；严重餐损/丢失/配送争议名称本身不再建议超管。
-- suggestion 只保存，不自动 claim/escalate/执行资金动作。
+- `Order` 新增非空 `pickupMerchantNameSnapshot`。
+- `createOrder()` 与 Seed 在订单创建时快照 `Merchant.name`。
+- Rider DTO pickup 返回：
+  - stable `merchantId`；
+  - snapshot `merchantName`；
+  - snapshot `locationName` / `region`。
+- Destination 继续返回 stable `locationId` + snapshot label/region；未重新引入 live Merchant/CampusLocation name。
 
-### Item classifier
+### Migration
 
-- 产品事实先只读加载并在写事务外分类；remote-like adapter 不会在订单写事务/锁内等待。
-- 写事务重新查询并比较 merchant/category/name/category name/price/availability；分类期间事实变化时返回 `PRODUCT_FACTS_CHANGED`，不会拼接旧分类与新商品快照。
-- classifier throw 继续回 UNKNOWN/MANUAL_FALLBACK，不阻塞创建；classification 不影响 money/capacity/liability/penalty/eligibility/exposure。
+- 新增 `20260927000300_order_pickup_merchant_snapshot`，不修改旧 migration。
+- 对 pre-production 历史订单用当前 `Merchant.name` 做 best-effort backfill；无法匹配时写 `LEGACY_UNKNOWN` 后设 NOT NULL。
+- 该 backfill 只是历史缺失快照的兼容近似，不能证明订单创建时真实店名，也不是生产审计迁移范式。
 
-### Tests
+### Test
 
-- Unit 与 PostgreSQL integration 都覆盖 exception classifier throw 后 case 成功创建及 fallback metadata。
-- 可控 item fake classifier 在分类期间修改商品名；订单事务检测变化、拒绝创建且不残留订单，无长 sleep。
-- 真实 Jev 仍为 **hook only / not active**。
+- 创建订单后同时修改 Merchant.name、pickup CampusLocation.name 与 destination CampusLocation.name；rider pool 仍返回原商家/取餐点/目的地 snapshots 和稳定 ids，且不含三个 live 新名称。
 
-## 10. 第 11 项：rider order-pool 快照一致性
+## 8. 任务 7：WRONG_ADDRESS 不自动进入 admin pool
 
-- Rider DTO 不再同时返回 snapshot label 与 live merchant/location name。
-- pickup 返回稳定 `merchantId` + `pickupLocationNameSnapshot/pickupRegionSnapshot`。
-- destination 返回稳定 `locationId` + `destinationLabelSnapshot/destinationRegionSnapshot`。
-- 创建订单后修改 Merchant、pickup CampusLocation、destination CampusLocation 名称，rider pool 仍只显示创建时权威履约文本；回归测试同时断言三个 live 新名称均不存在。
-- Customer/internal funding 等敏感字段负向测试继续通过。
+### Runtime
 
-## 11. 第 12 项：deterministic item keyword priority
+- `createExceptionEventInternal()` 对 WRONG_ADDRESS 创建 ExceptionEvent、可绑定 evidence，但跳过 `openExceptionCase()`。
+- WRONG_ADDRESS 不进入 stopsDelivery、退款、处罚或商家风险归因路径，也不改变订单状态。
+- 后续真实投诉仍可通过 DELIVERY_DISPUTE 创建独立 ExceptionCase。
 
-- CAKE_DESSERT 关键词在泛化饮品关键词“奶”之前匹配。
-- 单元测试证明“奶油蛋糕” → `CAKE_DESSERT` + `CRUSH_RISK`。
-- 该 fallback 仍是低风险启发式；8000 confidence 不是已校准准确率，也未宣称完整 NLP/高准确率。
+### Test
 
-## 12. Requirement-to-code checklist
+- WRONG_ADDRESS 上报后 event 存在、case 数量为 0、订单仍 READY_FOR_RIDER。
+- 随后的 DELIVERY_DISPUTE 成功创建一条 admin case，原订单状态不被地址事实自动改写。
+
+## 9. 任务 8：产品与角色文档同步
+
+- `PRODUCT_DECISIONS.md`：暂停/冷却只阻止新 claim，不取消、不回池、不改变已持订单；WRONG_ADDRESS 明确为用户责任且不作为商家责任信号。
+- `ROLE_RESPONSIBILITIES.md`：骑手章节明确已持订单继续原履约/异常流程，并从待补充列表删除该已决边界。
+- README 同步暂停/冷却语义、WRONG_ADDRESS 事实入口、severe customer-confirmed remake、merchant snapshot 与 migration 限定。
+- `EXCEPTION_HANDLING.md` 明确 severe continue、WRONG_ADDRESS admin pool 与 audited escalation 边界。
+- `ORDER_POOL_DECISIONS.md` / `IMPLEMENTATION_PLAN.md` 明确 merchant name、pickup、destination 使用订单快照并保留稳定 ids。
+
+## 10. 任务 9：上一轮安全边界回归
+
+全量 PostgreSQL integration 继续通过以下既有行为：
+
+- default commission=0；
+- compensation release 保留 platform advance/outstanding，不 write-off；
+- non-zero rider self-reported payment 被拒；
+- terminal/ESCALATED guards 与 Super Admin A→B reassignment；
+- capacity 1→2→5、history backfill、global/override cap；
+- daily no-fault cancellation cap；
+- merchant rescue 与 user tip 100% pass-through、platform subsidy accounting；
+- item/exception classifier fallback，无真实 Jev dependency；
+- role-facing DTO funding isolation。
+
+## 11. Requirement-to-code checklist
 
 | Task | Runtime enforcement point | Verification |
 |---|---|---|
-| 1 commission=0 | `seed.ts`, active-config migration, `createOrder()` existing calculation receives 0 | create + delivered settlement integration, empty DB query |
-| 2 release semantics | `releaseCompensationReservations()` | exact funding identity + concurrent idempotency integration |
-| 3 voluntary funding | `refundAndCloseExceptionCase()` pre-transaction guard | stable 400/no ledger fact integration |
-| 4 participant transitions | state machine + `proposeRemake()` / `respondToRemake()` | escalated proposal/accept/reject + normal flows |
-| 5 super-admin reassignment | `takeoverExceptionCase()` target level guard | A→B success / OPERATOR reject |
-| 6 truth docs | root decision/role/README reconciliation | cross-document text audit |
-| 7 migration constraint | `AGENTS.md`, README | documented pre-production limitation |
-| 8 capacity backfill | new migration SQL | migration-SQL integration test |
-| 9 Jev safety | exception safe wrapper; order preclassification/revalidation | throw fallback + mutating fake integration |
-| 10 operator route | deterministic exception classifier | unit + stored integration result |
-| 11 snapshot DTO | `delivery/service.ts` explicit select/presenter | rename regression + negative DTO fields |
-| 12 cake priority | deterministic item classifier | unit regression |
+| 1 severe entry | general/dedicated schemas + `createExceptionEvent` / `createSevereRiderExceptionEvent` | customer/rider negative + dedicated positive integration |
+| 2 severe continue | `resolveNonEconomicCase`, `deliverTask` | admin continue rejected + customer remake accepted |
+| 3 all severe cases | `deliverTask` all-case query | older open + newer resolved regression |
+| 4 reject invariant | `proposeRemake`, `respondToRemake` | handler/no-handler flows + metadata assertions |
+| 5 fake escalation | public resolve schema + service guard | public reject + actual `/escalate` success |
+| 6 merchant snapshot | Order schema/create/DTO + migration | three-name rename regression |
+| 7 wrong address | `createExceptionEventInternal` case creation branch | fact/no-case/status + later dispute |
+| 8 docs | root truth/role/README/topic docs | cross-document text audit |
+| 9 regressions | unchanged runtime plus full suites | 28 unit + 70 PostgreSQL integration tests |
 
-## 13. Validation results
+## 12. Validation results
 
 ### Docker preflight
 
 - `docker desktop status`: running。
 - `docker info` ServerVersion: `29.8.0`。
-- 本轮未重启 Docker；未执行 factory reset、clean/purge、删除 volume 或用户数据目录。
+- 未重启 Docker；未执行 factory reset、clean/purge、删除 volume 或用户数据目录。
 
-### Targeted tests first
+### Targeted first
 
-- Targeted unit：3 files / 8 tests 通过。
-- Targeted PostgreSQL integration：3 files / 63 tests 通过；此前先成功应用新 migration 并 Seed。
+- Targeted state-machine unit：2 files / 6 tests 通过。
+- Targeted PostgreSQL integration：exception-flow + pricing-capacity，2 files / 43 tests 通过。
+- Public resolve schema 调整后再次单跑 exception-flow：33 tests 通过。
 
 ### Full validation
 
 - `pnpm typecheck`：通过。
 - `pnpm test`：10 files / 28 tests 通过。
-- `pnpm test:integration`：3 files / 63 tests 通过；包含 migrate deploy + Seed。
+- `pnpm test:integration`：3 files / 70 tests 通过，包含 migrate deploy + Seed。
 - `pnpm build`：通过。
-- Current DB `prisma migrate status`：15 migrations，schema up to date。
+- Current DB：16 migrations，schema up to date；`pickupMerchantNameSnapshot IS NULL` 数量为 0。
 - Migration/schema drift：`No difference detected.`
-- Empty DB：从空库顺序应用全部 15 migrations 成功。
+- Empty DB：全部 16 migrations 顺序应用成功。
 - Empty DB Seed：连续两次成功。
-- Empty DB post-check：15 个 migration 为 finished；active `platformCommissionBps=0`。
-- OpenAPI/权限：既有 docs-path 检查继续通过；OPERATOR/SUPER_ADMIN、rider/customer participant 与资金隔离路径由 PostgreSQL integration 覆盖。
-- 临时 shadow/empty verification databases 在验证后按明确名称删除；项目数据库与 Docker volume 未删除。
+- Empty DB post-check：16 migrations finished、snapshot null count=0、active `platformCommissionBps=0`。
+- OpenAPI/角色边界：general severe 与 public ESCALATED_OTHER 已从相应 request schema 排除；dedicated severe、admin escalation、participant、资金隔离路径由 PostgreSQL integration 验证。
+- 临时 shadow/empty verification databases 已按明确名称删除；项目数据库与 Docker volume 未删除。
 
-以上是本地验证结果，不等于独立 CI 验证；当前实现提交没有在本报告中声称存在独立 GitHub Actions run/status。
+上述为本地验证结果，不等于独立 CI 验证；本报告不声称实现提交已有独立 GitHub Actions status。
 
-## 14. Final omissions
+## 13. Intentional omissions / unresolved
 
-- 没有决定或改变商家初始配送费真实结算方式；“50 元商品、5 元配送、商家结算 45”仍只是待 W 验证的问题示例。
-- 没有新增 commission 比例、钱包、外部支付、自动追偿、future-income deduction 或 write-off。
-- 没有修补需要产品决定的“严重异常未正常送达时 rider base payout 是否 earned”。
-- 没有接真实 Jev、没有新增动态定价算法、没有修改 5 单后的升级/降级规则。
-- 没有自行进入下一阶段。
+- 没有决定或修改 merchant initial delivery funding；当前 reference-only runtime 仍是 provisional。
+- 没有决定 severe failure 未正常送达时 rider base payout 是否 earned。
+- 没有新增追偿、future-income deduction、write-off、钱包或外部支付。
+- 没有改变正式佣金、支付通道费、税费、真实 Jev、动态定价或 5 单后容量规则。
+- 没有删除历史兼容 enum/legacy 字段，也没有进入下一阶段产品设计。
