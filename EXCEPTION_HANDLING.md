@@ -28,6 +28,7 @@
 - 处理人释放、转交、超时接管、升级给超级管理员时，都必须记录前后处理人、时间和原因。
 - 案件进入 ESCALATED 后，骑手/用户的普通补餐提议与响应不能直接覆写案件状态；必须先由超级管理员通过有审计的合法接管恢复到可交互状态。
 - 退款、资金冻结、释放、订单结束等高风险动作必须具备幂等或版本保护，防止两个请求导致重复退款、重复冻结或重复结算。
+- Severe self-report 与正常送达必须按相同的 Order → DeliveryTask 锁顺序串行化；不能出现已 DELIVERED 后再提交未解决 severe case 的并发结果。
 - 超级管理员可以在有审计记录的前提下接管、释放或重新分配卡住的异常订单。
 
 ## 4. 异常分类与 Jev 辅助
@@ -77,6 +78,13 @@
 - 解除 rider settlement reservation 不等于平台最终核销。若用户已退款且平台仍垫付，对应 platform advance/outstanding 必须继续保留为未结事实。
 - 订单退款与用户骑手激励/红包机制保持独立。
 
+### 配送争议资金暂时冻结
+
+- `DELIVERY_DISPUTE` 未解决期间可以暂时 hold 对应 RiderSettlement。
+- Case 真正 terminal resolved 时，其 linked ExceptionEvent 同步标记 resolved；同一订单所有 DELIVERY_DISPUTE 都已解决后，才解除仅由 `DELIVERY_DISPUTE` 造成的 hold。
+- 未到 `pendingUntil` 恢复为 PENDING；已到期恢复为 AVAILABLE。已有 `reservedMinor` 保持不变，解除 dispute hold 不等于解除赔付 reservation。
+- WAITING、ESCALATED、OPEN/IN_PROGRESS 等非终态不得释放争议 hold；后台 sweep 只幂等修复明确由 DELIVERY_DISPUTE 造成且已无 unresolved dispute 的 HELD settlement，不触碰其他 hold reason。
+
 ### 无法协商/投诉
 
 - 进入异常订单池，由普通管理员领取。
@@ -91,7 +99,7 @@
 - 可以领取异常订单并在授权范围内处理。
 - 普通管理员承担大多数异常订单的人工判断，不是单纯的客服转发或模板执行角色。
 - 可以查看该异常所需的订单、证据、参与者和订单级资金事实。
-- 可以在既有规则内根据证据作出订单级处理判断，并执行系统预定义且已授权的动作，例如确认补餐继续、确认退款结束、等待补充材料、责任无法确定、升级超级管理员等。
+- 可以在既有规则内根据证据作出订单级处理判断，并执行系统预定义且已授权的动作，例如核对已由用户确认的补餐继续流程、确认退款结束、等待补充材料、责任无法确定、升级超级管理员等。
 - 升级必须使用有审计的 escalate 动作进入 `ESCALATED`；`ESCALATED_OTHER` 不能作为普通 terminal resolve 的替代入口。
 - 普通管理员可以处理“需要人判断但并不复杂”的案件；不应仅因为存在主观判断就自动升级超级管理员。
 - 普通管理员不应拥有一个可以绕过规则任意修改资金账本、改变全局政策或创造新处罚规则的万能入口。

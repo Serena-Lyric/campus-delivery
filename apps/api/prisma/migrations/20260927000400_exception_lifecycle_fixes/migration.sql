@@ -1,0 +1,1 @@
+ALTER TYPE "ExceptionCaseActionType" ADD VALUE 'REMAKE_REJECTED';

@@ -60,6 +60,16 @@ async function createExceptionEventInternal(
 ) {
   const { config } = await loadPolicyConfig(prisma);
   return prisma.$transaction(async (tx) => {
+    if (severeRiderReport) {
+      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${orderId}::uuid FOR UPDATE`;
+      const taskIdentity = await tx.deliveryTask.findUnique({
+        where: { orderId },
+        select: { id: true },
+      });
+      if (taskIdentity) {
+        await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${taskIdentity.id}::uuid FOR UPDATE`;
+      }
+    }
     const order = await tx.order.findUnique({
       where: { id: orderId },
       include: {

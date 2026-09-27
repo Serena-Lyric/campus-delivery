@@ -11,6 +11,7 @@ import { assertOrderAccess } from '../orders/access.js';
 import { conflict, forbidden, notFound } from '../shared/errors.js';
 import { createSevereRiderExceptionEvent } from './service.js';
 import { assertExceptionCaseAction } from '../exception-cases/state-machine.js';
+import { resolveLinkedExceptionEvent } from '../settlements/service.js';
 
 const severeTypes: ExceptionType[] = [ExceptionType.SEVERE_FOOD_DAMAGE, ExceptionType.FOOD_LOST];
 
@@ -127,13 +128,21 @@ export async function respondToRemake(
           version: { increment: 1 },
         },
     });
+    if (accept) await resolveLinkedExceptionEvent(tx, exceptionCase, now);
     await tx.exceptionCaseAction.create({
       data: {
         caseId,
-        type: accept ? ExceptionCaseActionType.RESOLVED : ExceptionCaseActionType.RELEASED,
+        type: accept ? ExceptionCaseActionType.RESOLVED : ExceptionCaseActionType.REMAKE_REJECTED,
         actorId: actor.id,
         reason: accept ? 'CUSTOMER_ACCEPTED_REMAKE' : 'CUSTOMER_REJECTED_REMAKE',
-        metadata: { proposalId: exceptionCase.remakeProposal.id },
+        metadata: {
+          proposalId: exceptionCase.remakeProposal.id,
+          resultingCaseStatus: accept
+            ? ExceptionCaseStatus.RESOLVED
+            : exceptionCase.currentHandlerAdminId
+              ? ExceptionCaseStatus.IN_PROGRESS
+              : ExceptionCaseStatus.OPEN,
+        },
       },
     });
     return { status };

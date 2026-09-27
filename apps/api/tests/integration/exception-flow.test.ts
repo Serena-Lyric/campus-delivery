@@ -12,14 +12,15 @@ import {
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import type { AppConfig } from '../../src/config.js';
-import { claimTask } from '../../src/delivery/service.js';
+import { claimTask, deliverTask } from '../../src/delivery/service.js';
 import { getMerchantFulfillmentMetrics } from '../../src/merchant-risk/service.js';
 import type { PolicyConfig } from '../../src/merchant-policy/policies.js';
 import { releaseExpiredCoolingOrders } from '../../src/orders/lifecycle.js';
 import { cancelBeforePickup } from '../../src/riders/restrictions.js';
 import { stableExposureBucket } from '../../src/catalog/visibility.js';
-import { createExceptionEvent } from '../../src/exceptions/service.js';
-import type { ExceptionClassifier } from '../../src/exceptions/classifier.js';
+import { createExceptionEvent, createSevereRiderExceptionEvent } from '../../src/exceptions/service.js';
+import { DeterministicExceptionClassifier, type ExceptionClassifier } from '../../src/exceptions/classifier.js';
+import { releaseAvailableRiderSettlements } from '../../src/settlements/service.js';
 import { demoPolicy, seedDatabase, seedIds } from '../../prisma/seed.js';
 
 const prisma = new PrismaClient();
@@ -35,6 +36,12 @@ const config: AppConfig = {
 };
 const headers = (userId: string) => ({ 'x-user-id': userId });
 const riderActor = { id: seedIds.riderAUser, role: 'RIDER' as const, riderId: seedIds.riderA };
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 describe('audit gaps, rider exceptions, and admin operations', () => {
   let app: Awaited<ReturnType<typeof buildApp>>;
@@ -114,6 +121,38 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect((await claim(value.taskId)).statusCode).toBe(200);
     expect((await pickup(value.taskId)).statusCode).toBe(200);
     return value;
+  }
+
+  async function deliveredOrder() {
+    const value = await pickedUpOrder();
+    const delivered = await app.inject({
+      method: 'POST', url: `/delivery-tasks/${value.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {},
+    });
+    expect(delivered.statusCode, delivered.body).toBe(200);
+    return value;
+  }
+
+  async function reportDispute(orderId: string, description: string) {
+    const response = await app.inject({
+      method: 'POST', url: `/orders/${orderId}/exceptions`, headers: headers(seedIds.customer),
+      payload: { type: 'DELIVERY_DISPUTE', description },
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    const exceptionEventId = response.json().id as string;
+    const exceptionCase = await prisma.exceptionCase.findUniqueOrThrow({ where: { exceptionEventId } });
+    return { exceptionEventId, caseId: exceptionCase.id };
+  }
+
+  async function resolveDispute(caseId: string, note: string) {
+    expect((await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/claim`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 0 },
+    })).statusCode).toBe(200);
+    const response = await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${caseId}/resolve`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 1, resolutionType: 'RESPONSIBILITY_UNDETERMINED', note },
+    });
+    expect(response.statusCode, response.body).toBe(200);
   }
 
   it('enforces stable TRIAL catalog exposure, explicit seed override, and hidden state', async () => {
@@ -395,6 +434,67 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect(await prisma.exceptionCase.count({ where: { orderId: ready.orderId } })).toBe(1);
   });
 
+  it('serializes severe reporting and delivery across the same Order then DeliveryTask locks', async () => {
+    const reportFirst = await pickedUpOrder();
+    const reportEntered = deferred();
+    const releaseReport = deferred();
+    const deterministic = new DeterministicExceptionClassifier();
+    const blockingClassifier: ExceptionClassifier = {
+      source: deterministic.source,
+      version: deterministic.version,
+      classify: async (input) => {
+        reportEntered.resolve();
+        await releaseReport.promise;
+        return deterministic.classify(input);
+      },
+    };
+    const reportPromise = createSevereRiderExceptionEvent(
+      prisma,
+      riderActor,
+      reportFirst.orderId,
+      { type: ExceptionType.FOOD_LOST, description: 'Report transaction owns the delivery boundary first' },
+      blockingClassifier,
+    );
+    await reportEntered.promise;
+    const blockedDelivery = deliverTask(prisma, riderActor, reportFirst.taskId, {});
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseReport.resolve();
+    await reportPromise;
+    await expect(blockedDelivery).rejects.toMatchObject({ code: 'SEVERE_EXCEPTION_UNRESOLVED' });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: reportFirst.orderId } })).status).toBe('PICKED_UP');
+    expect(await prisma.exceptionCase.count({ where: { orderId: reportFirst.orderId, status: 'OPEN' } })).toBe(1);
+
+    const deliveryFirst = await pickedUpOrder();
+    const deliveryLocked = deferred();
+    const releaseDelivery = deferred();
+    const deliveryPromise = deliverTask(
+      prisma,
+      riderActor,
+      deliveryFirst.taskId,
+      {},
+      new Date(),
+      config.campusTimeZone,
+      async () => {
+        deliveryLocked.resolve();
+        await releaseDelivery.promise;
+      },
+    );
+    await deliveryLocked.promise;
+    const lateReport = createSevereRiderExceptionEvent(
+      prisma,
+      riderActor,
+      deliveryFirst.orderId,
+      { type: ExceptionType.SEVERE_FOOD_DAMAGE, description: 'Delivery transaction owns the boundary first' },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseDelivery.resolve();
+    await deliveryPromise;
+    await expect(lateReport).rejects.toMatchObject({ code: 'SEVERE_EXCEPTION_STAGE_INVALID' });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: deliveryFirst.orderId } })).status).toBe('DELIVERED');
+    expect((await prisma.deliveryTask.findUniqueOrThrow({ where: { id: deliveryFirst.taskId } })).status).toBe('COMPLETED');
+    expect(await prisma.exceptionCase.count({ where: { orderId: deliveryFirst.orderId } })).toBe(0);
+  });
+
   it('records wrong address as a user-responsibility fact without opening an admin case', async () => {
     const ready = await createReady();
     const wrongAddress = await app.inject({
@@ -431,6 +531,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect((await app.inject({
       method: 'POST', url: `/exception-cases/${caseId}/remake-response`, headers: headers(seedIds.customer), payload: { accept: true },
     })).statusCode).toBe(200);
+    expect((await prisma.exceptionEvent.findFirstOrThrow({ where: { exceptionCase: { id: caseId } } })).resolvedAt).not.toBeNull();
     expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${ready.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {} })).statusCode).toBe(200);
   });
 
@@ -545,6 +646,10 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
       resolutionNote: null,
       resolvedAt: null,
     });
+    expect((await prisma.exceptionCaseAction.findMany({ where: { caseId } })).map((action) => action.type))
+      .toEqual(['CREATED', 'CLASSIFIED', 'REQUESTED_INFORMATION', 'REMAKE_REJECTED']);
+    expect((await prisma.exceptionCaseAction.findFirstOrThrow({ where: { caseId, type: 'REMAKE_REJECTED' } })).metadata)
+      .toMatchObject({ resultingCaseStatus: 'OPEN' });
     expect((await app.inject({
       method: 'POST', url: `/admin/exception-cases/${caseId}/claim`, headers: headers(seedIds.operator),
       payload: { expectedVersion: 2 },
@@ -581,6 +686,10 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
       resolutionNote: null,
       resolvedAt: null,
     });
+    const rejectAction = await prisma.exceptionCaseAction.findFirstOrThrow({ where: { caseId, type: 'REMAKE_REJECTED' } });
+    expect(rejectAction.metadata).toMatchObject({ resultingCaseStatus: 'IN_PROGRESS' });
+    expect(await prisma.exceptionCaseAction.count({ where: { caseId, type: 'RELEASED' } })).toBe(0);
+    expect((await prisma.exceptionEvent.findFirstOrThrow({ where: { exceptionCase: { id: caseId } } })).resolvedAt).toBeNull();
     const resolved = await app.inject({
       method: 'POST', url: `/admin/exception-cases/${caseId}/resolve`, headers: headers(seedIds.operator),
       payload: { expectedVersion: rejected.version, resolutionType: 'RESPONSIBILITY_UNDETERMINED', note: 'Operator remains able to handle the case' },
@@ -661,6 +770,128 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect((await prisma.exceptionCase.findUniqueOrThrow({ where: { id: exceptionCase.id } })).status).toBe('RESOLVED');
   });
 
+  it('releases an available settlement after its delivery dispute reaches a terminal resolution', async () => {
+    const flow = await deliveredOrder();
+    const settlement = await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: flow.orderId } });
+    await prisma.riderSettlement.update({
+      where: { id: settlement.id },
+      data: { pendingUntil: new Date(Date.now() - 1000) },
+    });
+    expect(await releaseAvailableRiderSettlements(prisma)).toBe(1);
+    const dispute = await reportDispute(flow.orderId, 'Available settlement dispute');
+    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { id: settlement.id } }))).toMatchObject({
+      status: 'HELD', holdReason: 'DELIVERY_DISPUTE',
+    });
+    await resolveDispute(dispute.caseId, 'Terminal review completed');
+    expect((await prisma.exceptionEvent.findUniqueOrThrow({ where: { id: dispute.exceptionEventId } })).resolvedAt).not.toBeNull();
+    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { id: settlement.id } }))).toMatchObject({
+      status: 'AVAILABLE', heldAt: null, holdReason: null,
+    });
+  });
+
+  it('restores a not-yet-due dispute settlement to pending and releases it on the normal sweep', async () => {
+    const flow = await deliveredOrder();
+    const original = await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: flow.orderId } });
+    const dispute = await reportDispute(flow.orderId, 'Pending settlement dispute');
+    await resolveDispute(dispute.caseId, 'Review completed before pending window elapsed');
+    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { id: original.id } }))).toMatchObject({
+      status: 'PENDING', availableAt: null, heldAt: null, holdReason: null,
+    });
+    expect(await releaseAvailableRiderSettlements(
+      prisma,
+      new Date(original.pendingUntil.getTime() + 1000),
+    )).toBe(1);
+    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { id: original.id } })).status).toBe('AVAILABLE');
+  });
+
+  it('keeps a dispute hold until every delivery dispute on the order is resolved', async () => {
+    const flow = await deliveredOrder();
+    const settlement = await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: flow.orderId } });
+    await prisma.riderSettlement.update({
+      where: { id: settlement.id },
+      data: { pendingUntil: new Date(Date.now() - 1000) },
+    });
+    expect(await releaseAvailableRiderSettlements(prisma)).toBe(1);
+    const first = await reportDispute(flow.orderId, 'First simultaneous dispute');
+    const second = await reportDispute(flow.orderId, 'Second simultaneous dispute');
+    await resolveDispute(first.caseId, 'First dispute resolved');
+    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { id: settlement.id } })).status).toBe('HELD');
+    expect((await prisma.exceptionEvent.findUniqueOrThrow({ where: { id: second.exceptionEventId } })).resolvedAt).toBeNull();
+    await resolveDispute(second.caseId, 'Second dispute resolved');
+    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { id: settlement.id } })).status).toBe('AVAILABLE');
+  });
+
+  it('preserves compensation reservations when a delivery dispute hold is removed', async () => {
+    const flow = await deliveredOrder();
+    const settlement = await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: flow.orderId } });
+    await prisma.riderSettlement.update({
+      where: { id: settlement.id },
+      data: { pendingUntil: new Date(Date.now() - 1000), reservedMinor: 50 },
+    });
+    expect(await releaseAvailableRiderSettlements(prisma)).toBe(1);
+    const dispute = await reportDispute(flow.orderId, 'Dispute with an existing reservation');
+    await resolveDispute(dispute.caseId, 'Resolve dispute without touching reservation');
+    const restored = await prisma.riderSettlement.findUniqueOrThrow({ where: { id: settlement.id } });
+    expect(restored).toMatchObject({ status: 'AVAILABLE', reservedMinor: 50, holdReason: null });
+    const riderView = await app.inject({ method: 'GET', url: '/riders/me/settlements', headers: headers(seedIds.riderAUser) });
+    const visibleSettlement = riderView.json().find((item: { id: string }) => item.id === settlement.id);
+    expect(visibleSettlement.withdrawableMinor).toBe(restored.amountMinor - 50);
+  });
+
+  it('does not resolve linked events or release dispute holds for waiting or escalated cases', async () => {
+    const flow = await deliveredOrder();
+    const settlement = await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: flow.orderId } });
+    const dispute = await reportDispute(flow.orderId, 'Non-terminal dispute case');
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${dispute.caseId}/claim`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 0 },
+    });
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${dispute.caseId}/resolve`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 1, resolutionType: 'WAITING_FOR_INFORMATION', note: 'More evidence required' },
+    });
+    expect((await prisma.exceptionEvent.findUniqueOrThrow({ where: { id: dispute.exceptionEventId } })).resolvedAt).toBeNull();
+    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { id: settlement.id } })).status).toBe('HELD');
+    await app.inject({
+      method: 'POST', url: `/admin/exception-cases/${dispute.caseId}/escalate`, headers: headers(seedIds.operator),
+      payload: { expectedVersion: 2, reason: 'Escalate without resolving the dispute' },
+    });
+    expect((await prisma.exceptionEvent.findUniqueOrThrow({ where: { id: dispute.exceptionEventId } })).resolvedAt).toBeNull();
+    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { id: settlement.id } })).status).toBe('HELD');
+  });
+
+  it('reconciles legacy dispute-only holds idempotently without touching other hold reasons', async () => {
+    const disputeFlow = await deliveredOrder();
+    const disputeSettlement = await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: disputeFlow.orderId } });
+    await prisma.riderSettlement.update({
+      where: { id: disputeSettlement.id },
+      data: { pendingUntil: new Date(Date.now() - 1000) },
+    });
+    expect(await releaseAvailableRiderSettlements(prisma)).toBe(1);
+    const dispute = await reportDispute(disputeFlow.orderId, 'Legacy reconciliation dispute');
+    const resolvedAt = new Date();
+    await prisma.$transaction([
+      prisma.exceptionEvent.update({ where: { id: dispute.exceptionEventId }, data: { resolvedAt } }),
+      prisma.exceptionCase.update({
+        where: { id: dispute.caseId },
+        data: { status: 'RESOLVED', resolutionType: 'RESPONSIBILITY_UNDETERMINED', resolvedAt },
+      }),
+    ]);
+    expect(await releaseAvailableRiderSettlements(prisma)).toBe(1);
+    expect(await releaseAvailableRiderSettlements(prisma)).toBe(0);
+    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { id: disputeSettlement.id } })).status).toBe('AVAILABLE');
+
+    const compensationFlow = await deliveredOrder();
+    const compensationSettlement = await prisma.riderSettlement.update({
+      where: { orderId: compensationFlow.orderId },
+      data: { status: 'HELD', heldAt: new Date(), holdReason: 'COMPENSATION_OBLIGATION' },
+    });
+    expect(await releaseAvailableRiderSettlements(prisma)).toBe(0);
+    expect((await prisma.riderSettlement.findUniqueOrThrow({ where: { id: compensationSettlement.id } }))).toMatchObject({
+      status: 'HELD', holdReason: 'COMPENSATION_OBLIGATION',
+    });
+  });
+
   it('rejects ESCALATED_OTHER as a terminal resolve and preserves the audited escalation path', async () => {
     const ready = await pickedUpOrder();
     await app.inject({
@@ -711,6 +942,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     });
     expect(resolved.statusCode, resolved.body).toBe(200);
     expect((await prisma.compensationObligation.findUniqueOrThrow({ where: { caseId } })).requiredCompensationMinor).toBe(2320);
+    expect((await prisma.exceptionEvent.findFirstOrThrow({ where: { exceptionCase: { id: caseId } } })).resolvedAt).not.toBeNull();
   });
 
   it('audits transfer, super-admin takeover, and release of case ownership', async () => {

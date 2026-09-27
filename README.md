@@ -214,9 +214,13 @@ timeRisk 与 completionRisk 独立返回。曝光策略实际使用完成/无人
 
 异常池使用 `ExceptionCase.version` 与原子条件更新保证同一 case 只有一个有效处理人。claim、release、transfer、takeover、escalate 和 resolve 都记录不可变 action。退款/冻结使用 case row lock、唯一 idempotency key、唯一 obligation 和事务，重试不会重复执行。
 
+Dedicated severe report 与正常 deliver 使用一致的 Order → DeliveryTask 行锁顺序；并发时要么 severe case 先提交并阻止送达，要么 deliver 先完成且迟到的 severe report 因阶段变化被拒绝。Customer remake reject 使用独立 `REMAKE_REJECTED` audit action，不冒充管理员释放处理权。
+
 赔付义务分别记录本单 settlement reservation、其他未提现 settlement reservation、平台垫付、用户退款和 outstanding。`RiderSettlement.reservedMinor` 支持部分冻结；并发事务按固定顺序锁定结算行，同一余额不能重复占用。真实支付、提现、未来收入自动抵扣和长期追偿尚未实现；因此 public API 当前拒绝非零 `voluntaryPaymentMinor`，不会把骑手输入的数字记作已付款。
 
 `release-compensation` 只解除已有 settlement reservation。若用户退款已经发生，解冻后由平台继续垫付的金额会同时增加 `platformAdvancedMinor` 与 `outstandingMinor`，义务保持未结；release 不等于 write-off 或债务核销。
+
+`DELIVERY_DISPUTE` terminal resolve 会在同一事务内同步 linked ExceptionEvent，并仅在同订单已无其他 unresolved dispute 时解除 `holdReason=DELIVERY_DISPUTE` 的 RiderSettlement hold：未到期回 PENDING、已到期回 AVAILABLE，`reservedMinor` 原样保留。后台 settlement sweep 可幂等修复历史遗留的 dispute-only hold，但不触碰其他 hold reason。
 
 异常分类提供类型化 `ExceptionClassifier`、确定性 fallback 和 manual fallback。adapter 抛错时 case 仍创建，并明确记录 `MANUAL_FALLBACK`；确定性默认只建议 `OPERATOR_POOL`，异常类型本身不会自动升级超管。分类来源/版本/置信度与管理员最终结论分开保存；当前没有真实 Jev 网络调用，AI 不执行资金或责任动作。
 

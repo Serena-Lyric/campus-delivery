@@ -296,6 +296,7 @@ export async function deliverTask(
   input: { evidenceId?: string; code?: string },
   now = new Date(),
   campusTimeZone = 'Asia/Shanghai',
+  afterLocks?: () => Promise<void>,
 ) {
   if (!actor.riderId) throw forbidden();
   const { config } = await loadPolicyConfig(prisma);
@@ -305,6 +306,7 @@ export async function deliverTask(
     if (!taskIdentity) throw notFound('Delivery task');
     await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${taskIdentity.orderId}::uuid FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${taskId}::uuid FOR UPDATE`;
+    if (afterLocks) await afterLocks();
     const task = await tx.deliveryTask.findUnique({
       where: { id: taskId },
       include: { order: { include: { pricing: true } } },

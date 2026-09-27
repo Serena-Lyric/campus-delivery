@@ -17,6 +17,7 @@ import {
 import { requireAdminLevel, type Actor } from '../auth/auth.js';
 import { badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
 import { assertExceptionCaseAction } from '../exception-cases/state-machine.js';
+import { resolveLinkedExceptionEvent } from '../settlements/service.js';
 
 function assertMinor(value: number, name: string) {
   if (!Number.isSafeInteger(value) || value < 0) throw badRequest('INVALID_MONEY', `${name} must be a non-negative integer`);
@@ -226,6 +227,7 @@ export async function refundAndCloseExceptionCase(
       },
     });
     if (resolvedCase.count !== 1) throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before final resolution');
+    await resolveLinkedExceptionEvent(tx, exceptionCase, now);
     await tx.exceptionCaseAction.createMany({
       data: [
         {

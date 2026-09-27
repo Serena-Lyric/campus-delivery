@@ -15,6 +15,7 @@ import {
   type ExceptionClassifier,
 } from '../exceptions/classifier.js';
 import { assertExceptionCaseAction } from './state-machine.js';
+import { resolveLinkedExceptionEvent } from '../settlements/service.js';
 
 export async function openExceptionCase(
   tx: Prisma.TransactionClient,
@@ -372,6 +373,7 @@ export async function resolveNonEconomicCase(
       },
     });
     if (updated.count !== 1) throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before resolution');
+    if (!waiting) await resolveLinkedExceptionEvent(tx, current, now);
     await tx.exceptionCaseAction.create({
       data: {
         caseId,
