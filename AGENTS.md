@@ -11,11 +11,23 @@ Before making product or business changes, read the root files in this order:
 5. `EXCEPTION_HANDLING.md` — first-version operational/technical design for abnormal-order handling; subordinate to product decisions.
 6. `ROLE_RESPONSIBILITIES.md` — role-oriented view of confirmed duties, permissions, restrictions and outcomes; derived from product decisions and must not create new rules.
 7. `OPERATIONS_CONTEXT.md` — confirmed real-world operating context; background only, never overrides product decisions.
-8. Existing code, README, OpenAPI, tests and older design documents.
+8. Topic/design working files such as `RIDER_CAPACITY_DECISIONS.md`, `ORDER_POOL_DECISIONS.md`, `DELIVERY_PRICING_DECISIONS.md` — useful discussion records, but they do not override `PRODUCT_DECISIONS.md` merely because they are newer.
+9. Existing code, README, OpenAPI, tests and older design documents.
 
 If existing code, Seed data, old design docs, or an agent recommendation conflicts with `PRODUCT_DECISIONS.md`, do not silently preserve or invent behavior. Follow the confirmed product decision, or stop and report the unresolved conflict.
 
 Do not turn demo values, Seed values, or implementation conveniences into product decisions.
+
+### Topic documents and decision reconciliation
+
+A topic/design working file may contain newer discussion, a reopened question, or a provisional implementation hypothesis. Before Codex changes business behavior based on such a file:
+
+- compare it explicitly with `PRODUCT_DECISIONS.md`;
+- if it supersedes an older confirmed rule, first record which old rule is replaced or reopened;
+- if the latest discussion is still awaiting real-world validation, mark it unresolved and do not choose one interpretation in code;
+- do not let `IMPLEMENTATION_PLAN.md` or `CODEX_TASK.md` silently elevate a topic-file assumption above `PRODUCT_DECISIONS.md`.
+
+If a task file conflicts with the source-of-truth hierarchy, stop implementation and report the conflict instead of following the lower-priority file.
 
 ## Working tree and continuity
 
@@ -23,6 +35,7 @@ Do not turn demo values, Seed values, or implementation conveniences into produc
 - When resuming an interrupted task, inspect `git status`, `git diff`, recent commits, migrations and untracked files first, then continue from the current state.
 - Avoid duplicate migrations for the same schema change.
 - Do not force-push.
+- After an interrupted task, never infer completion from the fact that only tests/report appear unfinished. Rebuild a requirement-to-runtime checklist from the current worktree and report which requirements already have actual enforcement, which are only partially implemented, and which remain absent.
 
 ## Docker / PostgreSQL preflight
 
@@ -45,6 +58,8 @@ For completed implementation tasks, run the task-required typecheck, unit tests,
 
 If infrastructure prevents a required check, do not claim it passed. Report exactly what was blocked and why.
 
+A locally reported passing test suite is not the same as independent CI verification. If the repository has no CI run/status for the implementation commit, reports and audits must say so rather than implying independent verification.
+
 ## Reports
 
 When a task requests a `CODEX_REPORT.md`, generate it only after implementation and validation are complete (or clearly document blocked checks). Include starting/ending commits, migrations, tests, build results, known issues, intentional omissions and unresolved product decisions.
@@ -66,6 +81,8 @@ When a task requests a `CODEX_REPORT.md`, generate it only after implementation 
 - Rolling-window metrics must not accidentally discard valid historical terminal samples merely because newer in-progress records entered the window. If different metrics require different populations, use separate query populations or document the tradeoff explicitly.
 - When reporting version/status protection, verify each runtime branch separately. A request schema containing `expectedVersion` is not evidence that every service branch actually checks it.
 - Distinguish idempotency protection from stale-state protection: idempotency prevents duplicate execution of the same business action; version/status guards prevent an old or no-longer-valid action from executing after the workflow changed. High-risk paths often require both.
+- A money source counts as funded only if the runtime can point to an actual reserved/deducted internal balance or a separately trusted/confirmed external payment fact. A rider-entered amount or bookkeeping allocation alone must not be reported as money actually paid.
+- Do not create an income/settlement fact for an unsuccessful order merely to make a compensation ledger balance unless the product has explicitly decided that the income was earned.
 
 ## API role isolation
 
@@ -73,6 +90,7 @@ When a task requests a `CODEX_REPORT.md`, generate it only after implementation 
 - Build explicit response DTOs/selects for each role. Treat newly added database fields as private by default until explicitly exposed.
 - When claiming role/data isolation, inspect the complete serialized response, not only the newly added nested object. Existing scalar fields and relation payloads can still leak internal pricing, policy, identifiers, limits, or operational state.
 - Add negative tests for sensitive fields that must be absent (for example merchant contribution, platform subsidy, internal policy/exposure details) rather than testing only that intended fields are present.
+- When a response is described as using immutable snapshots, verify every displayed field. Do not mix snapshot labels with live mutable relations and then claim the whole response cannot drift.
 
 ## Role documentation maintenance
 
