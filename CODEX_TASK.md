@@ -7,6 +7,7 @@
 - 最新已确认原则：`PRODUCT_DECISIONS.md`（2026-10-08 异常处置分离、骑手责任未完成配送、商家责任已正常送达、平台单笔收入可审计减免）。
 - 易损商品取证分级：`FRAGILE_PICKUP_EVIDENCE_DECISIONS.md`（同订单全部易损商品行金额快照合计，严格 >15 提示、>50 强制；折扣分摊、有效媒体及例外仍待细化）。
 - 管理员方向：`ADMIN_ROLE_DECISIONS.md`（系统级受保护且不能由后台改变的 Root + 可扩展普通运营层级；首版一级运营、二级暂定客服，现有 OPERATOR/SUPER_ADMIN 不可直接粗暴迁移）。
+- 商家货架/履约类别分离、真实交接争议、漏报无责拒取与同一订单更正再入池：`CATALOG_DISPLAY_AND_DELIVERY_CLASSIFICATION.md`；分类候选表见 `FRAGILE_CATEGORY_RESEARCH_2026-10-09.md`，管理员处罚细则未定。
 - 详细设计与未决事项：`EXCEPTION_SETTLEMENT_DESIGN.md`。
 - 关联运营/角色说明：`EXCEPTION_HANDLING.md`、`ROLE_RESPONSIBILITIES.md`。
 - 商家初始配送费资金语义仍等待 W / 真实运营验证：`DELIVERY_PRICING_DECISIONS.md`。
