@@ -97,6 +97,12 @@ enum PickupVerificationMode {
   PICKUP_CODE
 }
 
+enum PickupEvidenceLevel {
+  NONE
+  RECOMMENDED
+  REQUIRED
+}
+
 enum OrderStatus {
   CREATED
   MERCHANT_PENDING
@@ -205,6 +211,7 @@ enum ExceptionType {
   SEVERE_FOOD_DAMAGE
   FOOD_LOST
   OTHER_NEEDS_REVIEW
+  PICKUP_EVIDENCE_UNAVAILABLE
 }
 
 enum RiderCancellationReason {
@@ -451,6 +458,11 @@ model Order {
   deliveryMethod               DeliveryMethod
   deliveryVerificationMode     DeliveryVerificationMode
   pickupVerificationMode       PickupVerificationMode
+  coreFragileValueMinor         Int @default(0)
+  pickupEvidenceLevel           PickupEvidenceLevel @default(NONE)
+  pickupEvidencePolicyVersion   Int @default(0)
+  pickupEvidenceRecommendedMinor Int?
+  pickupEvidenceRequiredMinor   Int?
   deliveryEvidenceRequired     Boolean                           @default(false)
   merchantPreparationStatus    MerchantPreparationStatus         @default(PREPARING)
   merchantPreparationUpdatedAt DateTime?

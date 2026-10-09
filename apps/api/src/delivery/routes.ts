@@ -9,6 +9,7 @@ import {
   listAvailableTasks,
   listRiderTasks,
   pickUpTask,
+  reportPickupEvidenceUnavailable,
 } from './service.js';
 
 const TaskIdParams = Type.Object({ taskId: Type.String({ format: 'uuid' }) });
@@ -16,7 +17,7 @@ const Pagination = Type.Object({
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 20 })),
   offset: Type.Optional(Type.Integer({ minimum: 0, default: 0 })),
 });
-const EvidenceBody = Type.Object({ evidenceId: Type.Optional(Type.String({ format: 'uuid' })) });
+const EvidenceBody = Type.Object({ evidenceId: Type.Optional(Type.String({ format: 'uuid' })), pickupPhotoEvidenceId: Type.Optional(Type.String({ format: 'uuid' })) });
 const DeliverBody = Type.Object({
   evidenceId: Type.Optional(Type.String({ format: 'uuid' })),
   code: Type.Optional(Type.String({ pattern: '^[0-9]{6}$' })),
@@ -40,10 +41,15 @@ export async function registerDeliveryRoutes(app: FastifyInstance, prisma: Prism
     schema: { tags: ['delivery'], params: TaskIdParams },
   }, async (request) => claimTask(prisma, actorOf(request), request.params.taskId, undefined, config.campusTimeZone));
 
-  app.post<{ Params: { taskId: string }; Body: { evidenceId?: string } }>('/delivery-tasks/:taskId/pick-up', {
+  app.post<{ Params: { taskId: string }; Body: { evidenceId?: string; pickupPhotoEvidenceId?: string } }>('/delivery-tasks/:taskId/pick-up', {
     preHandler: rider,
     schema: { tags: ['delivery'], params: TaskIdParams, body: EvidenceBody },
-  }, async (request) => pickUpTask(prisma, actorOf(request), request.params.taskId, request.body.evidenceId));
+  }, async (request) => pickUpTask(prisma, actorOf(request), request.params.taskId, request.body.evidenceId, request.body.pickupPhotoEvidenceId));
+
+  app.post<{ Params: { taskId: string }; Body: { reason: string } }>('/delivery-tasks/:taskId/pickup-evidence-unavailable', {
+    preHandler: rider,
+    schema: { tags: ['delivery'], params: TaskIdParams, body: Type.Object({ reason: Type.String({ minLength: 1, maxLength: 500, pattern: '\\S' }) }) },
+  }, async (request) => reportPickupEvidenceUnavailable(prisma, actorOf(request), request.params.taskId, request.body.reason));
 
   app.post<{ Params: { taskId: string }; Body: { evidenceId?: string; code?: string } }>('/delivery-tasks/:taskId/deliver', {
     preHandler: rider,

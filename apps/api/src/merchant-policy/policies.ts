@@ -21,6 +21,8 @@ export const PolicyConfigSchema = Type.Object({
   }), { maxItems: 1000 }),
   platformCommissionBps: Type.Integer({ minimum: 0, maximum: 10_000 }),
   subsidyEnabled: Type.Boolean(),
+  fragilePickupRecommendedMinor: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })),
+  fragilePickupRequiredMinor: Type.Optional(Type.Integer({ minimum: 1, maximum: 2147483647 })),
   coolingOffSeconds: Type.Integer({ minimum: 0 }),
   verificationCodeTtlSeconds: Type.Integer({ minimum: 1 }),
   riderSettlementPendingSeconds: Type.Integer({ minimum: 0 }),
@@ -71,6 +73,9 @@ export function validatePolicyPayload(payload: Prisma.JsonValue): PolicyConfig {
     throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'ORDER_POLICY payload is invalid');
   }
   const config = payload as PolicyConfig;
+  if ((config.fragilePickupRecommendedMinor ?? 1500) >= (config.fragilePickupRequiredMinor ?? 5000)) {
+    throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Fragile pickup thresholds must satisfy 0 <= recommended < required');
+  }
   if (config.deliveryPricingDefaultCustomerFeeMinor < config.deliveryPricingDefaultRiderBasePayoutMinor) {
     throw new AppError(400, 'INVALID_BUSINESS_CONFIG', 'Default delivery pricing cannot have a negative base contribution');
   }

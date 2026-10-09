@@ -30,6 +30,9 @@ export async function createExceptionEvent(
   input: CreateExceptionInput,
   classifier: ExceptionClassifier = new DeterministicExceptionClassifier(),
 ) {
+  if (input.type === ExceptionType.PICKUP_EVIDENCE_UNAVAILABLE) {
+    throw conflict('PICKUP_EXCEPTION_REQUIRES_DEDICATED_ROUTE', 'Report pickup evidence unavailable through the bound delivery task route');
+  }
   if (severeTypes.includes(input.type)) {
     throw conflict(
       'SEVERE_EXCEPTION_REQUIRES_DEDICATED_ROUTE',

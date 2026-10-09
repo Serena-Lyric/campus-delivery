@@ -6,6 +6,8 @@ import {
   OrderEventType,
   OrderStatus,
   PickupVerificationMode,
+  PickupEvidenceLevel,
+  ExceptionType,
   RiderSettlementStatus,
   SettlementStatus,
   VerificationPurpose,
@@ -18,6 +20,7 @@ import { transitionOrder } from '../orders/state-machine.js';
 import { conflict, forbidden, notFound } from '../shared/errors.js';
 import { verifyOrderCode } from '../verification/service.js';
 import { assertRiderCanClaim } from '../riders/restrictions.js';
+import { openExceptionCase } from '../exception-cases/service.js';
 import { recordFirstNormalDelivery, resolveRiderCapacity } from '../riders/capacity.js';
 
 const taskSelect = {
@@ -44,10 +47,20 @@ const taskSelect = {
       pickupRegionSnapshot: true,
       deliveryMethod: true,
       merchantPreparationStatus: true,
+      coreFragileValueMinor: true,
+      pickupEvidenceLevel: true,
+      pickupEvidencePolicyVersion: true,
+      pickupVerificationMode: true,
       merchantId: true,
       destinationLocationId: true,
       items: {
         select: {
+          deliveryCategoryCodeSnapshot: true,
+          deliveryCategoryNameSnapshot: true,
+          deliveryCategoryVersionSnapshot: true,
+          deliveryRiskTagsSnapshot: true,
+          coreFragileSnapshot: true,
+          deliveryClassificationReviewRequired: true,
           suggestedFoodType: true,
           handlingTags: true,
           quantity: true,
@@ -87,6 +100,21 @@ function presentRiderTask(task: RiderTask) {
       lineItemCount: task.order.items.length,
       foodTypes: [...new Set(task.order.items.map((item) => item.suggestedFoodType))],
       handlingTags: [...new Set(task.order.items.flatMap((item) => item.handlingTags))],
+    },
+    pickupRisk: {
+      coreFragileValueMinor: task.order.coreFragileValueMinor,
+      evidenceLevel: task.order.pickupEvidenceLevel,
+      policyVersion: task.order.pickupEvidencePolicyVersion,
+      originalVerificationMode: task.order.pickupVerificationMode,
+      mediaValidation: 'MOCK_REFERENCE_ONLY',
+      categories: task.order.items.map((item) => ({
+        code: item.deliveryCategoryCodeSnapshot,
+        name: item.deliveryCategoryNameSnapshot,
+        version: item.deliveryCategoryVersionSnapshot,
+        riskTags: item.deliveryRiskTagsSnapshot,
+        coreFragile: item.coreFragileSnapshot,
+        reviewRequired: item.deliveryClassificationReviewRequired,
+      })),
     },
     preparationStatus: task.order.merchantPreparationStatus,
     orderStatus: task.order.status,
@@ -246,6 +274,7 @@ export async function pickUpTask(
   actor: Actor,
   taskId: string,
   evidenceId?: string,
+  pickupPhotoEvidenceId?: string,
 ) {
   if (!actor.riderId) throw forbidden();
   return prisma.$transaction(async (tx) => {
@@ -261,7 +290,7 @@ export async function pickUpTask(
     if (task.order.pickupVerificationMode === PickupVerificationMode.PHOTO) {
       await requireEvidence(
         tx,
-        evidenceId,
+        pickupPhotoEvidenceId ?? evidenceId,
         task.orderId,
         actor,
         EvidenceType.RIDER_PICKUP_PHOTO,
@@ -276,6 +305,18 @@ export async function pickUpTask(
         EvidenceType.PICKUP_CODE_VERIFICATION,
         OrderStatus.CLAIMED,
       );
+    }
+
+    if (task.order.pickupEvidenceLevel === PickupEvidenceLevel.REQUIRED) {
+      const photo = await requireEvidence(tx, pickupPhotoEvidenceId ?? evidenceId, task.orderId, actor, EvidenceType.RIDER_PICKUP_PHOTO, OrderStatus.CLAIMED);
+      const metadata = photo.metadata as { contentType?: unknown } | null;
+      if (photo.actorRole !== 'RIDER'
+        || !photo.mediaReference?.startsWith(`mock://evidence/${task.orderId}/`)
+        || typeof metadata?.contentType !== 'string'
+        || !['image/jpeg', 'image/png', 'image/webp'].includes(metadata.contentType)
+        || !task.claimedAt || photo.createdAt < task.claimedAt) {
+        throw conflict('INVALID_PICKUP_PHOTO', 'Pickup photo must reference a stored image uploaded by this rider during the current claim');
+      }
     }
 
     await transitionOrder(tx, task.orderId, task.order.status, OrderStatus.PICKED_UP, actor, {
@@ -403,5 +444,25 @@ export async function deliverTask(
     });
     await recordFirstNormalDelivery(tx, actor.riderId, now, campusTimeZone);
     return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect }));
+  });
+}
+
+// Records inability to collect evidence; no role receives a pickup waiver here.
+export async function reportPickupEvidenceUnavailable(prisma: PrismaClient, actor: Actor, taskId: string, reason: string) {
+  if (actor.role !== 'RIDER' || !actor.riderId) throw forbidden();
+  return prisma.$transaction(async (tx) => {
+    const identity = await tx.deliveryTask.findUnique({ where: { id: taskId }, select: { orderId: true } });
+    if (!identity) throw notFound('Delivery task');
+    await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${identity.orderId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${taskId}::uuid FOR UPDATE`;
+    const task = await tx.deliveryTask.findUniqueOrThrow({ where: { id: taskId }, include: { order: true } });
+    if (task.riderId !== actor.riderId) throw forbidden();
+    if (task.status !== 'CLAIMED' || task.order.pickupEvidenceLevel !== 'REQUIRED') throw conflict('PICKUP_REPORT_NOT_ALLOWED', 'Required pickup evidence can only be reported unavailable before pickup');
+    const existing = await tx.exceptionEvent.findFirst({ where: { orderId: task.orderId, reporterId: actor.id, type: ExceptionType.PICKUP_EVIDENCE_UNAVAILABLE, createdAt: { gte: task.claimedAt! } }, select: { id: true } });
+    if (existing) return { exceptionEventId: existing.id, pickupBlockedWithoutPhoto: true };
+    const event = await tx.exceptionEvent.create({ data: { orderId: task.orderId, reporterId: actor.id, reporterRole: actor.role, orderStatus: task.order.status, type: ExceptionType.PICKUP_EVIDENCE_UNAVAILABLE, description: reason } });
+    await openExceptionCase(tx, event);
+    await tx.orderEvent.create({ data: { orderId: task.orderId, eventType: 'EXCEPTION_RECORDED', actorType: 'USER', operatorId: actor.id, operatorRole: actor.role, fromStatus: task.order.status, toStatus: task.order.status, reason, metadata: { exceptionEventId: event.id, pickupEvidenceWaived: false } } });
+    return { exceptionEventId: event.id, pickupBlockedWithoutPhoto: true };
   });
 }

@@ -25,6 +25,7 @@ import { generateShortCode, shortCodeDay } from './short-code.js';
 import { transitionOrder } from './state-machine.js';
 import { openExceptionCase } from '../exception-cases/service.js';
 import { DeterministicItemClassifier, classifyItemSafely, type ItemClassifier } from '../item-classifier/classifier.js';
+import { pickupRiskSnapshot } from '../delivery/pickup-risk.js';
 import { defaultDeliveryPricingPolicy, type DeliveryPricingPolicy } from '../pricing/policy.js';
 
 export type CreateOrderInput = {
@@ -81,6 +82,12 @@ function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown) {
     deliveryVerificationMode: order.deliveryVerificationMode,
     pickupVerificationMode: order.pickupVerificationMode,
     deliveryEvidenceRequired: order.deliveryEvidenceRequired,
+    pickupRisk: {
+      coreFragileValueMinor: order.coreFragileValueMinor,
+      evidenceLevel: order.pickupEvidenceLevel,
+      policyVersion: order.pickupEvidencePolicyVersion,
+      mediaValidation: 'MOCK_REFERENCE_ONLY',
+    },
     merchantPreparationStatus: order.merchantPreparationStatus,
     merchantPreparationUpdatedAt: order.merchantPreparationUpdatedAt,
     status: order.status,
@@ -302,6 +309,7 @@ export async function createOrder(
             deliveryMethod: input.deliveryMethod,
             deliveryVerificationMode: deliveryVerificationFor(config, input.deliveryMethod),
             pickupVerificationMode: pickupVerificationFor(merchant.pickupVerificationMode),
+            ...pickupRiskSnapshot(itemData, config, policyVersion),
             items: { create: itemData },
             pricing: {
               create: {

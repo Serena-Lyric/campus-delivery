@@ -55,6 +55,8 @@ const scenarioIds = {
 } as const;
 
 export const demoPolicy = {
+  fragilePickupRecommendedMinor: 1500,
+  fragilePickupRequiredMinor: 5000,
   deliveryPricingDefaultCustomerFeeMinor: 300,
   deliveryPricingDefaultRiderBasePayoutMinor: 200,
   deliveryPricingAdditionalItemCustomerFeeMinor: 20,

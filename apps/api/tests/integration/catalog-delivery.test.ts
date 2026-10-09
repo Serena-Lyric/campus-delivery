@@ -189,4 +189,112 @@ describe('merchant display catalog and authoritative delivery snapshots', () => 
     const categories = await app.inject({ method: 'GET', url: '/catalog/delivery-categories', headers: headers(seedIds.merchantUser) });
     expect(categories.json().filter((c: { coreFragile: boolean }) => c.coreFragile).map((c: { code: string }) => c.code).sort()).toEqual(['CAKE', 'SUNDAE']);
   });
+  async function readyFor(productId: string, quantity = 1, extraItems: Array<{ productId: string; quantity: number }> = []) {
+    const created = await createOrder(prisma, customer, { ...orderInput(productId), items: [{ productId, quantity }, ...extraItems] }, config.campusTimeZone);
+    await prisma.order.update({ where: { id: created.id }, data: { coolingOffEndsAt: new Date(Date.now() - 1000) } });
+    await releaseExpiredCoolingOrders(prisma);
+    const confirmed = await app.inject({ method: 'POST', url: `/merchant/orders/${created.id}/confirm`, headers: headers(seedIds.merchantUser) });
+    expect(confirmed.statusCode, confirmed.body).toBe(200);
+    return { orderId: created.id, taskId: confirmed.json().deliveryTask.id as string };
+  }
+  const pickup = (taskId: string, payload = {}) => app.inject({ method: 'POST', url: `/delivery-tasks/${taskId}/pick-up`, headers: headers(seedIds.riderAUser), payload });
+  async function photo(orderId: string, user = seedIds.riderAUser, contentType = 'image/jpeg') {
+    const uploaded = await app.inject({ method: 'POST', url: `/orders/${orderId}/evidence`, headers: headers(user), payload: { evidenceType: 'RIDER_PICKUP_PHOTO', media: { fileName: 'pickup.jpg', contentType, source: 'CAMERA' } } });
+    expect(uploaded.statusCode, uploaded.body).toBe(201);
+    expect(uploaded.json().metadata.authenticityVerified).toBe(false);
+    return uploaded.json().id as string;
+  }
+
+  it.each([[1500, 'NONE'], [1501, 'RECOMMENDED'], [5000, 'RECOMMENDED'], [5001, 'REQUIRED']])('shows fixed risk before claim and enforces strict threshold at %i', async (amount, level) => {
+    const product = await saveProduct(prisma, merchant, { ...productInput(), priceMinor: amount as number });
+    const task = await readyFor(product.id);
+    const available = await app.inject({ method: 'GET', url: '/delivery-tasks/available', headers: headers(seedIds.riderAUser) });
+    const found = available.json().find((t: { id: string }) => t.id === task.taskId);
+    expect(found.pickupRisk).toMatchObject({ coreFragileValueMinor: amount, evidenceLevel: level, policyVersion: 1, categories: [{ code: 'CAKE', coreFragile: true }] });
+    for (const field of ['customerId', 'platformSubsidyMinor', 'merchantRescueContributionMinor', 'pickupEvidenceRequiredMinor']) expect(JSON.stringify(found)).not.toContain(field);
+    expect((await claim(task.taskId, seedIds.riderAUser)).statusCode).toBe(200);
+    expect((await pickup(task.taskId)).statusCode).toBe(level === 'REQUIRED' ? 409 : 200);
+    const detail = await app.inject({ method: 'GET', url: `/orders/${task.orderId}`, headers: headers(seedIds.riderAUser) });
+    expect(detail.json().pickupRisk.evidenceLevel).toBe(level);
+  });
+
+  it('combines two sundaes, excludes ordinary lines, and does not block high-value ordinary food', async () => {
+    const sundae = await saveProduct(prisma, merchant, productInput('SUNDAE'));
+    const combined = await readyFor(sundae.id, 2);
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: combined.orderId } })).toMatchObject({ coreFragileValueMinor: 6000, pickupEvidenceLevel: 'REQUIRED' });
+    await prisma.product.update({ where: { id: seedIds.productRice }, data: { priceMinor: 8000 } });
+    const mixed = await readyFor(sundae.id, 1, [{ productId: seedIds.productRice, quantity: 1 }]);
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: mixed.orderId } })).toMatchObject({ coreFragileValueMinor: 3000, pickupEvidenceLevel: 'RECOMMENDED' });
+    const ordinary = await readyFor(seedIds.productRice);
+    expect((await claim(ordinary.taskId, seedIds.riderAUser)).statusCode).toBe(200);
+    expect((await pickup(ordinary.taskId)).statusCode).toBe(200);
+  });
+
+  it('versioned super-admin threshold edits affect only new orders before and after claims', async () => {
+    const product = await saveProduct(prisma, merchant, { ...productInput(), priceMinor: 6000 });
+    const original = await readyFor(product.id);
+    const update = (user: string, required: number) => app.inject({ method: 'PUT', url: '/admin/business-configs/ORDER_POLICY', headers: headers(user), payload: { payload: { ...demoPolicy, fragilePickupRequiredMinor: required }, reason: 'threshold test' } });
+    expect((await update(seedIds.operator, 7000)).statusCode).toBe(403);
+    expect((await update(seedIds.admin, 1500)).statusCode).toBe(400);
+    expect((await update(seedIds.admin, 7000)).statusCode).toBe(200);
+    expect((await claim(original.taskId, seedIds.riderAUser)).json().pickupRisk).toMatchObject({ evidenceLevel: 'REQUIRED', policyVersion: 1 });
+    const later = await readyFor(product.id);
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: later.orderId } })).toMatchObject({ pickupEvidenceLevel: 'RECOMMENDED', pickupEvidencePolicyVersion: 2 });
+    expect((await update(seedIds.admin, 8000)).statusCode).toBe(200);
+    expect((await pickup(original.taskId)).statusCode).toBe(409);
+    expect(await prisma.businessConfigAudit.count()).toBe(2);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: original.orderId } })).pickupEvidenceRequiredMinor).toBe(5000);
+  });
+
+  it('requires both merchant pickup code and core photo with backward-compatible evidence IDs', async () => {
+    await prisma.merchant.update({ where: { id: seedIds.merchant }, data: { pickupVerificationMode: 'PICKUP_CODE' } });
+    const product = await saveProduct(prisma, merchant, { ...productInput(), priceMinor: 6000 });
+    const task = await readyFor(product.id);
+    expect((await claim(task.taskId, seedIds.riderAUser)).statusCode).toBe(200);
+    const photoId = await photo(task.orderId);
+    expect((await pickup(task.taskId, { evidenceId: photoId, pickupPhotoEvidenceId: photoId })).statusCode).toBe(409);
+    const issued = await app.inject({ method: 'POST', url: `/orders/${task.orderId}/pickup-code`, headers: headers(seedIds.merchantUser) });
+    const verified = await app.inject({ method: 'POST', url: `/delivery-tasks/${task.taskId}/verify-pickup-code`, headers: headers(seedIds.riderAUser), payload: { code: issued.json().code } });
+    expect(verified.statusCode, verified.body).toBe(200);
+    expect((await pickup(task.taskId, { evidenceId: verified.json().evidenceId })).statusCode).toBe(409);
+    expect((await pickup(task.taskId, { evidenceId: verified.json().evidenceId, pickupPhotoEvidenceId: photoId })).statusCode).toBe(200);
+  });
+
+  it('rejects missing, cross-order, wrong actor/role/stage/type and non-image references', async () => {
+    const product = await saveProduct(prisma, merchant, { ...productInput(), priceMinor: 6000 });
+    const task = await readyFor(product.id);
+    const otherTask = await readyFor(product.id);
+    await claim(task.taskId, seedIds.riderAUser);
+    await claim(otherTask.taskId, seedIds.riderAUser);
+    const crossOrder = await photo(otherTask.orderId);
+    expect((await pickup(task.taskId, { evidenceId: crossOrder })).statusCode).toBe(409);
+    expect((await pickup(task.taskId, { evidenceId: randomUUID() })).statusCode).toBe(409);
+    const invalidImage = await photo(task.orderId, seedIds.riderAUser, 'text/plain');
+    expect((await pickup(task.taskId, { evidenceId: invalidImage })).statusCode).toBe(409);
+    const validId = await photo(task.orderId);
+    const original = await prisma.evidence.findUniqueOrThrow({ where: { id: validId } });
+    for (const change of [{ actorId: seedIds.riderBUser }, { actorRole: 'ADMIN' as const }, { orderStage: 'READY_FOR_RIDER' as const }, { evidenceType: 'MERCHANT_HANDOFF_PHOTO' as const }, { mediaReference: null }, { createdAt: new Date('2000-01-01') }]) {
+      await prisma.evidence.update({ where: { id: validId }, data: change });
+      expect((await pickup(task.taskId, { evidenceId: validId })).statusCode).toBe(409);
+      await prisma.evidence.update({ where: { id: validId }, data: { actorId: original.actorId, actorRole: original.actorRole, orderStage: original.orderStage, evidenceType: original.evidenceType, mediaReference: original.mediaReference, createdAt: original.createdAt } });
+    }
+    expect((await pickup(task.taskId, { evidenceId: validId })).statusCode).toBe(200);
+  });
+
+  it('audits unavailable photo reports idempotently without granting a pickup waiver', async () => {
+    const product = await saveProduct(prisma, merchant, { ...productInput(), priceMinor: 6000 });
+    const task = await readyFor(product.id);
+    await claim(task.taskId, seedIds.riderAUser);
+    const report = () => app.inject({ method: 'POST', url: `/delivery-tasks/${task.taskId}/pickup-evidence-unavailable`, headers: headers(seedIds.riderAUser), payload: { reason: 'merchant refuses photo' } });
+    const reports = await Promise.all([report(), report()]);
+    expect(reports.map((r) => r.statusCode)).toEqual([200, 200]);
+    expect(reports[0]!.json()).toEqual(reports[1]!.json());
+    expect(await prisma.exceptionCase.count()).toBe(1);
+    expect((await pickup(task.taskId)).statusCode).toBe(409);
+    const operator = await app.inject({ method: 'POST', url: `/delivery-tasks/${task.taskId}/pick-up`, headers: headers(seedIds.operator), payload: {} });
+    expect(operator.statusCode).toBe(403);
+    expect(await prisma.riderCancellationEvent.count()).toBe(0);
+    expect((await pickup(task.taskId, { evidenceId: await photo(task.orderId) })).statusCode).toBe(200);
+  });
+
 });
