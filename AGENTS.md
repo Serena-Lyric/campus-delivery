@@ -12,7 +12,7 @@ Before making product or business changes, read the root files in this order:
 6. `ROLE_RESPONSIBILITIES.md` — role-oriented view of confirmed duties, permissions, restrictions and outcomes; derived from product decisions and must not create new rules.
 7. `OPERATIONS_CONTEXT.md` — confirmed real-world operating context; background only, never overrides product decisions.
 8. Topic/design working files such as `RIDER_CAPACITY_DECISIONS.md`, `ORDER_POOL_DECISIONS.md`, `DELIVERY_PRICING_DECISIONS.md` — useful discussion records, but they do not override `PRODUCT_DECISIONS.md` merely because they are newer.
-9. Newly confirmed topic/design working files such as `FRAGILE_PICKUP_EVIDENCE_DECISIONS.md`, `ADMIN_ROLE_DECISIONS.md` and `EXCEPTION_SETTLEMENT_DESIGN.md` — topic decisions are subordinate to `PRODUCT_DECISIONS.md`; details explicitly marked pending cannot be invented by Codex.
+9. Newly confirmed topic/design working files such as `FRAGILE_PICKUP_EVIDENCE_DECISIONS.md`, `FRAGILE_CATEGORY_RESEARCH_2026-10-09.md`, `CATALOG_DISPLAY_AND_DELIVERY_CLASSIFICATION.md`, `ADMIN_ROLE_DECISIONS.md` and `EXCEPTION_SETTLEMENT_DESIGN.md` — topic decisions are subordinate to `PRODUCT_DECISIONS.md`; details explicitly marked pending cannot be invented by Codex.
 10. Existing code, README, OpenAPI, tests and older design documents.
 
 If existing code, Seed data, old design docs, or an agent recommendation conflicts with `PRODUCT_DECISIONS.md`, do not silently preserve or invent behavior. Follow the confirmed product decision, or stop and report the unresolved conflict.
