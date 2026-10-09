@@ -89,6 +89,14 @@ function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown) {
     items: order.items.map((item) => ({
       id: item.id,
       productName: item.productNameSnapshot,
+      deliveryCategory: {
+        code: item.deliveryCategoryCodeSnapshot,
+        name: item.deliveryCategoryNameSnapshot,
+        version: item.deliveryCategoryVersionSnapshot,
+        riskTags: item.deliveryRiskTagsSnapshot,
+        coreFragile: item.coreFragileSnapshot,
+        reviewRequired: item.deliveryClassificationReviewRequired,
+      },
       unitPriceMinor: item.unitPriceMinor,
       quantity: item.quantity,
       subtotalMinor: item.subtotalMinor,
@@ -149,7 +157,7 @@ export async function createOrder(
 
   const productsToClassify = await prisma.product.findMany({
     where: { id: { in: [...quantities.keys()] } },
-    include: { category: { select: { name: true } } },
+    include: { category: { select: { name: true } }, deliveryCategory: true },
   });
   if (
     productsToClassify.length !== quantities.size
@@ -167,6 +175,8 @@ export async function createOrder(
         categoryName: product.category.name,
         priceMinor: product.priceMinor,
         isAvailable: product.isAvailable,
+        version: product.version,
+        deliveryCategory: JSON.stringify(product.deliveryCategory),
       },
       classification: await classifyItemSafely(classifier, {
         productName: product.name,
@@ -179,10 +189,15 @@ export async function createOrder(
     const shortCode = generateShortCode();
     try {
       return await prisma.$transaction(async (tx) => {
+        // Hold catalog rows through snapshot insertion, including concurrent platform-rule edits.
+        const productIds = [...quantities.keys()].sort();
+        await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id" IN (${Prisma.join(productIds.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY "id" FOR SHARE`;
+        const categoryCodes = [...new Set(productsToClassify.map((product) => product.deliveryCategoryCode))].sort();
+        await tx.$queryRaw`SELECT "code" FROM "DeliveryCategory" WHERE "code" IN (${Prisma.join(categoryCodes)}) ORDER BY "code" FOR SHARE`;
         const [merchant, location, products] = await Promise.all([
           tx.merchant.findUnique({ where: { id: input.merchantId }, include: { campusLocation: true } }),
           tx.campusLocation.findUnique({ where: { id: input.destinationLocationId } }),
-          tx.product.findMany({ where: { id: { in: [...quantities.keys()] } }, include: { category: { select: { name: true } } } }),
+          tx.product.findMany({ where: { id: { in: [...quantities.keys()] } }, include: { category: { select: { name: true } }, deliveryCategory: true } }),
         ]);
         if (!merchant) throw notFound('Merchant');
         if (!location) throw notFound('Campus location');
@@ -204,7 +219,9 @@ export async function createOrder(
             || before.productName !== product.name
             || before.categoryName !== product.category.name
             || before.priceMinor !== product.priceMinor
-            || before.isAvailable !== product.isAvailable;
+            || before.isAvailable !== product.isAvailable
+            || before.version !== product.version
+            || before.deliveryCategory !== JSON.stringify(product.deliveryCategory);
         })) {
           throw conflict('PRODUCT_FACTS_CHANGED', 'Product facts changed during classification; retry order creation');
         }
@@ -236,6 +253,12 @@ export async function createOrder(
             productId: product.id,
             productNameSnapshot: product.name,
             merchantCategoryNameSnapshot: product.category.name,
+            deliveryCategoryCodeSnapshot: product.deliveryCategory.code,
+            deliveryCategoryNameSnapshot: product.deliveryCategory.name,
+            deliveryCategoryVersionSnapshot: product.deliveryCategory.version,
+            deliveryRiskTagsSnapshot: product.deliveryCategory.riskTags,
+            coreFragileSnapshot: product.deliveryCategory.coreFragile,
+            deliveryClassificationReviewRequired: product.deliveryCategory.code === 'UNKNOWN',
             suggestedFoodType: classification.suggestedFoodType,
             handlingTags: classification.handlingTags,
             classificationSource: classification.source,

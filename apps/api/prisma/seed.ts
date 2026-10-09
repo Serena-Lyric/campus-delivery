@@ -538,13 +538,13 @@ export async function seedDatabase(client: PrismaClient) {
   });
   await client.product.upsert({
     where: { id: seedIds.productRice },
-    update: { merchantId: seedIds.merchant, categoryId: seedIds.category, name: '鸡腿饭', priceMinor: 1500, isAvailable: true },
-    create: { id: seedIds.productRice, merchantId: seedIds.merchant, categoryId: seedIds.category, name: '鸡腿饭', priceMinor: 1500, isAvailable: true },
+    update: { merchantId: seedIds.merchant, categoryId: seedIds.category, name: '鸡腿饭', deliveryCategoryCode: 'ORDINARY_MEAL', priceMinor: 1500, isAvailable: true },
+    create: { id: seedIds.productRice, merchantId: seedIds.merchant, categoryId: seedIds.category, name: '鸡腿饭', deliveryCategoryCode: 'ORDINARY_MEAL', priceMinor: 1500, isAvailable: true },
   });
   await client.product.upsert({
     where: { id: seedIds.productTea },
-    update: { merchantId: seedIds.merchant, categoryId: seedIds.category, name: '柠檬茶', priceMinor: 500, isAvailable: true },
-    create: { id: seedIds.productTea, merchantId: seedIds.merchant, categoryId: seedIds.category, name: '柠檬茶', priceMinor: 500, isAvailable: true },
+    update: { merchantId: seedIds.merchant, categoryId: seedIds.category, name: '柠檬茶', deliveryCategoryCode: 'DRINK', priceMinor: 500, isAvailable: true },
+    create: { id: seedIds.productTea, merchantId: seedIds.merchant, categoryId: seedIds.category, name: '柠檬茶', deliveryCategoryCode: 'DRINK', priceMinor: 500, isAvailable: true },
   });
   await client.merchantSubsidyAccount.upsert({
     where: { id: seedIds.subsidyAccount },

@@ -376,6 +376,17 @@ model ProductCategory {
   @@index([merchantId, sortOrder])
 }
 
+// Platform rules are independent of merchant display categories.
+model DeliveryCategory {
+  code         String    @id
+  name         String
+  version      Int       @default(1)
+  riskTags     String[]  @default([])
+  coreFragile  Boolean   @default(false)
+  selectable   Boolean   @default(true)
+  products     Product[]
+}
+
 model Product {
   id          String          @id @default(uuid()) @db.Uuid
   merchantId  String          @db.Uuid
@@ -386,6 +397,12 @@ model Product {
   description String?
   priceMinor  Int
   isAvailable Boolean         @default(true)
+  imageUrl    String?
+  marketingTags String[] @default([])
+  sortOrder   Int @default(0)
+  version     Int @default(1)
+  deliveryCategoryCode String @default("UNKNOWN")
+  deliveryCategory DeliveryCategory @relation(fields: [deliveryCategoryCode], references: [code], onDelete: Restrict)
   orderItems  OrderItem[]
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
@@ -473,6 +490,12 @@ model OrderItem {
   product                      Product  @relation(fields: [productId], references: [id])
   productNameSnapshot          String
   merchantCategoryNameSnapshot String
+  deliveryCategoryCodeSnapshot String @default("UNKNOWN")
+  deliveryCategoryNameSnapshot String @default("待核定")
+  deliveryCategoryVersionSnapshot Int @default(0)
+  deliveryRiskTagsSnapshot String[] @default([])
+  coreFragileSnapshot Boolean @default(false)
+  deliveryClassificationReviewRequired Boolean @default(true)
   suggestedFoodType            FoodType
   handlingTags                 String[] @default([])
   classificationSource         String
