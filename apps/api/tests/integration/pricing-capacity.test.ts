@@ -668,6 +668,55 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
     expect(await prisma.deliveryAssignment.findUniqueOrThrow({ where: { id: assignment.id } })).toEqual(assignment);
   });
 
+  for (const mode of ['LEGACY_ORDER_POLICY', 'REFERENCE_BPS']) {
+    it(`keeps merchandise commission independent in ${mode}, changes only future contracts and preserves finalized income`, async () => {
+      if (mode === 'REFERENCE_BPS') {
+        expect((await configureReference()).statusCode).toBe(200);
+        expect((await editQuote(250, 0)).statusCode).toBe(200);
+      }
+      const old = await createReady();
+      expect((await claim(old.taskId, seedIds.riderAUser)).statusCode).toBe(200);
+      expect((await merchantPickup(app, prisma, old.taskId)).statusCode).toBe(200);
+      expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${old.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {} })).statusCode).toBe(200);
+      const oldPricing = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: old.orderId } });
+      const oldSettlement = await prisma.settlement.findUniqueOrThrow({ where: { orderId: old.orderId } });
+      const oldIncome = await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: old.orderId } });
+      expect(oldPricing).toMatchObject({ platformCommissionMinor: 0, merchantSettlementMinor: 2000, pricingInputsSnapshot: { platformCommissionBps: 0 } });
+      expect(oldSettlement).toMatchObject({ status: 'FINALIZED', merchantPayableMinor: 2000, platformRevenueMinor: 100 });
+      const configureCommission = (userId: string, expectedVersion?: number) => app.inject({
+        method: 'PUT', url: '/admin/business-configs/ORDER_POLICY', headers: headers(userId),
+        payload: { payload: { ...demoPolicy, platformCommissionBps: 1250 }, reason: 'Isolated commission fixture, never business default', ...(expectedVersion === undefined ? {} : { expectedVersion }) },
+      });
+      expect((await configureCommission(seedIds.operator, 1)).statusCode).toBe(403);
+      expect((await configureCommission(seedIds.admin)).statusCode).toBe(400);
+      const changes = await Promise.all([configureCommission(seedIds.admin, 1), configureCommission(seedIds.admin, 1)]);
+      expect(changes.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+      expect(await prisma.businessConfigAudit.findFirstOrThrow({ where: { key: 'ORDER_POLICY' } })).toMatchObject({ previousVersion: 1, newVersion: 2, actorId: seedIds.admin, beforePayload: { platformCommissionBps: 0 }, afterPayload: { platformCommissionBps: 1250 } });
+      const next = await createReady();
+      let pricing = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: next.orderId } });
+      expect(pricing).toMatchObject({ platformCommissionMinor: 250, merchantSettlementMinor: 1750, pricingPolicyVersion: 2, pricingInputsSnapshot: { platformCommissionBps: 1250 }, customerDeliveryFeeMinor: oldPricing.customerDeliveryFeeMinor, riderBasePayoutMinor: oldPricing.riderBasePayoutMinor });
+      const publishedAt = (await prisma.deliveryTask.findUniqueOrThrow({ where: { id: next.taskId } })).firstPublishedAt!;
+      await repriceOrder(prisma, { id: seedIds.merchantUser, role: 'MERCHANT', merchantId: seedIds.merchant }, next.orderId, 100, 'Commission isolation fixture', new Date(publishedAt.getTime() + 20000));
+      expect((await app.inject({ method: 'POST', url: `/orders/${next.orderId}/rider-tip-adjustments`, headers: headers(seedIds.customer), payload: { deltaMinor: 100 } })).statusCode).toBe(201);
+      await addPlatformSubsidy(prisma, { id: seedIds.admin, role: 'ADMIN', adminLevel: 'SUPER_ADMIN' }, next.orderId, { requestedMinor: 50, reason: 'FINANCE_FIXTURE' }, undefined, new Date(publishedAt.getTime() + 601000));
+      pricing = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: next.orderId } });
+      expect(pricing).toMatchObject({ platformCommissionMinor: 250, merchantSettlementMinor: 1650, riderGuaranteedPayoutMinor: oldPricing.riderBasePayoutMinor + 250, deliveryPlatformContributionMinor: 50 });
+      expect((await claim(next.taskId, seedIds.riderAUser)).statusCode).toBe(200);
+      expect((await merchantPickup(app, prisma, next.taskId)).statusCode).toBe(200);
+      expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${next.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {} })).statusCode).toBe(200);
+      expect(await prisma.settlement.findUniqueOrThrow({ where: { orderId: next.orderId } })).toMatchObject({ status: 'FINALIZED', merchantPayableMinor: 1650, platformRevenueMinor: 300, riderPayableMinor: pricing.riderGuaranteedPayoutMinor });
+      expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: old.orderId } })).toEqual(oldPricing);
+      expect(await prisma.settlement.findUniqueOrThrow({ where: { orderId: old.orderId } })).toEqual(oldSettlement);
+      expect(await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: old.orderId } })).toEqual(oldIncome);
+      const cancelled = await app.inject({ method: 'POST', url: '/orders', headers: headers(seedIds.customer), payload: { ...checkoutInput(), expectedQuoteToken: (await preview()).json().quoteToken } });
+      expect(cancelled.statusCode).toBe(201);
+      expect((await app.inject({ method: 'POST', url: `/orders/${cancelled.json().id}/cancel`, headers: headers(seedIds.customer), payload: {} })).statusCode).toBe(200);
+      const cancelledPricing = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: cancelled.json().id } });
+      expect(cancelledPricing.customerRefundMinor).toBe(cancelledPricing.itemSubtotalMinor + cancelledPricing.customerDeliveryFeeMinor);
+      expect(await prisma.settlement.findUniqueOrThrow({ where: { orderId: cancelled.json().id } })).toMatchObject({ platformRevenueMinor: 0, merchantPayableMinor: 0 });
+    });
+  }
+
   it('rounds tiny references without an invented minimum and rejects stale confirmations even after switching back to legacy', async () => {
     expect((await configureReference()).statusCode).toBe(200);
     expect((await editQuote(0, 0)).statusCode).toBe(200);

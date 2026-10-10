@@ -291,6 +291,7 @@ export async function createOrder(
                   ...(deliveryPricing.inputsSnapshot as Prisma.InputJsonObject),
                   merchantBaseQuoteVersion: merchant.baseDeliveryQuoteVersion,
                   orderPolicyVersion: policyVersion,
+                  platformCommissionBps: config.platformCommissionBps,
                   quoteToken,
                   customerConfirmation: input.expectedQuoteToken ? 'PREVIEW_CONFIRMED' : 'LEGACY_DIRECT_CREATION',
                   contract: 'DEVELOPMENT_QUOTE_ONLY',

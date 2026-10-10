@@ -28,6 +28,6 @@ export function basisPoints(value: number, bps: number): number {
   if (!Number.isInteger(bps) || bps < 0 || bps > 10_000) {
     throw badRequest('INVALID_BASIS_POINTS', 'basis points must be an integer between 0 and 10000');
   }
-  return Math.floor((value * bps) / 10_000);
+  return Number(BigInt(value) * BigInt(bps) / 10_000n);
 }
 

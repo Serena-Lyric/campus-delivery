@@ -6,6 +6,7 @@ describe('integer money', () => {
     expect(addMinor(10, 20, 30)).toBe(60);
     expect(multiplyMinor(199, 3)).toBe(597);
     expect(basisPoints(1999, 500)).toBe(99);
+    expect(basisPoints(Number.MAX_SAFE_INTEGER, 9999)).toBe(Number(BigInt(Number.MAX_SAFE_INTEGER) * 9999n / 10000n));
   });
 
   it('rejects fractional and unsafe values', () => {

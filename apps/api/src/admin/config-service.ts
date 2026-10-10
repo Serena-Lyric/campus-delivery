@@ -47,6 +47,11 @@ export async function updateBusinessConfig(
       orderBy: { version: 'desc' },
     });
     const nextVersion = (current?.version ?? 0) + 1;
+    if (key === 'ORDER_POLICY' && expectedVersion === undefined
+      && validatePolicyPayload(validatedPayload as Prisma.JsonValue).platformCommissionBps
+        !== (current ? validatePolicyPayload(current.payload).platformCommissionBps : 0)) {
+      throw badRequest('CONFIG_VERSION_REQUIRED', 'Changing merchandise commission requires the expected config version');
+    }
     if (expectedVersion !== undefined && expectedVersion !== (current?.version ?? 0)) throw conflict('CONFIG_VERSION_CONFLICT', 'Refresh the business config before changing it');
     if (key === eligibilityPolicyKey && validateEligibilityPolicy(validatedPayload as Prisma.JsonValue).enforced) {
       const now = new Date();
