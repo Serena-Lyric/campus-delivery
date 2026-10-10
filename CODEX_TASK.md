@@ -1,5 +1,7 @@
 # CODEX_TASK — 第五轮：商品佣金默认0%、支付成本隔离与运营安全储备（2026-10-11）
 
+> **已完成任务记录，非待执行指令（2026-10-11维护）**：第五轮A/B/C实现提交分别为6b41e0a、aad250c、b3dfc12，完成报告提交为500f1e3；见 [CODEX_REPORT.md](CODEX_REPORT.md)。下文保留当时授权、阅读要求及验证要求，不触发重新开发、Seed、测试或push。后续分开支付方案为主产品第1B节的暂定且未实现设计，本任务没有实施或授权其上线。
+
 > 第四轮双侧报价已经完成，第四轮 CODEX_TASK/CODEX_REPORT 已归档。本轮只做**不依赖微信支付资质的财务安全基础**，满足近期人工工资预留与未来支付通道的可迁移性。先读 AGENTS.md、PRODUCT_DECISIONS.md、FINANCE_OPERATIONS_DECISIONS.md、ADMIN_ROLE_DECISIONS.md、DELIVERY_PRICING_DECISIONS.md 和上一轮归档报告。**没有正式微信支付商户号、Root强认证或外部余额凭证；不能新增真实提现/已收款功能。**
 
 ## 0. 规则和角色不可突破

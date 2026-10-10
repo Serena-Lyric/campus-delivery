@@ -4,7 +4,11 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 ## 当前阶段
 
-本阶段仍是模块化单体 REST API。当前重点是修复独立审核确认的资金与状态机安全问题，并保持骑手容量、订单池快照和低风险分类基础设施一致。商家初始配送金额的真实结算语义仍待 W/真实运营经验验证，本轮不作决定。
+本阶段仍是模块化单体 REST API。第四轮报价及第五轮财务安全基础已有完成记录；商家基础报价仅作定价参考、商品佣金可配置且默认0%均已确认。代码能力和当前应用配置不同，历史报告只说明其记录的提交与验证，不代表所有产品规则已上线。
+
+首期商品款直付商家、配送费独立支付为**暂定且尚未实现**的设计；平台统一商品款收取及商家48小时冷却保留为未来目标。现有后端仍为开发内账模拟，无真实支付/提现，不能把商家直收商品款显示为平台可冻结资金。当前产品依据见 [PRODUCT_DECISIONS.md](PRODUCT_DECISIONS.md) 第1B节与状态导航，财务边界见 [FINANCE_OPERATIONS_DECISIONS.md](FINANCE_OPERATIONS_DECISIONS.md)。
+
+文档维护按 [AGENTS.md](AGENTS.md) 的任务索引读取相关章节；旧计划/已完成任务不自动启动下一轮。报价实现与验证见 [第四轮报告](CODEX_REPORT_2026-10-11_DUAL_SIDE_PRICING.md)，财务实现与验证见 [第五轮报告](CODEX_REPORT.md)。
 
 ## 2026-10-10 履约与管理员能力边界
 
@@ -75,7 +79,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 - deliveryPricingDefaultCustomerFeeMinor / deliveryPricingDefaultRiderBasePayoutMinor：用户基础配送费与骑手基础保证收益独立 DEMO 默认值。
 - deliveryPricingAdditionalItemCustomerFeeMinor / deliveryPricingAdditionalItemRiderPayoutMinor：按额外件数增加的第一版规则参数。
 - deliveryPricingMerchantOverrides：SUPER_ADMIN 管理的商家级绝对覆盖；仍受非负基础价差校验。
-- platformCommissionBps：商品佣金计算能力的配置 hook；正式抽成规则尚未确认，当前 Seed/默认业务值为 0。
+- platformCommissionBps：已确认的可配置商品佣金，默认0%，版本变更只影响新订单；正式非零费率仍待确认。旧“仅hook、规则未确认”的描述已被2026-10-11产品确认取代。
 - verificationCodeTtlSeconds：Seed 为 10 分钟。
 - customerUnreachableWaitSeconds：只预留，不用于自动判责。
 - riderTipWindowSeconds：Seed 演示为 86400 秒，创建订单时快照到 tipDeadline。
@@ -199,7 +203,7 @@ DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除�
 
 新增迁移 `20261011000100_merchant_base_delivery_quote` 仅添加商家报价版本（旧库初始0）与独立审计表，无历史财务或配置重解释。Seed保留已有报价/版本与ORDER_POLICY；已有演示订单及关联财务/承接事实不再被重写，新双侧策略不会由Seed启用。Seed仍是本地演示初始化工具，会维护其他演示资料，不作为生产运维入口。
 
-商品佣金字段与计算 plumbing 保留，但正式抽成规则未决定。当前默认 `platformCommissionBps=0`，正常创建/完成订单不会因此减少 merchant payable，也不会生成商品 commission revenue。
+商品佣金已确认可配置、默认0%，独立于配送双侧价差；非零变更须版本校验与审计，仅影响新订单，不能追溯历史快照或结算。默认 `platformCommissionBps=0` 时正常创建/完成订单不会因此减少 merchant payable，也不会生成商品 commission revenue。正式非零费率与首期直付模式实际收取/结算仍待确认；此前“正式抽成规则未决定”仅作历史说明。
 
 ## 用户骑手激励
 
@@ -353,7 +357,7 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
 - 独立 Evidence 与 MockMediaStorage
 - 结构化异常事实
 - 角色化订单时间线
-- 商家初始配送金额（当前 provisional reference）与真实 rescue contribution/history/cooldown 分离
+- 商家基础报价仅作参考（已确认）与独立 rescue contribution/history/cooldown 分离；金额仍为开发内账，未证明外部实付
 - 可配置 DeliveryPricingPolicy：全局默认、商家 override、数量规则和输入快照
 - 用户骑手激励独立账本
 - 服务端 24 小时骑手激励窗口和订单 tipDeadline 快照
@@ -391,8 +395,8 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
 - 骑手待结算最终天数
 - 5 单之后是否自动升级、哪些事实会触发自动降额度
 - 各商家/品类/区域的正式配送定价参数与长期算法
-- 商家初始配送金额究竟是 reference、真实商家成本还是混合概念，以及是否从商品结算中扣除、pre-claim 是否允许降低
-- 正式商品佣金/平台抽成比例；当前默认值为 0
+- 商家基础报价只作参考、不出资已经确认，旧“reference或真实成本”问题已收口；仍待设计的是实际付款渠道与报价/支付并发细节，不改变已创建订单快照或已付款本单基础价
+- 商品佣金可配置、默认0%已确认；正式非零费率及首期直付模式实际收取/结算仍待议
 - 平台补贴正式步长、间隔、单订单上限和预算比例
 - 40 分钟窗口内更细的提醒与补贴顺序
 - 接单后激励在异常争议下的退款边界

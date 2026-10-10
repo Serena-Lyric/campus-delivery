@@ -1,10 +1,8 @@
 # IMPLEMENTATION_PLAN
 
-> 2026-10-11 执行对照：基础参考报价的旧未决说明及第4节 provisional 方向，已由 PRODUCT_DECISIONS.md 第6节 2026-10-10 确认取代。本轮按 CODEX_TASK.md 第四轮 A/B/C 执行，细节见 docs/delivery-pricing-round-four.md；不宣布本文件其他阶段整体完成。
-
-> 当前实现阶段：修复 2026-09-27 独立审核已确认的问题。配送定价拆分中的商家初始配送金额资金语义已重新打开，当前 reference-only runtime 仅为 provisional 实现，不得视为最终产品规则。
-> 最高原则仍以 `PRODUCT_DECISIONS.md` 为准；本轮同时读取 `AUDIT_FOLLOWUP.md`、`RIDER_CAPACITY_DECISIONS.md`、`ORDER_POOL_DECISIONS.md`、`DELIVERY_PRICING_DECISIONS.md`。这些主题文档记录了用户刚确认的当前实现边界；若与旧代码/Seed/旧测试冲突，不得静默保留旧行为。
-> 本轮只做后端数据模型、策略、API、迁移、审计、测试与必要文档；不设计完整 UI，不接真实支付/提现，不做路线规划，不做成熟动态定价算法。
+> **历史实施计划，非当前执行任务（2026-10-11维护）**：正文保留2026-09-27计划及当时的provisional假设、必测要求和提交流程，不自动启动开发或push。基础报价资金语义的旧阻塞已由 `PRODUCT_DECISIONS.md` 第6节2026-10-10确认取代：B只作参考、双侧比例独立、救单独立。
+> 第四轮实际执行范围见 [归档任务](CODEX_TASK_2026-10-11_DUAL_SIDE_PRICING.md)、[设计](docs/delivery-pricing-round-four.md)及 [归档报告](CODEX_REPORT_2026-10-11_DUAL_SIDE_PRICING.md)；第五轮已完成记录见 [CODEX_TASK.md](CODEX_TASK.md) / [CODEX_REPORT.md](CODEX_REPORT.md)。不据此宣布本计划其他阶段整体完成。
+> 当前有效与待决边界仍以主产品为准：佣金可配置、默认0%已确认；首期分开支付暂定且未实现，旧统一商品款收取及48小时冷却保留为未来目标。第4节、角色与测试列表中“初始金额语义待确认”的表述属于被替代的历史记录；其他未闭合审计/异常资金缺口须按影响范围核对，不能据旧计划重新实施或追溯改账。
 
 ## 0. 先完成上一轮审核补丁
 
