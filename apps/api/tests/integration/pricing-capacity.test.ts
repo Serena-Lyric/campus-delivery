@@ -668,6 +668,69 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
     expect(await prisma.deliveryAssignment.findUniqueOrThrow({ where: { id: assignment.id } })).toEqual(assignment);
   });
 
+  it('snapshots platform-only fee estimates for new contracts, preserves them on config changes and exposes no verified cash', async () => {
+    const old = await createReady();
+    const oldPricing = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: old.orderId } });
+    const configureFee = (feeBps: number, expectedVersion: number) => app.inject({ method: 'PUT', url: '/admin/business-configs/PAYMENT_COST_ESTIMATE', headers: headers(seedIds.admin), payload: { payload: { feeBps, fixedFeeMinor: 0 }, expectedVersion, reason: 'Isolated cost fixture, no actual payment' } });
+    const competing = await Promise.all([configureFee(60, 0), configureFee(60, 0)]);
+    expect(competing.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+    const next = await createReady();
+    const initial = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: next.orderId } });
+    expect(initial).toMatchObject({ merchantSettlementMinor: 2000, platformCommissionMinor: 0, customerDeliveryFeeMinor: 320, riderBasePayoutMinor: 220,
+      pricingInputsSnapshot: { paymentCostEstimate: { status: 'ESTIMATED', amountMinor: 13, paymentBasisMinor: 2320, payer: 'PLATFORM', policyVersion: 1 } } });
+    const getProjection = (id: string) => app.inject({ method: 'GET', url: `/admin/finance/orders/${id}/projection`, headers: headers(seedIds.admin) });
+    expect((await getProjection(next.orderId)).json()).toMatchObject({ realWithdrawableMinor: 0, operating: { finalizedOperatingContributionMinor: 0, estimatedNetContributionMinor: null } });
+    expect((await claim(next.taskId, seedIds.riderAUser)).statusCode).toBe(200);
+    expect((await merchantPickup(app, prisma, next.taskId)).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${next.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {} })).statusCode).toBe(200);
+    const settlement = await prisma.settlement.findUniqueOrThrow({ where: { orderId: next.orderId } });
+    expect(settlement).toMatchObject({ merchantPayableMinor: 2000, riderPayableMinor: 220, platformRevenueMinor: 100 });
+    const projection = await getProjection(next.orderId);
+    expect(projection.statusCode).toBe(200);
+    expect(projection.json()).toMatchObject({ simulated: true, notVerified: true, realWithdrawalEnabled: false, realWithdrawableMinor: 0,
+      operating: { merchandiseCommissionMinor: 0, baseDeliverySpreadMinor: 100, platformSubsidyMinor: 0, finalizedOperatingContributionMinor: 100, estimatedNetContributionMinor: 87 },
+      paymentCosts: { estimatedFeeMinor: 13, actualFeeMinor: null, actualStatus: 'NOT_VERIFIED', externalReceipt: null },
+      thirdPartyRights: { includedInPlatformIncome: false, finalizedMerchantPayableMinor: 2000, finalizedRiderPayableMinor: 220 } });
+    expect((await configureFee(100, 1)).statusCode).toBe(200);
+    expect((await getProjection(next.orderId)).json()).toEqual(projection.json());
+    expect((await getProjection(old.orderId)).json().paymentCosts.estimatedFeeMinor).toBeNull();
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: old.orderId } })).toEqual(oldPricing);
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: next.orderId } })).toEqual(initial);
+    expect(await prisma.settlement.findUniqueOrThrow({ where: { orderId: next.orderId } })).toEqual(settlement);
+    const future = await createReady();
+    expect((await getProjection(future.orderId)).json().paymentCosts).toMatchObject({ estimatedFeeMinor: 23, estimatePolicyVersion: 2, actualFeeMinor: null });
+    expect(await prisma.businessConfigAudit.count({ where: { key: 'PAYMENT_COST_ESTIMATE' } })).toBe(2);
+  });
+
+  it('denies cost fact injection and role access, validates explicit fee policy and preserves seed configuration', async () => {
+    const ready = await createReady();
+    const route = `/admin/finance/orders/${ready.orderId}/projection`;
+    for (const userId of [seedIds.customer, seedIds.merchantUser, seedIds.riderAUser, seedIds.operator]) {
+      expect((await app.inject({ method: 'GET', url: route, headers: headers(userId) })).statusCode).toBe(403);
+    }
+    expect((await app.inject({ method: 'GET', url: route })).statusCode).toBe(401);
+    const configure = (payload: unknown, expectedVersion?: number, userId: string = seedIds.admin) => app.inject({ method: 'PUT', url: '/admin/business-configs/PAYMENT_COST_ESTIMATE', headers: headers(userId), payload: { payload, expectedVersion, reason: 'Cost safety fixture' } });
+    expect((await configure({ feeBps: 60, fixedFeeMinor: 0 }, 0, seedIds.operator)).statusCode).toBe(403);
+    for (const payload of [{ feeBps: 60 }, { feeBps: 10001, fixedFeeMinor: 0 }, { feeBps: 60, fixedFeeMinor: 0, status: 'EXTERNALLY_VERIFIED', actualFeeMinor: 12 }]) {
+      expect((await configure(payload, 0)).statusCode).toBe(400);
+    }
+    expect((await configure({ feeBps: 60, fixedFeeMinor: 0 })).statusCode).toBe(400);
+    expect((await configure({ feeBps: 60, fixedFeeMinor: 0 }, 0)).statusCode).toBe(200);
+    const costPolicy = await prisma.businessConfig.findFirstOrThrow({ where: { key: 'PAYMENT_COST_ESTIMATE', isActive: true } });
+    await seedDatabase(prisma);
+    expect(await prisma.businessConfig.findUniqueOrThrow({ where: { id: costPolicy.id } })).toEqual(costPolicy);
+    for (const url of [route, '/admin/finance/payment-costs', '/admin/finance/external-receipts', '/admin/finance/cash-balance']) {
+      expect((await app.inject({ method: 'POST', url, headers: headers(seedIds.admin), payload: { amountMinor: 100000, status: 'EXTERNALLY_VERIFIED', externalReceipt: 'forged' } })).statusCode).toBe(404);
+    }
+    for (const userId of [seedIds.customer, seedIds.merchantUser, seedIds.riderAUser]) {
+      const publicOrder = await app.inject({ method: 'GET', url: `/orders/${ready.orderId}`, headers: headers(userId) });
+      if (publicOrder.statusCode === 200) for (const secret of ['paymentCostEstimate', 'estimatedFeeMinor', 'actualFeeMinor', 'platformCommissionBps']) expect(publicOrder.body).not.toContain(secret);
+    }
+    const docs = (await app.inject({ method: 'GET', url: '/docs/json' })).json();
+    expect(docs.paths['/admin/finance/orders/{orderId}/projection'].get).toBeTruthy();
+    expect(Object.keys(docs.paths).some((path) => /withdraw|salary|cash-balance|external-receipt/.test(path))).toBe(false);
+  });
+
   for (const mode of ['LEGACY_ORDER_POLICY', 'REFERENCE_BPS']) {
     it(`keeps merchandise commission independent in ${mode}, changes only future contracts and preserves finalized income`, async () => {
       if (mode === 'REFERENCE_BPS') {

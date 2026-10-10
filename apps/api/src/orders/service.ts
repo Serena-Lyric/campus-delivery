@@ -25,6 +25,7 @@ import { openExceptionCase } from '../exception-cases/service.js';
 import { DeterministicItemClassifier, classifyItemSafely, type ItemClassifier } from '../item-classifier/classifier.js';
 import { pickupRiskSnapshot } from '../delivery/pickup-risk.js';
 import { defaultDeliveryPricingPolicy, type DeliveryPricingPolicy } from '../pricing/policy.js';
+import { estimatePaymentCost } from '../finance/costs.js';
 import { calculateCheckoutQuote, checkoutQuantities, readCheckoutFacts, type CheckoutInput } from './quote.js';
 
 export type CreateOrderInput = CheckoutInput;
@@ -292,6 +293,7 @@ export async function createOrder(
                   merchantBaseQuoteVersion: merchant.baseDeliveryQuoteVersion,
                   orderPolicyVersion: policyVersion,
                   platformCommissionBps: config.platformCommissionBps,
+                  paymentCostEstimate: estimatePaymentCost(itemSubtotalMinor + deliveryPricing.customerDeliveryFeeMinor, facts.paymentCostPolicy),
                   quoteToken,
                   customerConfirmation: input.expectedQuoteToken ? 'PREVIEW_CONFIRMED' : 'LEGACY_DIRECT_CREATION',
                   contract: 'DEVELOPMENT_QUOTE_ONLY',

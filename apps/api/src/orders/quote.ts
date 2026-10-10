@@ -6,6 +6,7 @@ import { assertStoredMinor, loadDeliveryPricingConfig, pricingConfigLock } from 
 import { defaultDeliveryPricingPolicy, type DeliveryPricingPolicy } from '../pricing/policy.js';
 import { badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
 import { multiplyMinor } from '../shared/money.js';
+import { loadPaymentCostPolicy } from '../finance/costs.js';
 
 export type CheckoutInput = {
   merchantId: string;
@@ -34,6 +35,7 @@ export async function readCheckoutFacts(tx: Prisma.TransactionClient, input: Che
   await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(${pricingConfigLock})`;
   const policy = await loadPolicyConfig(tx);
   const pricingConfig = await loadDeliveryPricingConfig(tx);
+  const paymentCostPolicy = await loadPaymentCostPolicy(tx);
   await tx.$queryRaw`SELECT "id" FROM "Merchant" WHERE "id" = ${input.merchantId}::uuid FOR SHARE`;
   const productIds = [...quantities.keys()].sort();
   await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id" IN (${Prisma.join(productIds.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY "id" FOR SHARE`;
@@ -61,7 +63,7 @@ export async function readCheckoutFacts(tx: Prisma.TransactionClient, input: Che
   if (!merchant.supportedDeliveryMethods.includes(input.deliveryMethod) || !location.supportedDeliveryMethods.includes(input.deliveryMethod)) {
     throw badRequest('DELIVERY_METHOD_UNAVAILABLE', 'Selected delivery method is not available for this merchant and location');
   }
-  return { ...policy, pricingConfig, merchant, location, products };
+  return { ...policy, pricingConfig, paymentCostPolicy, merchant, location, products };
 }
 
 export function calculateCheckoutQuote(

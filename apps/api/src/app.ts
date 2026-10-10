@@ -23,6 +23,7 @@ import { installErrorHandler } from './shared/errors.js';
 import { registerSubsidyRoutes } from './subsidy/routes.js';
 import { registerTimelineRoutes } from './timeline/routes.js';
 import { registerVerificationRoutes } from './verification/routes.js';
+import { registerFinanceRoutes } from './finance/routes.js';
 
 export async function buildApp(config: AppConfig, prisma: PrismaClient) {
   const app = Fastify({
@@ -70,6 +71,7 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
   await registerVerificationRoutes(app, prisma, config);
   await registerTimelineRoutes(app, prisma, config);
   await registerSettlementRoutes(app, prisma, config);
+  await registerFinanceRoutes(app, prisma, config);
 
   const stopLifecycleProcessor = startLifecycleProcessor(prisma, config, app.log);
   app.addHook('onClose', async () => stopLifecycleProcessor());
