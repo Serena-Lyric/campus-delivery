@@ -124,6 +124,9 @@ enum OrderEventType {
   RIDER_CLAIMED
   RIDER_ABANDONED
   RIDER_PRE_PICKUP_CANCELLED
+  RIDER_CATALOG_RISK_REPORTED
+  CATALOG_RISK_CORRECTED
+  CATALOG_RISK_REPUBLISHED
   MERCHANT_QUOTE_UPDATED
   RIDER_TIP_UPDATED
   PLATFORM_SUBSIDY_ADDED
@@ -142,6 +145,7 @@ enum OrderEventActorType {
 }
 
 enum DeliveryTaskStatus {
+  RISK_REVIEW
   OPEN
   CLAIMED
   PICKED_UP
@@ -458,6 +462,8 @@ model Order {
   deliveryMethod               DeliveryMethod
   deliveryVerificationMode     DeliveryVerificationMode
   pickupVerificationMode       PickupVerificationMode
+  pickupRiskRevision            Int @default(0)
+  catalogRiskReports            CatalogRiskReport[]
   coreFragileValueMinor         Int @default(0)
   pickupEvidenceLevel           PickupEvidenceLevel @default(NONE)
   pickupEvidencePolicyVersion   Int @default(0)
@@ -591,6 +597,7 @@ model DeliveryAssignment {
   quoteVersionAtClaim                      Int
   claimSampleType                          ClaimSampleType
   claimLatencySeconds                      Int
+  catalogRiskReport                        CatalogRiskReport?
   tipEvents                                RiderTipEvent[]
   cancellationEvents                       RiderCancellationEvent[]
   createdAt                                DateTime                 @default(now())
@@ -1055,4 +1062,23 @@ model BusinessConfig {
 
   @@unique([key, version])
   @@index([key, isActive, version])
+}
+
+model CatalogRiskReport {
+  id                  String @id @default(uuid()) @db.Uuid
+  orderId             String @db.Uuid
+  order               Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  assignmentId        String @unique @db.Uuid
+  assignment          DeliveryAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  orderItemId         String @db.Uuid
+  observedCategoryCode String
+  reason              String
+  evidenceIds         String[] @default([]) @db.Uuid
+  originalRiskSnapshot Json
+  correctedAt         DateTime?
+  correctedRevision   Int?
+  republishedAt       DateTime?
+  createdAt           DateTime @default(now())
+
+  @@index([orderId, createdAt])
 }

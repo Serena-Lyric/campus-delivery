@@ -83,6 +83,7 @@ function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown) {
     pickupVerificationMode: order.pickupVerificationMode,
     deliveryEvidenceRequired: order.deliveryEvidenceRequired,
     pickupRisk: {
+      revision: order.pickupRiskRevision,
       coreFragileValueMinor: order.coreFragileValueMinor,
       evidenceLevel: order.pickupEvidenceLevel,
       policyVersion: order.pickupEvidencePolicyVersion,

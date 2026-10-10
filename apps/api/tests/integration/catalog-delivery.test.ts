@@ -11,8 +11,8 @@ import { saveProduct } from '../../src/catalog/service.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import type { AppConfig } from '../../src/config.js';
-import { getMyCapacity } from '../../src/riders/capacity.js';
-import { releaseExpiredCoolingOrders } from '../../src/orders/lifecycle.js';
+import { correctCatalogRisk, republishCorrectedOrder, reportCatalogRisk } from '../../src/catalog/risk-correction.js';
+import { expireUnclaimedDeliveryTasks, releaseExpiredCoolingOrders } from '../../src/orders/lifecycle.js';
 import { createOrder } from '../../src/orders/service.js';
 import type { ItemClassifier } from '../../src/item-classifier/classifier.js';
 import { demoPolicy, seedDatabase, seedIds } from '../../prisma/seed.js';
@@ -80,25 +80,6 @@ describe('merchant display catalog and authoritative delivery snapshots', () => 
     await app.close();
     await prisma.$disconnect();
   });
-
-  async function createReady() {
-    const created = await app.inject({
-      method: 'POST', url: '/orders', headers: headers(seedIds.customer),
-      payload: {
-        merchantId: seedIds.merchant,
-        destinationLocationId: seedIds.dormLocation,
-        deliveryMethod: DeliveryMethod.DESIGNATED_POINT,
-        items: [{ productId: seedIds.productRice, quantity: 1 }, { productId: seedIds.productTea, quantity: 1 }],
-      },
-    });
-    expect(created.statusCode, created.body).toBe(201);
-    const orderId = created.json().id as string;
-    await prisma.order.update({ where: { id: orderId }, data: { coolingOffEndsAt: new Date(Date.now() - 1000) } });
-    await releaseExpiredCoolingOrders(prisma);
-    const confirmed = await app.inject({ method: 'POST', url: `/merchant/orders/${orderId}/confirm`, headers: headers(seedIds.merchantUser) });
-    expect(confirmed.statusCode, confirmed.body).toBe(200);
-    return { orderId, taskId: confirmed.json().deliveryTask.id as string };
-  }
 
   const claim = (taskId: string, riderUser: string) => app.inject({
     method: 'POST', url: `/delivery-tasks/${taskId}/claim`, headers: headers(riderUser),
@@ -295,6 +276,203 @@ describe('merchant display catalog and authoritative delivery snapshots', () => 
     expect(operator.statusCode).toBe(403);
     expect(await prisma.riderCancellationEvent.count()).toBe(0);
     expect((await pickup(task.taskId, { evidenceId: await photo(task.orderId) })).statusCode).toBe(200);
+  });
+
+  async function misdeclared() {
+    const task = await readyFor(seedIds.productRice);
+    const claimed = await claim(task.taskId, seedIds.riderAUser);
+    expect(claimed.statusCode, claimed.body).toBe(200);
+    const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: task.orderId } });
+    return { ...task, input: { assignmentId: claimed.json().activeAssignmentId as string, orderItemId: item.id, observedCategoryCode: 'CAKE' as const, reason: 'actual cake not declared' } };
+  }
+  const riderActor = { id: seedIds.riderAUser, role: 'RIDER' as const, riderId: seedIds.riderA };
+  const reportRisk = (task: Awaited<ReturnType<typeof misdeclared>>, payload = task.input) => app.inject({ method: 'POST', url: `/delivery-tasks/${task.taskId}/report-catalog-risk`, headers: headers(seedIds.riderAUser), payload });
+  const correct = (orderId: string, reportId: string, expectedRevision = 1) => app.inject({ method: 'POST', url: `/merchant/orders/${orderId}/correct-catalog-risk`, headers: headers(seedIds.merchantUser), payload: { reportId, expectedRevision, deliveryCategoryCode: 'CAKE' } });
+  const republish = (orderId: string, reportId: string, expectedRevision = 2) => app.inject({ method: 'POST', url: `/merchant/orders/${orderId}/republish-corrected`, headers: headers(seedIds.merchantUser), payload: { reportId, expectedRevision } });
+
+  it('releases capacity independently of ordinary cancellation and requires correction plus explicit republish', async () => {
+    await prisma.rider.update({ where: { id: seedIds.riderA }, data: { capacityOverride: 1 } });
+    const task = await misdeclared();
+    const original = await prisma.deliveryTask.findUniqueOrThrow({ where: { id: task.taskId } });
+    await prisma.order.update({ where: { id: task.orderId }, data: { merchantPreparationStatus: 'READY_FOR_PICKUP' } });
+    const report = await reportRisk(task);
+    expect(report.statusCode, report.body).toBe(200);
+    const reportId = report.json().report.id as string;
+    expect(await prisma.deliveryTask.findUniqueOrThrow({ where: { id: task.taskId } })).toMatchObject({ status: 'RISK_REVIEW', riderId: null, firstPublishedAt: original.firstPublishedAt, claimDeadline: original.claimDeadline });
+    expect(await prisma.deliveryAssignment.findUniqueOrThrow({ where: { id: task.input.assignmentId } })).toMatchObject({ status: 'ABANDONED', reason: 'MERCHANT_CORE_FRAGILE_MISDECLARATION' });
+    expect(await prisma.riderCancellationEvent.count()).toBe(0);
+    expect(await prisma.riderRestriction.count()).toBe(0);
+    expect((await claim(task.taskId, seedIds.riderBUser)).statusCode).toBe(409);
+    expect((await republish(task.orderId, reportId, 1)).statusCode).toBe(409);
+    const next = await readyFor(seedIds.productTea);
+    expect((await claim(next.taskId, seedIds.riderAUser)).statusCode).toBe(200);
+    const corrected = await correct(task.orderId, reportId);
+    expect(corrected.statusCode, corrected.body).toBe(200);
+    expect(corrected.body).not.toContain('pickupEvidenceRecommendedMinor');
+    expect(corrected.body).not.toContain('pickupEvidenceRequiredMinor');
+    expect(corrected.json()).toMatchObject({ revision: 2, requiresExplicitRepublish: true, risk: { coreFragileValueMinor: 1500, pickupEvidenceLevel: 'NONE' } });
+    expect((await claim(task.taskId, seedIds.riderBUser)).statusCode).toBe(409);
+    const publications = await Promise.all([republish(task.orderId, reportId), republish(task.orderId, reportId)]);
+    expect(publications.map((r) => r.statusCode)).toEqual([200, 200]);
+    expect(await prisma.orderEvent.count({ where: { orderId: task.orderId, eventType: 'CATALOG_RISK_REPUBLISHED' } })).toBe(1);
+    expect(await prisma.deliveryTask.findUniqueOrThrow({ where: { id: task.taskId } })).toMatchObject({ status: 'OPEN', firstPublishedAt: original.firstPublishedAt, claimDeadline: original.claimDeadline });
+    expect((await claim(task.taskId, seedIds.riderBUser)).statusCode).toBe(200);
+    const staleRetry = await reportRisk(task);
+    expect(staleRetry.statusCode).toBe(200);
+    expect((await prisma.deliveryTask.findUniqueOrThrow({ where: { id: task.taskId } })).riderId).toBe(seedIds.riderB);
+  });
+
+  it('makes concurrent duplicate reports idempotent and rejects a changed retry payload', async () => {
+    const task = await misdeclared();
+    const results = await Promise.all([reportRisk(task), reportRisk(task)]);
+    expect(results.map((r) => r.statusCode)).toEqual([200, 200]);
+    expect(results[0]!.json().report.id).toBe(results[1]!.json().report.id);
+    expect(await prisma.catalogRiskReport.count()).toBe(1);
+    expect(await prisma.orderEvent.count({ where: { eventType: 'RIDER_CATALOG_RISK_REPORTED' } })).toBe(1);
+    expect((await reportRisk(task, { ...task.input, reason: 'changed reason' })).statusCode).toBe(409);
+  });
+
+  it('serializes report versus actual pickup without releasing an already picked-up task', async () => {
+    const task = await misdeclared();
+    const [reported, picked] = await Promise.all([reportRisk(task), pickup(task.taskId)]);
+    expect([reported.statusCode, picked.statusCode].filter((code) => code === 200)).toHaveLength(1);
+    const current = await prisma.deliveryTask.findUniqueOrThrow({ where: { id: task.taskId } });
+    if (reported.statusCode === 200) {
+      expect(current).toMatchObject({ status: 'RISK_REVIEW', riderId: null, pickedUpAt: null });
+      expect(await prisma.catalogRiskReport.count()).toBe(1);
+    } else {
+      expect(current).toMatchObject({ status: 'PICKED_UP', riderId: seedIds.riderA });
+      expect(await prisma.catalogRiskReport.count()).toBe(0);
+    }
+    expect(await prisma.riderCancellationEvent.count()).toBe(0);
+  });
+
+  it('keeps custody terminal when reporting races delivery after pickup', async () => {
+    const task = await misdeclared();
+    expect((await pickup(task.taskId)).statusCode).toBe(200);
+    const [reported, delivered] = await Promise.all([reportRisk(task), app.inject({ method: 'POST', url: `/delivery-tasks/${task.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {} })]);
+    expect(reported.statusCode).toBe(409);
+    expect(delivered.statusCode, delivered.body).toBe(200);
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: task.orderId } })).toMatchObject({ status: 'DELIVERED' });
+    expect(await prisma.catalogRiskReport.count()).toBe(0);
+  });
+
+  it('expires late refusal exactly once under an expiry sweep race and refunds the original order', async () => {
+    const task = await misdeclared();
+    const deadline = (await prisma.deliveryTask.findUniqueOrThrow({ where: { id: task.taskId } })).claimDeadline!;
+    const expiredAt = new Date(deadline.getTime() + 1);
+    await Promise.all([reportCatalogRisk(prisma, riderActor, task.taskId, task.input, expiredAt), expireUnclaimedDeliveryTasks(prisma, expiredAt)]);
+    await expireUnclaimedDeliveryTasks(prisma, expiredAt);
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: task.orderId } })).toMatchObject({ status: 'NO_RIDER_ACCEPTED' });
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: task.orderId } })).toMatchObject({ customerRefundMinor: 1800 });
+    expect(await prisma.orderEvent.count({ where: { orderId: task.orderId, eventType: 'NO_RIDER_ACCEPTED' } })).toBe(1);
+    expect(await prisma.riderSettlement.count({ where: { orderId: task.orderId } })).toBe(0);
+    expect((await claim(task.taskId, seedIds.riderBUser)).statusCode).toBe(409);
+  });
+
+  it('expires a paused or corrected order at its original deadline and rejects stale correction/republish', async () => {
+    const task = await misdeclared();
+    const report = await reportRisk(task);
+    const reportId = report.json().report.id as string;
+    expect((await correct(task.orderId, reportId, 0)).statusCode).toBe(409);
+    expect((await correct(task.orderId, reportId)).statusCode).toBe(200);
+    expect((await republish(task.orderId, reportId, 1)).statusCode).toBe(409);
+    const deadline = (await prisma.deliveryTask.findUniqueOrThrow({ where: { id: task.taskId } })).claimDeadline!;
+    const expiredAt = new Date(deadline.getTime() + 1);
+    const race = await Promise.allSettled([republishCorrectedOrder(prisma, merchant, task.orderId, { reportId, expectedRevision: 2 }, expiredAt), expireUnclaimedDeliveryTasks(prisma, expiredAt)]);
+    expect(race[1]!.status).toBe('fulfilled');
+    if (race[0]!.status === 'rejected') expect(race[0]!.reason).toMatchObject({ code: 'RISK_REPUBLISH_NOT_ALLOWED', statusCode: 409 });
+    else expect(race[0]!.value).toMatchObject({ expired: true });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: task.orderId } })).status).toBe('NO_RIDER_ACCEPTED');
+    expect(await prisma.orderEvent.count({ where: { orderId: task.orderId, eventType: 'CATALOG_RISK_REPUBLISHED' } })).toBe(0);
+    expect((await claim(task.taskId, seedIds.riderBUser)).statusCode).toBe(409);
+    await prisma.product.update({ where: { id: seedIds.productRice }, data: { deliveryCategoryCode: 'ORDINARY_MEAL' } });
+    const paused = await misdeclared();
+    expect((await reportRisk(paused)).statusCode).toBe(200);
+    const pausedDeadline = (await prisma.deliveryTask.findUniqueOrThrow({ where: { id: paused.taskId } })).claimDeadline!;
+    expect(await expireUnclaimedDeliveryTasks(prisma, new Date(pausedDeadline.getTime() + 1))).toBe(1);
+    expect((await prisma.deliveryTask.findUniqueOrThrow({ where: { id: paused.taskId } })).status).toBe('NO_RIDER_ACCEPTED');
+  });
+
+  it('preserves sold contents, money, other earned balances and original threshold policy through correction', async () => {
+    const earned = await readyFor(seedIds.productTea);
+    await claim(earned.taskId, seedIds.riderAUser);
+    await pickup(earned.taskId);
+    expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${earned.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {} })).statusCode).toBe(200);
+    const balance = await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: earned.orderId } });
+    const task = await misdeclared();
+    expect((await app.inject({ method: 'POST', url: `/orders/${task.orderId}/rider-tip-adjustments`, headers: headers(seedIds.customer), payload: { deltaMinor: 80 } })).statusCode).toBe(201);
+    const prices = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: task.orderId } });
+    const sold = await prisma.orderItem.findUniqueOrThrow({ where: { id: task.input.orderItemId } });
+    const report = await reportRisk(task);
+    expect((await app.inject({ method: 'PUT', url: '/admin/business-configs/ORDER_POLICY', headers: headers(seedIds.admin), payload: { payload: { ...demoPolicy, fragilePickupRecommendedMinor: 1000, fragilePickupRequiredMinor: 1200 }, reason: 'new policy after sale' } })).statusCode).toBe(200);
+    expect((await correct(task.orderId, report.json().report.id)).statusCode).toBe(200);
+    const corrected = await prisma.orderItem.findUniqueOrThrow({ where: { id: sold.id } });
+    expect(corrected).toMatchObject({ productId: sold.productId, productNameSnapshot: sold.productNameSnapshot, unitPriceMinor: sold.unitPriceMinor, quantity: sold.quantity, subtotalMinor: sold.subtotalMinor, deliveryCategoryCodeSnapshot: 'CAKE' });
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: task.orderId } })).toEqual(prices);
+    expect(await prisma.riderSettlement.findUniqueOrThrow({ where: { id: balance.id } })).toEqual(balance);
+    expect(await prisma.riderSettlement.count({ where: { orderId: task.orderId } })).toBe(0);
+    expect(await prisma.compensationObligation.count()).toBe(0);
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: task.orderId } })).toMatchObject({ pickupEvidenceLevel: 'NONE', pickupEvidencePolicyVersion: 1, pickupEvidenceRecommendedMinor: 1500 });
+    expect(await prisma.riderCancellationEvent.count()).toBe(0);
+  });
+
+  it('isolates merchant correction, prevents amount changes, and publishes the new endpoints in OpenAPI', async () => {
+    const task = await misdeclared();
+    const report = await reportRisk(task);
+    const reportId = report.json().report.id as string;
+    await expect(correctCatalogRisk(prisma, { ...merchant, merchantId: randomUUID() }, task.orderId, { reportId, expectedRevision: 1, deliveryCategoryCode: 'CAKE' })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(republishCorrectedOrder(prisma, { ...merchant, merchantId: randomUUID() }, task.orderId, { reportId, expectedRevision: 1 })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(reportCatalogRisk(prisma, { ...riderActor, riderId: seedIds.riderB }, task.taskId, task.input)).rejects.toMatchObject({ statusCode: 403 });
+    const bad = await app.inject({ method: 'POST', url: `/merchant/orders/${task.orderId}/correct-catalog-risk`, headers: headers(seedIds.merchantUser), payload: { reportId, expectedRevision: 1, deliveryCategoryCode: 'ORDINARY_MEAL', priceMinor: 1 } });
+    expect(bad.statusCode).toBe(400);
+    const state = await app.inject({ method: 'GET', url: `/merchant/orders/${task.orderId}/catalog-risk`, headers: headers(seedIds.merchantUser) });
+    expect(state.json()).toMatchObject({ revision: 1, task: { status: 'RISK_REVIEW' }, reports: [{ id: reportId }] });
+    expect(JSON.stringify(state.json())).not.toContain('assignmentId');
+    const paths = app.swagger().paths!;
+    for (const path of ['/delivery-tasks/{taskId}/report-catalog-risk', '/merchant/orders/{orderId}/correct-catalog-risk', '/merchant/orders/{orderId}/republish-corrected', '/delivery-tasks/{taskId}/pickup-evidence-unavailable']) expect(paths[path]).toBeDefined();
+  });
+
+  it('does not reuse a photo from an abandoned claim when the same rider reclaims a corrected core order', async () => {
+    await prisma.product.update({ where: { id: seedIds.productRice }, data: { priceMinor: 6000 } });
+    const task = await misdeclared();
+    const oldPhoto = await photo(task.orderId);
+    const report = await reportRisk(task);
+    const reportId = report.json().report.id as string;
+    expect((await correct(task.orderId, reportId)).statusCode).toBe(200);
+    expect((await republish(task.orderId, reportId)).statusCode).toBe(200);
+    expect((await claim(task.taskId, seedIds.riderAUser)).statusCode).toBe(200);
+    expect((await pickup(task.taskId, { evidenceId: oldPhoto })).statusCode).toBe(409);
+    expect((await pickup(task.taskId, { evidenceId: await photo(task.orderId) })).statusCode).toBe(200);
+  });
+
+  it('preserves rescue, tip and subsidy funding while refusing, correcting and reclaiming an order', async () => {
+    const task = await readyFor(seedIds.productRice);
+    await prisma.orderPricing.update({ where: { orderId: task.orderId }, data: { merchantRescueUpdatedAt: new Date(Date.now() - 16000) } });
+    expect((await app.inject({ method: 'PATCH', url: `/merchant/orders/${task.orderId}/delivery-quote`, headers: headers(seedIds.merchantUser), payload: { newRescueContributionMinor: 100 } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/orders/${task.orderId}/rider-tip-adjustments`, headers: headers(seedIds.customer), payload: { deltaMinor: 50 } })).statusCode).toBe(201);
+    await prisma.deliveryTask.update({ where: { id: task.taskId }, data: { firstPublishedAt: new Date(Date.now() - 700000) } });
+    const subsidy = await app.inject({ method: 'POST', url: `/admin/orders/${task.orderId}/platform-subsidies`, headers: headers(seedIds.admin), payload: { requestedMinor: 50, reason: 'funding regression' } });
+    expect(subsidy.statusCode, subsidy.body).toBe(201);
+    const claimed = await claim(task.taskId, seedIds.riderAUser);
+    expect(claimed.statusCode, claimed.body).toBe(200);
+    const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: task.orderId } });
+    const snapshot = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: task.orderId } });
+    const subsidyAccount = await prisma.merchantSubsidyAccount.findUniqueOrThrow({ where: { id: seedIds.subsidyAccount } });
+    const reported = await reportRisk({ ...task, input: { assignmentId: claimed.json().activeAssignmentId, orderItemId: item.id, observedCategoryCode: 'CAKE', reason: 'core cake omitted' } });
+    expect(reported.statusCode, reported.body).toBe(200);
+    const reportId = reported.json().report.id as string;
+    expect((await correct(task.orderId, reportId)).statusCode).toBe(200);
+    expect((await republish(task.orderId, reportId)).statusCode).toBe(200);
+    const replacement = await claim(task.taskId, seedIds.riderBUser);
+    expect(replacement.statusCode).toBe(200);
+    expect(replacement.json().riderGuaranteedPayoutMinor).toBe(snapshot.riderGuaranteedPayoutMinor);
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: task.orderId } })).toEqual(snapshot);
+    expect(await prisma.merchantSubsidyAccount.findUniqueOrThrow({ where: { id: subsidyAccount.id } })).toEqual(subsidyAccount);
+    expect(await prisma.riderSettlement.count({ where: { orderId: task.orderId } })).toBe(0);
+    expect(await prisma.compensationObligation.count()).toBe(0);
+    expect(await prisma.riderCancellationEvent.count()).toBe(0);
+    expect(await prisma.deliveryAssignment.count({ where: { taskId: task.taskId, status: 'ACTIVE' } })).toBe(1);
   });
 
 });

@@ -19,7 +19,7 @@ export async function expireOpenDeliveryTask(
   });
   if (
     !task
-    || task.status !== DeliveryTaskStatus.OPEN
+    || (task.status !== DeliveryTaskStatus.OPEN && task.status !== DeliveryTaskStatus.RISK_REVIEW)
     || task.riderId
     || !task.claimDeadline
     || task.claimDeadline > now
@@ -124,7 +124,7 @@ export async function expireUnclaimedDeliveryTasks(
 ): Promise<number> {
   const candidates = await prisma.deliveryTask.findMany({
     where: {
-      status: DeliveryTaskStatus.OPEN,
+      status: { in: [DeliveryTaskStatus.OPEN, DeliveryTaskStatus.RISK_REVIEW] },
       riderId: null,
       claimDeadline: { lte: now },
     },

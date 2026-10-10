@@ -7,6 +7,7 @@ import { loadPolicyConfig } from '../merchant-policy/policies.js';
 import { forbidden, notFound } from '../shared/errors.js';
 import { getMerchantRiskSummary } from '../merchant-risk/service.js';
 import { CategoryBody, ProductBody, productSelect, deliveryCategorySelect, saveCategory, saveProduct, type CategoryInput, type ProductInput } from './service.js';
+import { correctCatalogRisk, getCatalogRiskForMerchant, republishCorrectedOrder } from './risk-correction.js';
 import { isMerchantVisibleToCustomer } from './visibility.js';
 
 const IdParams = Type.Object({ merchantId: Type.String({ format: 'uuid' }) });
@@ -43,6 +44,19 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
     const { expectedVersion, ...input } = request.body;
     return saveProduct(prisma, actorOf(request), input, request.params.id, expectedVersion);
   });
+
+  const OrderParams = Type.Object({ orderId: Type.String({ format: 'uuid' }) });
+  const ReportRevision = { reportId: Type.String({ format: 'uuid' }), expectedRevision: Type.Integer({ minimum: 0 }) };
+  app.get<{ Params: { orderId: string } }>('/merchant/orders/:orderId/catalog-risk', {
+    preHandler: merchantOnly, schema: { tags: ['catalog'], params: OrderParams },
+  }, async (request) => getCatalogRiskForMerchant(prisma, actorOf(request), request.params.orderId));
+  app.post<{ Params: { orderId: string }; Body: { reportId: string; expectedRevision: number; deliveryCategoryCode: string } }>('/merchant/orders/:orderId/correct-catalog-risk', {
+    preHandler: merchantOnly, schema: { tags: ['catalog'], params: OrderParams,
+      body: Type.Object({ ...ReportRevision, deliveryCategoryCode: Type.Union([Type.Literal('CAKE'), Type.Literal('SUNDAE')]) }, { additionalProperties: false }) },
+  }, async (request) => correctCatalogRisk(prisma, actorOf(request), request.params.orderId, request.body));
+  app.post<{ Params: { orderId: string }; Body: { reportId: string; expectedRevision: number } }>('/merchant/orders/:orderId/republish-corrected', {
+    preHandler: merchantOnly, schema: { tags: ['catalog'], params: OrderParams, body: Type.Object(ReportRevision, { additionalProperties: false }) },
+  }, async (request) => republishCorrectedOrder(prisma, actorOf(request), request.params.orderId, request.body));
 
   app.get('/campus-locations', { preHandler: authenticate, schema: { tags: ['catalog'] } }, async () => {
     return prisma.campusLocation.findMany({

@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
 import { actorOf, authGuard } from '../auth/auth.js';
+import { reportCatalogRisk, type CatalogRiskInput } from '../catalog/risk-correction.js';
 import type { AppConfig } from '../config.js';
 import {
   claimTask,
@@ -45,6 +46,16 @@ export async function registerDeliveryRoutes(app: FastifyInstance, prisma: Prism
     preHandler: rider,
     schema: { tags: ['delivery'], params: TaskIdParams, body: EvidenceBody },
   }, async (request) => pickUpTask(prisma, actorOf(request), request.params.taskId, request.body.evidenceId, request.body.pickupPhotoEvidenceId));
+
+  app.post<{ Params: { taskId: string }; Body: CatalogRiskInput }>('/delivery-tasks/:taskId/report-catalog-risk', {
+    preHandler: rider,
+    schema: { tags: ['delivery'], params: TaskIdParams, body: Type.Object({
+      assignmentId: Type.String({ format: 'uuid' }), orderItemId: Type.String({ format: 'uuid' }),
+      observedCategoryCode: Type.Union([Type.Literal('CAKE'), Type.Literal('SUNDAE')]),
+      reason: Type.String({ minLength: 1, maxLength: 500, pattern: '\\S' }),
+      evidenceIds: Type.Optional(Type.Array(Type.String({ format: 'uuid' }), { maxItems: 10, uniqueItems: true })),
+    }, { additionalProperties: false }) },
+  }, async (request) => reportCatalogRisk(prisma, actorOf(request), request.params.taskId, request.body));
 
   app.post<{ Params: { taskId: string }; Body: { reason: string } }>('/delivery-tasks/:taskId/pickup-evidence-unavailable', {
     preHandler: rider,

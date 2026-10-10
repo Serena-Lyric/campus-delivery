@@ -35,6 +35,7 @@ const taskSelect = {
   deliveredAt: true,
   createdAt: true,
   updatedAt: true,
+  assignments: { where: { status: DeliveryAssignmentStatus.ACTIVE }, select: { id: true, riderId: true } },
   order: {
     select: {
       id: true,
@@ -47,6 +48,7 @@ const taskSelect = {
       pickupRegionSnapshot: true,
       deliveryMethod: true,
       merchantPreparationStatus: true,
+      pickupRiskRevision: true,
       coreFragileValueMinor: true,
       pickupEvidenceLevel: true,
       pickupEvidencePolicyVersion: true,
@@ -72,11 +74,12 @@ const taskSelect = {
 
 type RiderTask = Prisma.DeliveryTaskGetPayload<{ select: typeof taskSelect }>;
 
-function presentRiderTask(task: RiderTask) {
+function presentRiderTask(task: RiderTask, actor?: Actor) {
   const totalQuantity = task.order.items.reduce((sum, item) => sum + item.quantity, 0);
   return {
     id: task.id,
     orderId: task.orderId,
+    activeAssignmentId: task.assignments.find((assignment) => assignment.riderId === actor?.riderId)?.id,
     status: task.status,
     riderGuaranteedPayoutMinor: task.payoutMinor,
     firstPublishedAt: task.firstPublishedAt,
@@ -102,6 +105,7 @@ function presentRiderTask(task: RiderTask) {
       handlingTags: [...new Set(task.order.items.flatMap((item) => item.handlingTags))],
     },
     pickupRisk: {
+      revision: task.order.pickupRiskRevision,
       coreFragileValueMinor: task.order.coreFragileValueMinor,
       evidenceLevel: task.order.pickupEvidenceLevel,
       policyVersion: task.order.pickupEvidencePolicyVersion,
@@ -129,6 +133,7 @@ async function requireEvidence(
   actor: Actor,
   expectedType: EvidenceType,
   stage: OrderStatus,
+  notBefore?: Date,
 ) {
   if (!evidenceId) throw conflict('EVIDENCE_REQUIRED', `${expectedType} evidence is required`);
   const evidence = await tx.evidence.findFirst({
@@ -136,6 +141,8 @@ async function requireEvidence(
       id: evidenceId,
       orderId,
       actorId: actor.id,
+      actorRole: actor.role,
+      ...(notBefore ? { createdAt: { gte: notBefore } } : {}),
       evidenceType: expectedType,
       orderStage: stage,
     },
@@ -156,7 +163,7 @@ export async function listAvailableTasks(prisma: PrismaClient, limit: number, of
     take: limit,
     skip: offset,
   });
-  return tasks.map(presentRiderTask);
+  return tasks.map((task) => presentRiderTask(task));
 }
 
 export async function listRiderTasks(prisma: PrismaClient, actor: Actor, limit: number, offset: number) {
@@ -168,7 +175,7 @@ export async function listRiderTasks(prisma: PrismaClient, actor: Actor, limit: 
     take: limit,
     skip: offset,
   });
-  return tasks.map(presentRiderTask);
+  return tasks.map((task) => presentRiderTask(task, actor));
 }
 
 export async function claimTask(
@@ -265,7 +272,7 @@ export async function claimTask(
         claimLatencySeconds,
       },
     });
-    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: taskId }, select: taskSelect }));
+    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: taskId }, select: taskSelect }), actor);
   });
 }
 
@@ -295,6 +302,7 @@ export async function pickUpTask(
         actor,
         EvidenceType.RIDER_PICKUP_PHOTO,
         OrderStatus.CLAIMED,
+        task.claimedAt ?? undefined,
       );
     } else if (task.order.pickupVerificationMode === PickupVerificationMode.PICKUP_CODE) {
       await requireEvidence(
@@ -304,11 +312,12 @@ export async function pickUpTask(
         actor,
         EvidenceType.PICKUP_CODE_VERIFICATION,
         OrderStatus.CLAIMED,
+        task.claimedAt ?? undefined,
       );
     }
 
     if (task.order.pickupEvidenceLevel === PickupEvidenceLevel.REQUIRED) {
-      const photo = await requireEvidence(tx, pickupPhotoEvidenceId ?? evidenceId, task.orderId, actor, EvidenceType.RIDER_PICKUP_PHOTO, OrderStatus.CLAIMED);
+      const photo = await requireEvidence(tx, pickupPhotoEvidenceId ?? evidenceId, task.orderId, actor, EvidenceType.RIDER_PICKUP_PHOTO, OrderStatus.CLAIMED, task.claimedAt ?? undefined);
       const metadata = photo.metadata as { contentType?: unknown } | null;
       if (photo.actorRole !== 'RIDER'
         || !photo.mediaReference?.startsWith(`mock://evidence/${task.orderId}/`)
@@ -326,7 +335,7 @@ export async function pickUpTask(
       where: { id: task.id },
       data: { status: DeliveryTaskStatus.PICKED_UP, pickedUpAt: new Date() },
     });
-    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect }));
+    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect }), actor);
   });
 }
 
@@ -443,7 +452,7 @@ export async function deliverTask(
       },
     });
     await recordFirstNormalDelivery(tx, actor.riderId, now, campusTimeZone);
-    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect }));
+    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect }), actor);
   });
 }
 
