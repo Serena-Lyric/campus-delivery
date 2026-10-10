@@ -1,3 +1,4 @@
+import { merchantPickup } from './pickup-helper.js';
 import {
   DeliveryMethod,
   DeliveryTaskStatus,
@@ -53,6 +54,7 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
   });
 
   beforeEach(async () => {
+    await prisma.riderBlockedMerchant.deleteMany();
     await prisma.compensationAllocation.deleteMany();
     await prisma.compensationObligation.deleteMany();
     await prisma.remakeProposal.deleteMany();
@@ -112,8 +114,8 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     return app.inject({ method: 'POST', url: `/delivery-tasks/${taskId}/claim`, headers: headers(riderUser) });
   }
 
-  async function pickup(taskId: string, riderUser = seedIds.riderAUser) {
-    return app.inject({ method: 'POST', url: `/delivery-tasks/${taskId}/pick-up`, headers: headers(riderUser), payload: {} });
+  async function pickup(taskId: string, _riderUser = seedIds.riderAUser) {
+    return merchantPickup(app, prisma, taskId);
   }
 
   async function pickedUpOrder() {

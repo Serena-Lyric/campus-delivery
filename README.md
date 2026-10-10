@@ -6,11 +6,12 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 本阶段仍是模块化单体 REST API。当前重点是修复独立审核确认的资金与状态机安全问题，并保持骑手容量、订单池快照和低风险分类基础设施一致。商家初始配送金额的真实结算语义仍待 W/真实运营经验验证，本轮不作决定。
 
-## 2026-10-08 新增的产品设计（尚未实施）
+## 2026-10-10 履约与管理员能力边界
 
-- 易损商品如蛋糕、圣代的取餐证据规则：易损商品相关价值 > ¥15 建议照片，> ¥50 强制有效照片或审计化例外；阈值由新的一级管理员/root 控制台配置。**金额按同订单全部已核定易损商品行小计之和**（两份 ¥30 圣代计 ¥60、强制），优惠分摊、标签权威来源和拍照不可用流程仍待确认，详情见 `FRAGILE_PICKUP_EVIDENCE_DECISIONS.md`。照片仅证明取餐时可见状态，不自动判定骑手无责。
+- 易损商品如蛋糕、圣代的取餐证据规则：易损商品相关价值 > ¥15 建议照片，> ¥50 强制有效照片或审计化例外；阈值由新的一级管理员/root 控制台配置。**金额按同订单全部已核定易损商品行小计之和**（两份 ¥30 圣代计 ¥60、强制），优惠分摊、无法拍照时的替代凭证及放行权限仍待确认，详情见 `FRAGILE_PICKUP_EVIDENCE_DECISIONS.md`。照片仅证明取餐时可见状态，不自动判定骑手无责。
 - 管理员产品方向是 **不可通过普通后台任免/删除/撤销的特殊 Root 身份 + 可扩展运营层级**；首版普通管理员为一级运营管理、二级（暂定客服），未来可增加三级、四级或中间层，业务权限由 Root 受控下放。Root 可参与但通常不上线，作为最后应急权能；不能将密码、永久令牌硬编码于程序。详见 `ADMIN_ROLE_DECISIONS.md` 和主产品决策。
-- **当前真实后端尚未升级**：`AdminLevel` 依然只有 `OPERATOR/SUPER_ADMIN`，现有 API 中相应权限名称、Seed 角色与旧级别权限说明描述的是**当前实现**；`pickUpTask()` 仍只有既有取餐验证模式，尚无金额驱动的强制取证。不能将新设计当作 runtime enforce，也不能直接运行旧 `CODEX_TASK.md` 进行权限变更。
+- **当前运行时**：商品标准履约分类与商家货架独立，核心易损金额聚合及创建时冻结的取证等级已执行；普通取餐改为商家确认，骑手可立即提出交接异议，经专用人工核实纠正。个人商家黑名单只过滤本人未来订单并限制 claim。媒体仍为 Mock reference，无法取证上报不豁免强制照片。
+- **管理员迁移尚未实施**：`AdminLevel` 仍为 `OPERATOR/SUPER_ADMIN`；取证阈值临时由旧 SUPER_ADMIN 修改。Root、可扩展等级与认证、真实支付、商家惩戒仍待后续任务。
 
 ## 技术栈
 
@@ -148,6 +149,10 @@ CREATED 表示冷静期。后台处理器在 coolingOffEndsAt 到期后原子推
 
 一次性码只保存加盐哈希。明文只在签发响应中返回，重新签发会使旧码失效。成功验证自动创建代码验证 Evidence。
 
+取餐由本单商家针对 activeAssignmentId、pickupProtocol.revision、requestKey 确认，普通骑手取餐 POST 已弃用并返回 409。PICKUP_CODE 由系统签发给当前骑手，商家可仅输入六位数字完成核验（codeId 可选）；码绑定本次承接和交接 revision。工程默认有效期取现有配置与 10 分钟较小值，同一承接 10 分钟内最多 5 次签发和 5 次错误尝试。PHOTO 及核心易损 REQUIRED 照片要求继续执行；原金额快照不因商家确认改写。
+
+骑手在商家确认后可对本次 handoff 提交未实际取餐争议，未决及 INCONCLUSIVE 会阻止正常送达和资金处分。获分派案件的管理员核实未交货时，通过专用版本化审计更正恢复 CLAIMED；若同时有漏报核心易损声明，则原子进入既有 RISK_REVIEW 和免普通取消的解除承接路径，等待商家更正并明确重新发布。核实已交货则继续配送，不自动建立赔偿债务。普通状态机不允许 PICKED_UP 自由回退。原接单截止时间始终保留，截止前已合法承接者可以在截止后正常交接。
+
 ## Evidence
 
 Evidence 独立保存订单、操作者、角色、类型、订单阶段、媒体引用、备注和结构化元数据。
@@ -269,7 +274,7 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
 | POST | /orders/:orderId/evidence | 商家/骑手/管理员 | 创建照片 Evidence |
 | POST | /orders/:orderId/exceptions | 订单相关方 | 报告结构化异常 |
 | POST | /orders/:orderId/delivery-code | 用户 | 签发交付码 |
-| POST | /orders/:orderId/pickup-code | 商家 | 签发取餐码 |
+| POST | /orders/:orderId/pickup-code | 商家 | 已弃用，409；改用骑手签发接口 |
 | GET | /orders/:orderId/pricing | 订单相关方 | 角色隔离价格视图 |
 | POST | /orders/:orderId/rider-tip-adjustments | 用户 | 调整或追加骑手激励 |
 | POST | /merchant/orders/:orderId/confirm | 商家 | 确认并立即发布到骑手池 |
@@ -279,8 +284,15 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
 | GET | /delivery-tasks/mine | 骑手 | 查看参与过的任务 |
 | POST | /delivery-tasks/:taskId/claim | 骑手 | 原子抢单 |
 | POST | /delivery-tasks/:taskId/pre-pickup-cancel | 骑手 | 取餐前有限无责取消并回原池 |
-| POST | /delivery-tasks/:taskId/verify-pickup-code | 骑手 | 验证取餐码 |
-| POST | /delivery-tasks/:taskId/pick-up | 骑手 | 验证并取餐 |
+| POST | /delivery-tasks/:taskId/verify-pickup-code | 骑手 | 已弃用，409；由商家确认时核验 |
+| POST | /delivery-tasks/:taskId/pick-up | 骑手 | 已弃用，409；由商家确认交接 |
+| POST | /delivery-tasks/:taskId/pickup-code | 当前承接骑手 | 签发本人可见的绑定数字码 |
+| POST | /merchant/orders/:orderId/confirm-rider-pickup | 本单商家 | 按当前承接及 revision 确认取餐 |
+| POST | /delivery-tasks/:taskId/dispute-pickup | 当前承接骑手 | 否认实物交接，可附漏报易损声明 |
+| POST | /merchant/orders/:orderId/acknowledge-pickup-mistake | 本单商家 | 留痕确认误点、实物仍在店 |
+| POST | /admin/pickup-disputes/:disputeId/resolve | 获分派管理员 | 核实交接、受控更正或继续等待 |
+| GET | /rider/blocked-merchants | 骑手 | 本人的屏蔽商家 |
+| PUT / DELETE | /rider/blocked-merchants/:merchantId | 骑手 | 幂等屏蔽或解除屏蔽 |
 | POST | /delivery-tasks/:taskId/deliver | 骑手 | 验证并送达 |
 | GET | /riders/me/settlements | 骑手 | 查看待结算资金 |
 | GET | /riders/me/restrictions | 骑手 | 查看取消计数、warning、暂停和冷却 |

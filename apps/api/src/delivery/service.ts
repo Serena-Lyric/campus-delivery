@@ -5,8 +5,6 @@ import {
   EvidenceType,
   OrderEventType,
   OrderStatus,
-  PickupVerificationMode,
-  PickupEvidenceLevel,
   ExceptionType,
   RiderSettlementStatus,
   SettlementStatus,
@@ -23,6 +21,7 @@ import { assertRiderCanClaim } from '../riders/restrictions.js';
 import { openExceptionCase } from '../exception-cases/service.js';
 import { recordFirstNormalDelivery, resolveRiderCapacity } from '../riders/capacity.js';
 import { requireRider } from '../riders/blocklist.js';
+import { assertNoPickupDispute } from './custody-guard.js';
 
 const taskSelect = {
   id: true,
@@ -50,6 +49,8 @@ const taskSelect = {
       deliveryMethod: true,
       merchantPreparationStatus: true,
       pickupRiskRevision: true,
+      pickupHandoffRevision: true,
+      pickupHandoffs: { select: { id: true, assignmentId: true, revision: true, eventId: true, createdAt: true, dispute: { select: { id: true, caseId: true, status: true, version: true, merchantAcknowledgedAt: true } } }, orderBy: { revision: 'desc' }, take: 1 },
       coreFragileValueMinor: true,
       pickupEvidenceLevel: true,
       pickupEvidencePolicyVersion: true,
@@ -76,11 +77,15 @@ const taskSelect = {
 type RiderTask = Prisma.DeliveryTaskGetPayload<{ select: typeof taskSelect }>;
 
 function presentRiderTask(task: RiderTask, actor?: Actor) {
+  const activeAssignmentId = task.assignments.find((assignment) => assignment.riderId === actor?.riderId)?.id;
+  const latestHandoff = task.order.pickupHandoffs[0];
+  const handoff = latestHandoff?.assignmentId === activeAssignmentId ? latestHandoff ?? null : null;
   const totalQuantity = task.order.items.reduce((sum, item) => sum + item.quantity, 0);
   return {
     id: task.id,
     orderId: task.orderId,
-    activeAssignmentId: task.assignments.find((assignment) => assignment.riderId === actor?.riderId)?.id,
+    activeAssignmentId,
+    pickupProtocol: { confirmationBy: 'MERCHANT', revision: task.order.pickupHandoffRevision, handoff, canDisputePickup: task.status === 'PICKED_UP' && handoff?.revision === task.order.pickupHandoffRevision },
     status: task.status,
     riderGuaranteedPayoutMinor: task.payoutMinor,
     firstPublishedAt: task.firstPublishedAt,
@@ -283,66 +288,10 @@ export async function claimTask(
 }
 
 export async function pickUpTask(
-  prisma: PrismaClient,
-  actor: Actor,
-  taskId: string,
-  evidenceId?: string,
-  pickupPhotoEvidenceId?: string,
+  _prisma: PrismaClient, actor: Actor, _taskId: string, _evidenceId?: string, _pickupPhotoEvidenceId?: string,
 ) {
-  if (!actor.riderId) throw forbidden();
-  return prisma.$transaction(async (tx) => {
-    const taskIdentity = await tx.deliveryTask.findUnique({ where: { id: taskId }, select: { orderId: true } });
-    if (!taskIdentity) throw notFound('Delivery task');
-    await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${taskIdentity.orderId}::uuid FOR UPDATE`;
-    await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${taskId}::uuid FOR UPDATE`;
-    const task = await tx.deliveryTask.findUnique({ where: { id: taskId }, include: { order: true } });
-    if (!task) throw notFound('Delivery task');
-    if (task.riderId !== actor.riderId) throw forbidden();
-    if (task.status !== DeliveryTaskStatus.CLAIMED) throw conflict('TASK_STATE_CONFLICT', 'Task is not ready for pickup');
-
-    if (task.order.pickupVerificationMode === PickupVerificationMode.PHOTO) {
-      await requireEvidence(
-        tx,
-        pickupPhotoEvidenceId ?? evidenceId,
-        task.orderId,
-        actor,
-        EvidenceType.RIDER_PICKUP_PHOTO,
-        OrderStatus.CLAIMED,
-        task.claimedAt ?? undefined,
-      );
-    } else if (task.order.pickupVerificationMode === PickupVerificationMode.PICKUP_CODE) {
-      await requireEvidence(
-        tx,
-        evidenceId,
-        task.orderId,
-        actor,
-        EvidenceType.PICKUP_CODE_VERIFICATION,
-        OrderStatus.CLAIMED,
-        task.claimedAt ?? undefined,
-      );
-    }
-
-    if (task.order.pickupEvidenceLevel === PickupEvidenceLevel.REQUIRED) {
-      const photo = await requireEvidence(tx, pickupPhotoEvidenceId ?? evidenceId, task.orderId, actor, EvidenceType.RIDER_PICKUP_PHOTO, OrderStatus.CLAIMED, task.claimedAt ?? undefined);
-      const metadata = photo.metadata as { contentType?: unknown } | null;
-      if (photo.actorRole !== 'RIDER'
-        || !photo.mediaReference?.startsWith(`mock://evidence/${task.orderId}/`)
-        || typeof metadata?.contentType !== 'string'
-        || !['image/jpeg', 'image/png', 'image/webp'].includes(metadata.contentType)
-        || !task.claimedAt || photo.createdAt < task.claimedAt) {
-        throw conflict('INVALID_PICKUP_PHOTO', 'Pickup photo must reference a stored image uploaded by this rider during the current claim');
-      }
-    }
-
-    await transitionOrder(tx, task.orderId, task.order.status, OrderStatus.PICKED_UP, actor, {
-      eventType: OrderEventType.PICKED_UP,
-    });
-    await tx.deliveryTask.update({
-      where: { id: task.id },
-      data: { status: DeliveryTaskStatus.PICKED_UP, pickedUpAt: new Date() },
-    });
-    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect }), actor);
-  });
+  if (actor.role !== 'RIDER' || !actor.riderId) throw forbidden();
+  throw conflict('MERCHANT_PICKUP_CONFIRMATION_REQUIRED', 'Pickup must be confirmed by the merchant using the current assignment; this rider endpoint is retired');
 }
 
 export async function deliverTask(
@@ -370,6 +319,7 @@ export async function deliverTask(
     if (!task) throw notFound('Delivery task');
     if (task.riderId !== actor.riderId) throw forbidden();
     if (task.status !== DeliveryTaskStatus.PICKED_UP) throw conflict('TASK_STATE_CONFLICT', 'Task is not ready for delivery');
+    await assertNoPickupDispute(tx, task.orderId);
     if (!task.order.pricing) throw notFound('Order pricing');
 
     const severeCases = await tx.exceptionCase.findMany({

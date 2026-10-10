@@ -137,6 +137,7 @@ export async function getExceptionCaseForAdmin(prisma: PrismaClient, actor: Acto
         orderBy: { createdAt: 'asc' },
       },
       remakeProposal: { select: { id: true, message: true, status: true, respondedAt: true, createdAt: true } },
+      pickupCustodyDispute: { select: { id: true, handoffId: true, status: true, version: true, reason: true, evidenceIds: true, catalogRiskClaim: true, merchantAcknowledgedAt: true, merchantNote: true, resolutionNote: true } },
       compensationObligation: {
         select: {
           id: true,
@@ -342,6 +343,7 @@ export async function resolveNonEconomicCase(
   return prisma.$transaction(async (tx) => {
     const current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
     if (!current) throw notFound('Exception case');
+    if (current.category === 'PICKUP_CUSTODY_DISPUTE') throw conflict('USE_PICKUP_DISPUTE_REVIEW', 'Resolve through the versioned pickup custody review action');
     assertExceptionCaseAction(current.status, 'RESOLVE');
     if (current.currentHandlerAdminId !== actor.id && actor.adminLevel !== 'SUPER_ADMIN') throw forbidden();
     if (resolutionType === ExceptionResolutionType.ESCALATED_OTHER) {

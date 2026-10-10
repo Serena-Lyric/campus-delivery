@@ -36,46 +36,49 @@ export function assertCatalogRefusalState(task: { status: string; pickedUpAt: Da
 }
 
 export async function reportCatalogRisk(prisma: PrismaClient, actor: Actor, taskId: string, input: CatalogRiskInput, now = new Date()) {
+  return prisma.$transaction((tx) => recordCatalogRiskReport(tx, actor, taskId, input, now));
+}
+
+// Also used atomically after an authorized no-handoff review. Original rider statement is retained.
+export async function recordCatalogRiskReport(tx: Prisma.TransactionClient, actor: Actor, taskId: string, input: CatalogRiskInput, now: Date, performedBy: Actor = actor) {
   if (actor.role !== 'RIDER' || !actor.riderId) throw forbidden();
   if (!['CAKE', 'SUNDAE'].includes(input.observedCategoryCode) || !input.reason.trim() || input.reason.length > 500) throw badRequest('INVALID_CATALOG_REPORT', 'Report an explicit core category and reason');
   const evidenceIds = [...new Set(input.evidenceIds ?? [])].sort();
-  return prisma.$transaction(async (tx) => {
-    // Share Order -> Task custody locks. No rider counter or balance is written here.
-    const task = await lockTask(tx, taskId);
-    const assignment = await tx.deliveryAssignment.findUnique({ where: { id: input.assignmentId } });
-    if (!assignment || assignment.taskId !== task.id || assignment.riderId !== actor.riderId) throw forbidden();
-    const existing = await tx.catalogRiskReport.findUnique({ where: { assignmentId: assignment.id } });
-    if (existing) {
-      if (existing.orderItemId !== input.orderItemId || existing.observedCategoryCode !== input.observedCategoryCode || existing.reason !== input.reason || JSON.stringify(existing.evidenceIds) !== JSON.stringify(evidenceIds)) throw conflict('REPORT_IDEMPOTENCY_CONFLICT', 'This assignment already has a different report');
-      return { report: reportView(existing), accepted: true };
-    }
-    assertCatalogRefusalState(task, assignment, actor.riderId!);
-    const item = task.order.items.find((candidate) => candidate.id === input.orderItemId);
-    if (!item || item.coreFragileSnapshot) throw conflict('CATALOG_REPORT_NOT_MISDECLARED', 'Report a sold item missing its authoritative core-fragile classification');
-    if (evidenceIds.length && await tx.evidence.count({ where: { id: { in: evidenceIds }, orderId: task.orderId, actorId: actor.id } }) !== evidenceIds.length) throw badRequest('INVALID_EVIDENCE', 'Report evidence must belong to this order and rider');
-    // Claim reserves an assignment, not wallet funds. Never release unrelated settlement balances.
-    if (await tx.riderSettlement.count({ where: { orderId: task.orderId } }) || await tx.compensationObligation.count({ where: { orderId: task.orderId } })) throw conflict('PRE_PICKUP_FINANCIAL_STATE_CONFLICT', 'Unexpected settlement facts require review before pre-pickup refusal');
-    const report = await tx.catalogRiskReport.create({ data: {
-      orderId: task.orderId, assignmentId: assignment.id, orderItemId: item.id,
-      observedCategoryCode: input.observedCategoryCode, reason: input.reason, evidenceIds,
-      originalRiskSnapshot: {
-        categoryCode: item.deliveryCategoryCodeSnapshot, categoryName: item.deliveryCategoryNameSnapshot,
-        categoryVersion: item.deliveryCategoryVersionSnapshot, riskTags: item.deliveryRiskTagsSnapshot,
-        coreFragile: item.coreFragileSnapshot, reviewRequired: item.deliveryClassificationReviewRequired,
-        coreFragileValueMinor: task.order.coreFragileValueMinor, evidenceLevel: task.order.pickupEvidenceLevel,
-        policyVersion: task.order.pickupEvidencePolicyVersion, revision: task.order.pickupRiskRevision,
-      }, createdAt: now,
-    } });
-    await tx.deliveryAssignment.update({ where: { id: assignment.id }, data: { status: 'ABANDONED', endedAt: now, reason: 'MERCHANT_CORE_FRAGILE_MISDECLARATION' } });
-    await tx.deliveryTask.update({ where: { id: task.id }, data: { status: 'RISK_REVIEW', riderId: null, claimedAt: null } });
-    await tx.order.update({ where: { id: task.orderId }, data: { pickupRiskRevision: { increment: 1 } } });
-    await transitionOrder(tx, task.orderId, task.order.status, 'READY_FOR_RIDER', actor, {
-      eventType: 'RIDER_CATALOG_RISK_REPORTED', reason: input.reason,
-      metadata: { reportId: report.id, assignmentId: assignment.id, orderItemId: item.id, observedCategoryCode: input.observedCategoryCode, evidenceIds, taskPaused: true, ordinaryCancellationCounted: false },
-    });
-    if (task.claimDeadline && now >= task.claimDeadline) await expireOpenDeliveryTask(tx, task.id, now);
-    return { report: reportView(report), accepted: true };
+  // Share Order -> Task custody locks. No rider counter or balance is written here.
+  const task = await lockTask(tx, taskId);
+  const assignment = await tx.deliveryAssignment.findUnique({ where: { id: input.assignmentId } });
+  if (!assignment || assignment.taskId !== task.id || assignment.riderId !== actor.riderId) throw forbidden();
+  const existing = await tx.catalogRiskReport.findUnique({ where: { assignmentId: assignment.id } });
+  if (existing) {
+    if (existing.orderItemId !== input.orderItemId || existing.observedCategoryCode !== input.observedCategoryCode || existing.reason !== input.reason || JSON.stringify(existing.evidenceIds) !== JSON.stringify(evidenceIds)) throw conflict('REPORT_IDEMPOTENCY_CONFLICT', 'This assignment already has a different report');
+    return { report: reportView(existing), accepted: true };
+  }
+  assertCatalogRefusalState(task, assignment, actor.riderId!);
+  const item = task.order.items.find((candidate) => candidate.id === input.orderItemId);
+  if (!item || item.coreFragileSnapshot) throw conflict('CATALOG_REPORT_NOT_MISDECLARED', 'Report a sold item missing its authoritative core-fragile classification');
+  if (evidenceIds.length && await tx.evidence.count({ where: { id: { in: evidenceIds }, orderId: task.orderId, actorId: actor.id } }) !== evidenceIds.length) throw badRequest('INVALID_EVIDENCE', 'Report evidence must belong to this order and rider');
+  // Claim reserves an assignment, not wallet funds. Never release unrelated settlement balances.
+  if (await tx.riderSettlement.count({ where: { orderId: task.orderId } }) || await tx.compensationObligation.count({ where: { orderId: task.orderId } })) throw conflict('PRE_PICKUP_FINANCIAL_STATE_CONFLICT', 'Unexpected settlement facts require review before pre-pickup refusal');
+  const report = await tx.catalogRiskReport.create({ data: {
+    orderId: task.orderId, assignmentId: assignment.id, orderItemId: item.id,
+    observedCategoryCode: input.observedCategoryCode, reason: input.reason, evidenceIds,
+    originalRiskSnapshot: {
+      categoryCode: item.deliveryCategoryCodeSnapshot, categoryName: item.deliveryCategoryNameSnapshot,
+      categoryVersion: item.deliveryCategoryVersionSnapshot, riskTags: item.deliveryRiskTagsSnapshot,
+      coreFragile: item.coreFragileSnapshot, reviewRequired: item.deliveryClassificationReviewRequired,
+      coreFragileValueMinor: task.order.coreFragileValueMinor, evidenceLevel: task.order.pickupEvidenceLevel,
+      policyVersion: task.order.pickupEvidencePolicyVersion, revision: task.order.pickupRiskRevision,
+    }, createdAt: now,
+  } });
+  await tx.deliveryAssignment.update({ where: { id: assignment.id }, data: { status: 'ABANDONED', endedAt: now, reason: 'MERCHANT_CORE_FRAGILE_MISDECLARATION' } });
+  await tx.deliveryTask.update({ where: { id: task.id }, data: { status: 'RISK_REVIEW', riderId: null, claimedAt: null } });
+  await tx.order.update({ where: { id: task.orderId }, data: { pickupRiskRevision: { increment: 1 } } });
+  await transitionOrder(tx, task.orderId, task.order.status, 'READY_FOR_RIDER', performedBy, {
+    eventType: 'RIDER_CATALOG_RISK_REPORTED', reason: input.reason,
+    metadata: { reportId: report.id, assignmentId: assignment.id, orderItemId: item.id, observedCategoryCode: input.observedCategoryCode, evidenceIds, taskPaused: true, ordinaryCancellationCounted: false, reportingRiderId: actor.riderId!, performedByRole: performedBy.role },
   });
+  if (task.claimDeadline && now >= task.claimDeadline) await expireOpenDeliveryTask(tx, task.id, now);
+  return { report: reportView(report), accepted: true };
 }
 
 export async function getCatalogRiskForMerchant(prisma: PrismaClient, actor: Actor, orderId: string) {

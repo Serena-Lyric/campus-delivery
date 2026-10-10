@@ -1,3 +1,4 @@
+import { merchantPickup } from './pickup-helper.js';
 import {
   DeliveryMethod,
   FoodType,
@@ -39,6 +40,7 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
   });
 
   beforeEach(async () => {
+    await prisma.riderBlockedMerchant.deleteMany();
     await prisma.riderCapacityEvent.deleteMany();
     await prisma.compensationAllocation.deleteMany();
     await prisma.compensationObligation.deleteMany();
@@ -109,7 +111,7 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
     const claimedTaskId = concurrent[0]!.statusCode === 200 ? first.taskId : second.taskId;
     expect(await prisma.deliveryTask.count({ where: { riderId: seedIds.riderB, status: 'CLAIMED' } })).toBe(1);
 
-    expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${claimedTaskId}/pick-up`, headers: headers(seedIds.riderBUser), payload: {} })).statusCode).toBe(200);
+    expect((await merchantPickup(app, prisma, claimedTaskId)).statusCode).toBe(200);
     expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${claimedTaskId}/deliver`, headers: headers(seedIds.riderBUser), payload: {} })).statusCode).toBe(200);
     const sameDay = await app.inject({ method: 'GET', url: '/riders/me/capacity', headers: headers(seedIds.riderBUser) });
     expect(sameDay.json()).toMatchObject({ stage: 'FIRST_DELIVERY_SAME_DAY', stageCapacity: 2, effectiveCapacity: 2 });
@@ -284,7 +286,7 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
   it('backfills only riders with a completed assignment on a delivered order', async () => {
     const ready = await createReady();
     expect((await claim(ready.taskId, seedIds.riderAUser)).statusCode).toBe(200);
-    expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${ready.taskId}/pick-up`, headers: headers(seedIds.riderAUser), payload: {} })).statusCode).toBe(200);
+    expect((await merchantPickup(app, prisma, ready.taskId)).statusCode).toBe(200);
     expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${ready.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {} })).statusCode).toBe(200);
     await prisma.rider.updateMany({ data: { firstNormalDeliveredAt: null } });
     const migrationSql = await readFile(

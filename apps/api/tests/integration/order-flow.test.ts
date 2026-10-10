@@ -1,3 +1,4 @@
+import { merchantPickup } from './pickup-helper.js';
 import {
   DeliveryMethod,
   MerchantExposureState,
@@ -38,6 +39,7 @@ describe('order handoff and settlement flow', () => {
   });
 
   beforeEach(async () => {
+    await prisma.riderBlockedMerchant.deleteMany();
     await prisma.compensationAllocation.deleteMany();
     await prisma.compensationObligation.deleteMany();
     await prisma.remakeProposal.deleteMany();
@@ -133,13 +135,8 @@ describe('order handoff and settlement flow', () => {
     });
   }
 
-  async function pickup(taskId: string, riderUser: string = seedIds.riderAUser, evidenceId?: string) {
-    return app.inject({
-      method: 'POST',
-      url: `/delivery-tasks/${taskId}/pick-up`,
-      headers: headers(riderUser),
-      payload: evidenceId ? { evidenceId } : {},
-    });
+  async function pickup(taskId: string, _riderUser: string = seedIds.riderAUser, evidenceId?: string) {
+    return merchantPickup(app, prisma, taskId, evidenceId ? { evidenceId } : {});
   }
 
   async function createDeliveryEvidence(orderId: string, riderUser: string = seedIds.riderAUser) {
@@ -817,20 +814,10 @@ describe('order handoff and settlement flow', () => {
     const { order, taskId } = await makeReady(DeliveryMethod.FACE_TO_FACE);
     expect((await claim(taskId)).statusCode).toBe(200);
 
-    const pickupCode = await app.inject({
-      method: 'POST',
-      url: `/orders/${order.id}/pickup-code`,
-      headers: headers(seedIds.merchantUser),
-    });
+    const assignment = await prisma.deliveryAssignment.findFirstOrThrow({ where: { taskId, status: 'ACTIVE' } });
+    const pickupCode = await app.inject({ method: 'POST', url: `/delivery-tasks/${taskId}/pickup-code`, headers: headers(seedIds.riderAUser), payload: { assignmentId: assignment.id } });
     expect(pickupCode.statusCode).toBe(201);
-    const pickupVerified = await app.inject({
-      method: 'POST',
-      url: `/delivery-tasks/${taskId}/verify-pickup-code`,
-      headers: headers(seedIds.riderAUser),
-      payload: { code: pickupCode.json().code },
-    });
-    expect(pickupVerified.statusCode).toBe(200);
-    expect((await pickup(taskId, seedIds.riderAUser, pickupVerified.json().evidenceId)).statusCode).toBe(200);
+    expect((await merchantPickup(app, prisma, taskId, { codeId: pickupCode.json().id, code: pickupCode.json().code })).statusCode).toBe(200);
 
     const deliveryCode = await app.inject({
       method: 'POST',

@@ -1,7 +1,5 @@
 import {
   EvidenceType,
-  OrderStatus,
-  PickupVerificationMode,
   DeliveryVerificationMode,
   VerificationPurpose,
   type Order,
@@ -24,6 +22,7 @@ export async function issueVerificationCode(
   purpose: VerificationPurpose,
   now = new Date(),
 ) {
+  if (purpose === VerificationPurpose.PICKUP) throw conflict('RIDER_PICKUP_CODE_REQUIRED', 'Legacy merchant-issued pickup codes are retired; the current rider must request a bound code');
   const order = await prisma.order.findUnique({ where: { id: orderId } });
   if (!order) throw notFound('Order');
 
@@ -31,11 +30,6 @@ export async function issueVerificationCode(
     if (actor.role !== 'CUSTOMER' || order.customerId !== actor.id) throw forbidden();
     if (order.deliveryVerificationMode !== DeliveryVerificationMode.HANDOFF_CODE) {
       throw conflict('VERIFICATION_NOT_REQUIRED', 'This order does not require a delivery handoff code');
-    }
-  } else {
-    if (actor.role !== 'MERCHANT' || order.merchantId !== actor.merchantId) throw forbidden();
-    if (order.pickupVerificationMode !== PickupVerificationMode.PICKUP_CODE) {
-      throw conflict('VERIFICATION_NOT_REQUIRED', 'This order does not require a pickup code');
     }
   }
 
@@ -66,6 +60,7 @@ export async function verifyOrderCode(
   code: string,
   now = new Date(),
 ) {
+  if (purpose === VerificationPurpose.PICKUP) throw conflict('MERCHANT_PICKUP_CONFIRMATION_REQUIRED', 'Use the assignment-bound merchant pickup verifier');
   const record = await tx.verificationCode.findFirst({
     where: {
       orderId: order.id,
@@ -95,31 +90,14 @@ export async function verifyOrderCode(
       orderId: order.id,
       actorId: actor.id,
       actorRole: actor.role,
-      evidenceType: purpose === VerificationPurpose.DELIVERY
-        ? EvidenceType.HANDOFF_CODE_VERIFICATION
-        : EvidenceType.PICKUP_CODE_VERIFICATION,
+      evidenceType: EvidenceType.HANDOFF_CODE_VERIFICATION,
       orderStage: order.status,
       metadata: { verificationCodeId: record.id },
     },
   });
 }
 
-export async function verifyPickupCode(
-  prisma: PrismaClient,
-  actor: Actor,
-  taskId: string,
-  code: string,
-  now = new Date(),
-) {
-  if (!actor.riderId) throw forbidden();
-  return prisma.$transaction(async (tx) => {
-    const task = await tx.deliveryTask.findUnique({ where: { id: taskId }, include: { order: true } });
-    if (!task) throw notFound('Delivery task');
-    if (task.riderId !== actor.riderId) throw forbidden();
-    if (task.order.status !== OrderStatus.CLAIMED) {
-      throw conflict('ORDER_STATE_CONFLICT', 'Order is not ready for pickup verification');
-    }
-    const evidence = await verifyOrderCode(tx, task.order, VerificationPurpose.PICKUP, actor, code, now);
-    return { verified: true, evidenceId: evidence.id };
-  });
+export async function verifyPickupCode(_prisma: PrismaClient, actor: Actor, _taskId: string, _code: string, _now = new Date()) {
+  if (actor.role !== 'RIDER' || !actor.riderId) throw forbidden();
+  throw conflict('MERCHANT_PICKUP_CONFIRMATION_REQUIRED', 'The merchant verifies the rider-issued code during pickup confirmation');
 }

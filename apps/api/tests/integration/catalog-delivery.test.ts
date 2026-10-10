@@ -1,3 +1,4 @@
+import { merchantPickup } from './pickup-helper.js';
 import {
   DeliveryMethod,
   FoodType,
@@ -40,6 +41,7 @@ describe('merchant display catalog and authoritative delivery snapshots', () => 
   });
 
   beforeEach(async () => {
+    await prisma.riderBlockedMerchant.deleteMany();
     await prisma.riderCapacityEvent.deleteMany();
     await prisma.compensationAllocation.deleteMany();
     await prisma.compensationObligation.deleteMany();
@@ -178,7 +180,7 @@ describe('merchant display catalog and authoritative delivery snapshots', () => 
     expect(confirmed.statusCode, confirmed.body).toBe(200);
     return { orderId: created.id, taskId: confirmed.json().deliveryTask.id as string };
   }
-  const pickup = (taskId: string, payload = {}) => app.inject({ method: 'POST', url: `/delivery-tasks/${taskId}/pick-up`, headers: headers(seedIds.riderAUser), payload });
+  const pickup = (taskId: string, payload = {}) => merchantPickup(app, prisma, taskId, payload);
   async function photo(orderId: string, user = seedIds.riderAUser, contentType = 'image/jpeg') {
     const uploaded = await app.inject({ method: 'POST', url: `/orders/${orderId}/evidence`, headers: headers(user), payload: { evidenceType: 'RIDER_PICKUP_PHOTO', media: { fileName: 'pickup.jpg', contentType, source: 'CAMERA' } } });
     expect(uploaded.statusCode, uploaded.body).toBe(201);
@@ -227,18 +229,18 @@ describe('merchant display catalog and authoritative delivery snapshots', () => 
     expect((await prisma.order.findUniqueOrThrow({ where: { id: original.orderId } })).pickupEvidenceRequiredMinor).toBe(5000);
   });
 
-  it('requires both merchant pickup code and core photo with backward-compatible evidence IDs', async () => {
+  it('requires both rider-issued pickup code and core photo on merchant confirmation', async () => {
     await prisma.merchant.update({ where: { id: seedIds.merchant }, data: { pickupVerificationMode: 'PICKUP_CODE' } });
     const product = await saveProduct(prisma, merchant, { ...productInput(), priceMinor: 6000 });
     const task = await readyFor(product.id);
     expect((await claim(task.taskId, seedIds.riderAUser)).statusCode).toBe(200);
     const photoId = await photo(task.orderId);
     expect((await pickup(task.taskId, { evidenceId: photoId, pickupPhotoEvidenceId: photoId })).statusCode).toBe(409);
-    const issued = await app.inject({ method: 'POST', url: `/orders/${task.orderId}/pickup-code`, headers: headers(seedIds.merchantUser) });
-    const verified = await app.inject({ method: 'POST', url: `/delivery-tasks/${task.taskId}/verify-pickup-code`, headers: headers(seedIds.riderAUser), payload: { code: issued.json().code } });
-    expect(verified.statusCode, verified.body).toBe(200);
-    expect((await pickup(task.taskId, { evidenceId: verified.json().evidenceId })).statusCode).toBe(409);
-    expect((await pickup(task.taskId, { evidenceId: verified.json().evidenceId, pickupPhotoEvidenceId: photoId })).statusCode).toBe(200);
+    const assignment = await prisma.deliveryAssignment.findFirstOrThrow({ where: { taskId: task.taskId, status: 'ACTIVE' } });
+    const issued = await app.inject({ method: 'POST', url: `/delivery-tasks/${task.taskId}/pickup-code`, headers: headers(seedIds.riderAUser), payload: { assignmentId: assignment.id } });
+    expect(issued.statusCode, issued.body).toBe(201);
+    expect((await pickup(task.taskId, { codeId: issued.json().id, code: issued.json().code })).statusCode).toBe(409);
+    expect((await pickup(task.taskId, { codeId: issued.json().id, code: issued.json().code, pickupPhotoEvidenceId: photoId })).statusCode).toBe(200);
   });
 
   it('rejects missing, cross-order, wrong actor/role/stage/type and non-image references', async () => {

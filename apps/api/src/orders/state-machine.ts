@@ -41,13 +41,13 @@ export async function transitionOrder(
   to: OrderStatus,
   actor: Pick<Actor, 'id' | 'role'> | null,
   options: TransitionOptions = {},
-): Promise<void> {
+): Promise<string> {
   assertTransition(from, to);
   const updated = await tx.order.updateMany({ where: { id: orderId, status: from }, data: { status: to } });
   if (updated.count !== 1) {
     throw conflict('ORDER_STATE_CONFLICT', 'Order state changed before this action completed');
   }
-  await tx.orderEvent.create({
+  const event = await tx.orderEvent.create({
     data: {
       orderId,
       eventType: options.eventType ?? OrderEventType.STATUS_CHANGED,
@@ -59,4 +59,5 @@ export async function transitionOrder(
       ...(options.metadata !== undefined ? { metadata: options.metadata } : {}),
     },
   });
+  return event.id;
 }

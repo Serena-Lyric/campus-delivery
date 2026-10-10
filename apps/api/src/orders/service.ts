@@ -36,6 +36,7 @@ export type CreateOrderInput = {
 };
 
 const orderInclude = {
+  pickupHandoffs: { select: { id: true, assignmentId: true, revision: true, eventId: true, createdAt: true, dispute: { select: { id: true, caseId: true, status: true, version: true, merchantAcknowledgedAt: true } } }, orderBy: { revision: 'desc' as const }, take: 1 },
   items: true,
   pricing: true,
   settlement: true,
@@ -60,6 +61,7 @@ function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown) {
       riderGuaranteedPayoutMinor: actor.role === 'RIDER' || actor.role === 'ADMIN' ? deliveryTask.payoutMinor : undefined,
       firstPublishedAt: deliveryTask.firstPublishedAt,
       claimDeadline: deliveryTask.claimDeadline,
+      activeAssignmentId: actor.role === 'CUSTOMER' ? undefined : deliveryTask.assignments.find((a) => a.status === 'ACTIVE' && (actor.role !== 'RIDER' || a.riderId === actor.riderId))?.id,
       claimedAt: deliveryTask.claimedAt,
       pickedUpAt: deliveryTask.pickedUpAt,
       deliveredAt: deliveryTask.deliveredAt,
@@ -81,6 +83,7 @@ function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown) {
     deliveryMethod: order.deliveryMethod,
     deliveryVerificationMode: order.deliveryVerificationMode,
     pickupVerificationMode: order.pickupVerificationMode,
+    pickupProtocol: actor.role === 'CUSTOMER' ? { confirmationBy: 'MERCHANT' } : { confirmationBy: 'MERCHANT', revision: order.pickupHandoffRevision, handoff: actor.role === 'RIDER' && !deliveryTask?.assignments.some((a) => a.id === order.pickupHandoffs[0]?.assignmentId && a.riderId === actor.riderId) ? null : order.pickupHandoffs[0] ?? null },
     deliveryEvidenceRequired: order.deliveryEvidenceRequired,
     pickupRisk: {
       revision: order.pickupRiskRevision,

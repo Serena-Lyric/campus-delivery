@@ -14,6 +14,7 @@ import {
   RiderSettlementStatus,
   type PrismaClient,
 } from '@prisma/client';
+import { assertNoPickupDispute } from '../delivery/custody-guard.js';
 import { requireAdminLevel, type Actor } from '../auth/auth.js';
 import { badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
 import { assertExceptionCaseAction } from '../exception-cases/state-machine.js';
@@ -53,7 +54,14 @@ export async function refundAndCloseExceptionCase(
       },
     });
     if (!exceptionCase) throw notFound('Exception case');
-    const task = exceptionCase.order.deliveryTask;
+    if (exceptionCase.category === 'PICKUP_CUSTODY_DISPUTE') throw conflict('PICKUP_DISPUTE_NON_ECONOMIC', 'Custody review cannot create compensation or a refund');
+    await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${exceptionCase.orderId}::uuid FOR UPDATE`;
+    const pickupTask = await tx.deliveryTask.findUnique({ where: { orderId: exceptionCase.orderId }, select: { id: true } });
+    if (pickupTask) await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${pickupTask.id}::uuid FOR UPDATE`;
+    await assertNoPickupDispute(tx, exceptionCase.orderId);
+    // Re-read the workflow facts after custody locks; a concurrent correction may have committed while waiting.
+    const lockedOrder = await tx.order.findUniqueOrThrow({ where: { id: exceptionCase.orderId }, include: { pricing: true, deliveryTask: { include: { assignments: { orderBy: { claimedAt: 'desc' } } } } } });
+    const task = lockedOrder.deliveryTask;
     const assignment = task?.assignments.find((candidate) => candidate.riderId === task.riderId)
       ?? task?.assignments[0];
     if (!task || !assignment) throw conflict('RIDER_RESPONSIBILITY_MISSING', 'Exception order has no rider assignment');
@@ -83,7 +91,7 @@ export async function refundAndCloseExceptionCase(
       data: { version: { increment: 1 }, lastActionAt: now },
     });
     if (reservedCase.count !== 1) throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before compensation');
-    const pricing = exceptionCase.order.pricing;
+    const pricing = lockedOrder.pricing;
     if (!pricing) throw conflict('MISSING_PRICING', 'Order pricing is missing');
     const customerRefundMinor = pricing.itemSubtotalMinor + pricing.customerDeliveryFeeMinor;
     if (voluntaryPaymentMinor > customerRefundMinor) {
@@ -194,14 +202,14 @@ export async function refundAndCloseExceptionCase(
         exceptionCompensationMinor: customerRefundMinor,
       },
     });
-    if (exceptionCase.order.status !== OrderStatus.EXCEPTION) {
+    if (lockedOrder.status !== OrderStatus.EXCEPTION) {
       await tx.order.update({ where: { id: exceptionCase.orderId }, data: { status: OrderStatus.EXCEPTION } });
       await tx.orderEvent.create({
         data: {
           orderId: exceptionCase.orderId,
           eventType: OrderEventType.EXCEPTION_RECORDED,
           actorType: OrderEventActorType.USER,
-          fromStatus: exceptionCase.order.status,
+          fromStatus: lockedOrder.status,
           toStatus: OrderStatus.EXCEPTION,
           operatorId: actor.id,
           operatorRole: actor.role,

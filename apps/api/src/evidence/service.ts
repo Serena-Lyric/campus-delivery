@@ -34,7 +34,7 @@ export async function createEvidence(
 
   const order = await prisma.order.findUnique({
     where: { id: orderId },
-    include: { deliveryTask: true },
+    include: { deliveryTask: { include: { assignments: { where: { status: 'ACTIVE' }, select: { id: true } } } } },
   });
   if (!order) throw notFound('Order');
 
@@ -59,6 +59,8 @@ export async function createEvidence(
     source: input.media.source ?? 'UNKNOWN',
     ...(input.media.capturedAt ? { capturedAt: input.media.capturedAt } : {}),
     authenticityVerified: false,
+    pickupHandoffRevision: order.pickupHandoffRevision,
+    assignmentId: order.deliveryTask?.assignments[0]?.id ?? null,
   };
 
   return prisma.evidence.create({

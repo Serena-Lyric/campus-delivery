@@ -12,6 +12,7 @@ import { allowsUnattendedDelivery, loadPolicyConfig } from '../merchant-policy/p
 import { assertOrderAccess } from '../orders/access.js';
 import { transitionOrder } from '../orders/state-machine.js';
 import { badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
+import { assertNoPickupDispute } from '../delivery/custody-guard.js';
 import { openExceptionCase } from '../exception-cases/service.js';
 import { DeterministicExceptionClassifier, type ExceptionClassifier } from './classifier.js';
 
@@ -30,6 +31,7 @@ export async function createExceptionEvent(
   input: CreateExceptionInput,
   classifier: ExceptionClassifier = new DeterministicExceptionClassifier(),
 ) {
+  if (input.type === ExceptionType.PICKUP_CUSTODY_DISPUTE) throw conflict('PICKUP_DISPUTE_REQUIRES_DEDICATED_ROUTE', 'Report custody disputes through the current task and handoff');
   if (input.type === ExceptionType.PICKUP_EVIDENCE_UNAVAILABLE) {
     throw conflict('PICKUP_EXCEPTION_REQUIRES_DEDICATED_ROUTE', 'Report pickup evidence unavailable through the bound delivery task route');
   }
@@ -63,15 +65,13 @@ async function createExceptionEventInternal(
 ) {
   const { config } = await loadPolicyConfig(prisma);
   return prisma.$transaction(async (tx) => {
-    if (severeRiderReport) {
-      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${orderId}::uuid FOR UPDATE`;
-      const taskIdentity = await tx.deliveryTask.findUnique({
+    await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${orderId}::uuid FOR UPDATE`;
+    const taskIdentity = await tx.deliveryTask.findUnique({
         where: { orderId },
         select: { id: true },
       });
-      if (taskIdentity) {
-        await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${taskIdentity.id}::uuid FOR UPDATE`;
-      }
+    if (taskIdentity) {
+      await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${taskIdentity.id}::uuid FOR UPDATE`;
     }
     const order = await tx.order.findUnique({
       where: { id: orderId },
@@ -82,6 +82,7 @@ async function createExceptionEventInternal(
     });
     if (!order) throw notFound('Order');
     assertOrderAccess(actor, order);
+    await assertNoPickupDispute(tx, order.id);
 
     if (
       severeRiderReport

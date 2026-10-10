@@ -203,7 +203,15 @@ enum EvidenceType {
   PICKUP_CODE_VERIFICATION
 }
 
+enum PickupCustodyStatus {
+  OPEN
+  NOT_HANDED_OVER
+  HANDED_OVER
+  INCONCLUSIVE
+}
+
 enum ExceptionType {
+  PICKUP_CUSTODY_DISPUTE
   CUSTOMER_UNREACHABLE
   WRONG_ADDRESS
   MERCHANT_DELAY
@@ -477,6 +485,9 @@ model Order {
   pickupVerificationMode       PickupVerificationMode
   pickupRiskRevision            Int @default(0)
   catalogRiskReports            CatalogRiskReport[]
+  pickupHandoffRevision         Int @default(0)
+  pickupHandoffs                PickupHandoff[]
+  pickupCustodyDisputes         PickupCustodyDispute[]
   coreFragileValueMinor         Int @default(0)
   pickupEvidenceLevel           PickupEvidenceLevel @default(NONE)
   pickupEvidencePolicyVersion   Int @default(0)
@@ -611,6 +622,8 @@ model DeliveryAssignment {
   claimSampleType                          ClaimSampleType
   claimLatencySeconds                      Int
   catalogRiskReport                        CatalogRiskReport?
+  pickupHandoffs                            PickupHandoff[]
+  pickupCodes                              VerificationCode[]
   tipEvents                                RiderTipEvent[]
   cancellationEvents                       RiderCancellationEvent[]
   createdAt                                DateTime                 @default(now())
@@ -724,6 +737,11 @@ model VerificationCode {
   id            String              @id @default(uuid()) @db.Uuid
   orderId       String              @db.Uuid
   order         Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  assignmentId  String? @db.Uuid
+  assignment    DeliveryAssignment? @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  protocolVersion Int @default(0)
+  handoffRevision Int @default(0)
+  failedAttempts Int @default(0)
   purpose       VerificationPurpose
   salt          String
   codeHash      String
@@ -884,6 +902,7 @@ model ExceptionCase {
   actions                 ExceptionCaseAction[]
   remakeProposal          RemakeProposal?
   compensationObligation  CompensationObligation?
+  pickupCustodyDispute      PickupCustodyDispute?
   createdAt               DateTime                 @default(now())
   resolvedAt              DateTime?
 
@@ -1094,4 +1113,48 @@ model CatalogRiskReport {
   createdAt           DateTime @default(now())
 
   @@index([orderId, createdAt])
+}
+
+model PickupHandoff {
+  id String @id @default(uuid()) @db.Uuid
+  orderId String @db.Uuid
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  assignmentId String @db.Uuid
+  assignment DeliveryAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  revision Int
+  requestKey String @db.Uuid
+  merchantActorId String @db.Uuid
+  eventId String @unique @db.Uuid
+  photoEvidenceId String? @db.Uuid
+  verificationCodeId String? @db.Uuid
+  dispute PickupCustodyDispute?
+  createdAt DateTime @default(now())
+
+  @@unique([orderId, requestKey])
+  @@unique([orderId, revision])
+  @@index([assignmentId])
+}
+
+model PickupCustodyDispute {
+  id String @id @default(uuid()) @db.Uuid
+  orderId String @db.Uuid
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  handoffId String @unique @db.Uuid
+  handoff PickupHandoff @relation(fields: [handoffId], references: [id], onDelete: Cascade)
+  caseId String @unique @db.Uuid
+  case ExceptionCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  reason String
+  evidenceIds String[] @default([]) @db.Uuid
+  catalogRiskClaim Json?
+  status PickupCustodyStatus @default(OPEN)
+  version Int @default(0)
+  merchantAcknowledgedAt DateTime?
+  merchantNote String?
+  resolutionNote String?
+  resolutionKey String? @db.Uuid
+  resolvedFromVersion Int?
+  resolvedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([orderId, status])
 }

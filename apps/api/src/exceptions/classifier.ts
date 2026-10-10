@@ -21,7 +21,8 @@ export class DeterministicExceptionClassifier implements ExceptionClassifier {
   async classify(input: { type: ExceptionType; description: string }): Promise<ExceptionClassification> {
     const high = input.type === ExceptionType.SEVERE_FOOD_DAMAGE
       || input.type === ExceptionType.FOOD_LOST
-      || input.type === ExceptionType.DELIVERY_DISPUTE;
+      || input.type === ExceptionType.DELIVERY_DISPUTE
+      || input.type === ExceptionType.PICKUP_CUSTODY_DISPUTE;
     const medium = input.type === ExceptionType.RIDER_DELIVERY_EXCEPTION
       || input.type === ExceptionType.CUSTOMER_UNREACHABLE;
     return {

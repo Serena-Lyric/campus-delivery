@@ -26,7 +26,7 @@ export async function registerVerificationRoutes(app: FastifyInstance, prisma: P
 
   app.post<{ Params: { orderId: string } }>('/orders/:orderId/pickup-code', {
     preHandler: merchant,
-    schema: { tags: ['verification'], params: OrderIdParams },
+    schema: { tags: ['verification'], params: OrderIdParams, deprecated: true },
   }, async (request, reply) => reply.status(201).send(await issueVerificationCode(
     prisma,
     actorOf(request),
@@ -36,7 +36,7 @@ export async function registerVerificationRoutes(app: FastifyInstance, prisma: P
 
   app.post<{ Params: { taskId: string }; Body: { code: string } }>('/delivery-tasks/:taskId/verify-pickup-code', {
     preHandler: rider,
-    schema: { tags: ['verification'], params: TaskIdParams, body: CodeBody },
+    schema: { tags: ['verification'], params: TaskIdParams, body: CodeBody, deprecated: true },
   }, async (request) => verifyPickupCode(
     prisma,
     actorOf(request),
