@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { parseDate, qualificationState, validateTerm } from '../src/riders/eligibility-policy.js';
+import { validateEligibilityPolicy } from '../src/riders/eligibility-gate.js';
 
 const term = { startsAt: new Date('2026-09-01T00:00:00Z'), endsAt: new Date('2027-01-01T00:00:00Z') };
 const review = { decision: 'APPROVED', validFrom: term.startsAt, validUntil: term.endsAt };
 describe('explicit student qualification boundaries', () => {
+  it('requires a boolean enforcement decision without hidden qualification defaults', () => {
+    expect(validateEligibilityPolicy({ enforced: false })).toEqual({ enforced: false });
+    for (const invalid of [null, [], {}, { enforced: 'false' }, { enforced: true, approveAll: true }]) expect(() => validateEligibilityPolicy(invalid)).toThrow();
+  });
   it('does not invent student or graduation facts for unknown legacy data', () => {
     expect(qualificationState(null, null, null, false, term.startsAt)).toBe('CALENDAR_UNCONFIGURED');
     expect(qualificationState(null, term, null, false, term.startsAt)).toBe('NONE');

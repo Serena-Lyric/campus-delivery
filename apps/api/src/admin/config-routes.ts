@@ -17,7 +17,7 @@ export async function registerAdminConfigRoutes(app: FastifyInstance, prisma: Pr
 
   app.put<{
     Params: { key: string };
-    Body: { payload: Record<string, unknown>; reason: string };
+    Body: { payload: Record<string, unknown>; reason: string; expectedVersion?: number };
   }>('/admin/business-configs/:key', {
     preHandler: admin,
     schema: {
@@ -26,6 +26,7 @@ export async function registerAdminConfigRoutes(app: FastifyInstance, prisma: Pr
       body: Type.Object({
         payload: Type.Record(Type.String(), Type.Unknown()),
         reason: Type.String({ minLength: 1, maxLength: 500 }),
+        expectedVersion: Type.Optional(Type.Integer({ minimum: 0 })),
       }),
     },
   }, async (request) => updateBusinessConfig(
@@ -34,5 +35,6 @@ export async function registerAdminConfigRoutes(app: FastifyInstance, prisma: Pr
     request.params.key,
     request.body.payload as Prisma.InputJsonValue,
     request.body.reason,
+    request.body.expectedVersion,
   ));
 }

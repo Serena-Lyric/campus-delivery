@@ -2,7 +2,8 @@ import type { Prisma, PrismaClient, AcademicTerm } from '@prisma/client';
 import { requireAdminLevel, type Actor } from '../auth/auth.js';
 import { badRequest, conflict, notFound } from '../shared/errors.js';
 import { requireRider } from './blocklist.js';
-import { parseDate, qualificationState, validateTerm, type TermInput } from './eligibility-policy.js';
+import { parseDate, qualificationSnapshot, validateTerm, type TermInput } from './eligibility-policy.js';
+import { loadEligibilityGate } from './eligibility-gate.js';
 
 type Db = PrismaClient | Prisma.TransactionClient;
 export type RenewalInput = { termId: string; intent: 'CONTINUE' | 'DECLINE' | 'GRADUATE_EXCEPTION'; requestKey: string };
@@ -51,11 +52,8 @@ export async function createAcademicTerm(prisma: PrismaClient, actor: Actor, inp
 
 export async function readEligibility(db: Db, riderId: string, now = new Date()) {
   if (!await db.rider.findUnique({ where: { id: riderId }, select: { id: true } })) throw notFound('Rider');
-  const fact = await db.riderEligibility.findUnique({ where: { riderId } });
-  const term = await db.academicTerm.findFirst({ where: { startsAt: { lte: now }, endsAt: { gt: now } } });
-  const review = term ? await db.riderTermQualification.findUnique({ where: { riderId_termId: { riderId, termId: term.id } } }) : null;
-  const application = term ? await db.riderRenewalRequest.findUnique({ where: { riderId_termId: { riderId, termId: term.id } } }) : null;
-  const state = qualificationState(fact, term, review, !!application && application.intent !== 'DECLINE', now);
+  const { fact, term, review, state } = await qualificationSnapshot(db, riderId, now);
+  const gate = await loadEligibilityGate(db);
   const windows = await db.academicTerm.findMany({
     where: { renewalClosesAt: { gt: now } }, orderBy: { renewalOpensAt: 'asc' }, take: 10,
   });
@@ -76,8 +74,9 @@ export async function readEligibility(db: Db, riderId: string, now = new Date())
     renewalWindows,
     nextAction: state === 'VALID' ? 'CHECK_RENEWAL_REMINDERS' : state === 'GRADUATED' ? 'EXCEPTION_STANDARDS_PENDING'
       : state === 'CALENDAR_UNCONFIGURED' ? 'CONTACT_ADMIN_FOR_CALENDAR' : state === 'UNDER_REVIEW' ? 'AWAIT_ADMIN_REVIEW' : 'REQUEST_TERM_REVIEW',
-    // Stage A records and reminders only; stage B may add a live gate.
-    claimGateEnforced: false,
+    claimGateEnforced: gate.enforced, enforcementConfigVersion: gate.version,
+    qualificationAllowsNewClaims: state === 'VALID',
+    transition: gate.enforced ? 'ENFORCED' : 'UNENFORCED_PENDING_ADMIN_CONFIGURATION',
   };
 }
 

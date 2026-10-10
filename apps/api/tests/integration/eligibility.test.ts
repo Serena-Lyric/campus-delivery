@@ -5,6 +5,11 @@ import { buildApp } from '../../src/app.js';
 import { demoPolicy, seedDatabase, seedIds } from '../../prisma/seed.js';
 import { createAcademicTerm, getMyEligibility, reviewEligibility, submitRenewal, type ReviewInput } from '../../src/riders/eligibility.js';
 import type { TermInput } from '../../src/riders/eligibility-policy.js';
+import { releaseExpiredCoolingOrders } from '../../src/orders/lifecycle.js';
+import { claimTask } from '../../src/delivery/service.js';
+import { merchantPickup } from './pickup-helper.js';
+import { updateBusinessConfig } from '../../src/admin/config-service.js';
+import { eligibilityPolicyKey } from '../../src/riders/eligibility-gate.js';
 
 const prisma = new PrismaClient();
 const config = { databaseUrl: process.env.DATABASE_URL!, host: '127.0.0.1', port: 3000, enableDevAuth: true, enableBackgroundJobs: false, backgroundSweepIntervalMs: 5000, campusTimeZone: 'Asia/Singapore', logLevel: 'silent' };
@@ -17,6 +22,8 @@ const termInput = (): TermInput => ({ name: 'EXPLICIT TEST FIXTURE, NOT SCHOOL C
 const approval = (termId: string, expectedVersion = 0): ReviewInput => ({ action: 'APPROVE', termId, expectedVersion, requestKey: randomUUID(), reason: 'Fixture: trusted manual verification of enrolled student', verificationMethod: 'Fixture student card checked in person', validFrom: at(-30), validUntil: at(90) });
 
 async function clearEligibility() {
+  await prisma.businessConfigAudit.deleteMany({ where: { key: eligibilityPolicyKey } });
+  await prisma.businessConfig.deleteMany({ where: { key: eligibilityPolicyKey } });
   await prisma.riderEligibilityReview.deleteMany();
   await prisma.riderRenewalRequest.deleteMany();
   await prisma.riderTermQualification.deleteMany();
@@ -42,6 +49,19 @@ describe('student qualification facts and semester review APIs', () => {
     await prisma.product.update({ where: { id: seedIds.productRice }, data: { deliveryCategoryCode: 'ORDINARY_MEAL', priceMinor: 1500 } });
     await prisma.rider.updateMany({ data: { status: 'AVAILABLE', capacityOverride: 10 } });
   });
+  async function ready() {
+    const created = await app.inject({ method: 'POST', url: '/orders', headers: headers(seedIds.customer), payload: { merchantId: seedIds.merchant, destinationLocationId: seedIds.dormLocation, deliveryMethod: 'DESIGNATED_POINT', items: [{ productId: seedIds.productRice, quantity: 1 }] } });
+    expect(created.statusCode, created.body).toBe(201);
+    const orderId = created.json().id as string;
+    await prisma.order.update({ where: { id: orderId }, data: { coolingOffEndsAt: new Date(Date.now() - 1000) } });
+    await releaseExpiredCoolingOrders(prisma);
+    const response = await app.inject({ method: 'POST', url: `/merchant/orders/${orderId}/confirm`, headers: headers(seedIds.merchantUser) });
+    expect(response.statusCode, response.body).toBe(200);
+    return { orderId, taskId: response.json().deliveryTask.id as string };
+  }
+  const claim = (taskId: string) => app.inject({ method: 'POST', url: `/delivery-tasks/${taskId}/claim`, headers: headers(rider.id) });
+  const available = () => app.inject({ method: 'GET', url: '/delivery-tasks/available', headers: headers(rider.id) });
+  const enableGate = () => updateBusinessConfig(prisma, admin, eligibilityPolicyKey, { enforced: true }, 'Fixture explicit activation', 0);
 
   it('keeps legacy facts unknown and seed does not fabricate approval or graduation', async () => {
     const result = await getMyEligibility(prisma, rider, now);
@@ -138,7 +158,10 @@ describe('student qualification facts and semester review APIs', () => {
     const first = await createAcademicTerm(prisma, admin, termInput());
     const second = await createAcademicTerm(prisma, admin, { ...termInput(), startsAt: at(90), endsAt: at(180), renewalOpensAt: at(70), renewalClosesAt: at(100), reminderStartsAt: at(60) });
     await reviewEligibility(prisma, admin, seedIds.riderA, approval(first.id), now);
-    expect((await getMyEligibility(prisma, rider, new Date(at(90)))).state).toBe('NONE');
+    expect((await getMyEligibility(prisma, rider, new Date(at(90)))).state).toBe('RENEWAL_REQUIRED');
+    await enableGate();
+    const task = await ready();
+    await expect(claimTask(prisma, rider, task.taskId, new Date(at(90)))).rejects.toMatchObject({ code: 'RIDER_QUALIFICATION_REQUIRED', details: { state: 'RENEWAL_REQUIRED' } });
     await submitRenewal(prisma, rider, { termId: second.id, intent: 'CONTINUE', requestKey: randomUUID() }, new Date(at(80)));
     expect((await getMyEligibility(prisma, rider, new Date(at(90)))).state).toBe('UNDER_REVIEW');
     await reviewEligibility(prisma, admin, seedIds.riderA, { ...approval(second.id, 1), action: 'APPROVE', termId: second.id, validFrom: at(90), validUntil: at(180) }, now);
@@ -174,5 +197,141 @@ describe('student qualification facts and semester review APIs', () => {
     expect(doc.paths).toHaveProperty('/riders/me/eligibility');
     expect(doc.paths).toHaveProperty('/admin/academic-terms');
     expect(doc.paths).toHaveProperty('/admin/riders/{riderId}/eligibility/reviews');
+  });
+
+  it('preserves unknown legacy claims until explicit activation, then gates pool and direct claim with the same qualification', async () => {
+    const held = await ready();
+    expect((await claim(held.taskId)).statusCode).toBe(200);
+    const term = await createAcademicTerm(prisma, admin, termInput());
+    await enableGate();
+    const open = await ready();
+    expect((await available()).json()).toEqual([]);
+    expect((await claim(open.taskId)).json()).toMatchObject({ code: 'RIDER_QUALIFICATION_REQUIRED', details: { state: 'NONE', policyVersion: 1 } });
+    await submitRenewal(prisma, rider, { termId: term.id, intent: 'CONTINUE', requestKey: randomUUID() }, now);
+    expect((await claim(open.taskId)).json().details.state).toBe('UNDER_REVIEW');
+    await reviewEligibility(prisma, admin, rider.riderId, approval(term.id), now);
+    expect((await available()).json().map((t: { id: string }) => t.id)).toContain(open.taskId);
+    expect((await claim(open.taskId)).statusCode).toBe(200);
+    expect(await getMyEligibility(prisma, rider)).toMatchObject({ state: 'VALID', claimGateEnforced: true, enforcementConfigVersion: 1 });
+    expect(await prisma.deliveryTask.findUnique({ where: { id: held.taskId } })).toMatchObject({ status: 'CLAIMED', riderId: rider.riderId });
+  });
+
+  it('requires an authorized, valid, versioned switch; seed does not disable an explicitly enabled gate', async () => {
+    const url = `/admin/business-configs/${eligibilityPolicyKey}`;
+    const payload = { payload: { enforced: true }, reason: 'Explicit test activation', expectedVersion: 0 };
+    for (const id of [seedIds.operator, rider.id, seedIds.merchantUser, seedIds.customer]) expect((await app.inject({ method: 'PUT', url, headers: headers(id), payload })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'PUT', url, headers: headers(seedIds.admin), payload: { payload: { enforced: true }, reason: 'missing version' } })).json().code).toBe('CONFIG_VERSION_REQUIRED');
+    expect((await app.inject({ method: 'PUT', url, headers: headers(seedIds.admin), payload: { ...payload, payload: { enforced: 'true' } } })).json().code).toBe('INVALID_ELIGIBILITY_POLICY');
+    expect((await app.inject({ method: 'PUT', url, headers: headers(seedIds.admin), payload })).json().code).toBe('ACADEMIC_CALENDAR_REQUIRED');
+    await createAcademicTerm(prisma, admin, termInput());
+    expect((await app.inject({ method: 'PUT', url, headers: headers(seedIds.admin), payload })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'PUT', url, headers: headers(seedIds.admin), payload })).json().code).toBe('CONFIG_VERSION_CONFLICT');
+    expect(await prisma.businessConfigAudit.findFirst({ where: { key: eligibilityPolicyKey } })).toMatchObject({ actorId: seedIds.admin, newVersion: 1, afterPayload: { enforced: true } });
+    await seedDatabase(prisma);
+    expect((await getMyEligibility(prisma, rider)).claimGateEnforced).toBe(true);
+    const disabled = await app.inject({ method: 'PUT', url, headers: headers(seedIds.admin), payload: { payload: { enforced: false }, reason: 'Audited test rollback', expectedVersion: 1 } });
+    expect(disabled.statusCode).toBe(200);
+    expect(await getMyEligibility(prisma, rider)).toMatchObject({ claimGateEnforced: false, enforcementConfigVersion: 2, state: 'NONE' });
+  });
+
+  it('enforces qualification entry/expiry and rejection even when AVAILABLE, without changing open orders', async () => {
+    const term = await createAcademicTerm(prisma, admin, termInput());
+    const from = new Date(Date.now() + 60000), until = new Date(from.getTime() + 60000);
+    await reviewEligibility(prisma, admin, rider.riderId, { ...approval(term.id), action: 'APPROVE', termId: term.id, validFrom: from.toISOString(), validUntil: until.toISOString() });
+    await enableGate();
+    const task = await ready();
+    await expect(claimTask(prisma, rider, task.taskId, new Date(from.getTime() - 1))).rejects.toMatchObject({ code: 'RIDER_QUALIFICATION_REQUIRED', details: { state: 'NOT_YET_VALID' } });
+    await expect(claimTask(prisma, rider, task.taskId, until)).rejects.toMatchObject({ code: 'RIDER_QUALIFICATION_REQUIRED', details: { state: 'RENEWAL_REQUIRED' } });
+    const entry = await ready();
+    await claimTask(prisma, rider, entry.taskId, from);
+    expect(await prisma.deliveryTask.findUnique({ where: { id: entry.taskId } })).toMatchObject({ status: 'CLAIMED' });
+    await reviewEligibility(prisma, admin, rider.riderId, { action: 'REJECT', termId: term.id, expectedVersion: 1, requestKey: randomUUID(), reason: 'Fixture reject after review', verificationMethod: 'Insufficient fixture evidence' });
+    await expect(claimTask(prisma, rider, task.taskId, from)).rejects.toMatchObject({ code: 'RIDER_QUALIFICATION_REQUIRED', details: { state: 'REJECTED' } });
+    expect((await available()).json()).toEqual([]);
+    expect(await prisma.deliveryTask.findUnique({ where: { id: task.taskId } })).toMatchObject({ status: 'OPEN', riderId: null });
+    expect(await prisma.deliveryAssignment.count({ where: { taskId: task.taskId } })).toBe(0);
+  });
+
+  it('blocks graduation at the exact instant, but preserves prior assignments, earned income and later fulfillment', async () => {
+    const term = await createAcademicTerm(prisma, admin, termInput());
+    await reviewEligibility(prisma, admin, rider.riderId, approval(term.id)); await enableGate();
+    const earned = await ready(); expect((await claim(earned.taskId)).statusCode).toBe(200);
+    expect((await merchantPickup(app, prisma, earned.taskId)).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${earned.taskId}/deliver`, headers: headers(rider.id), payload: {} })).statusCode).toBe(200);
+    const income = await prisma.riderSettlement.findFirstOrThrow({ where: { orderId: earned.orderId } });
+    const held = await ready(); expect((await claim(held.taskId)).statusCode).toBe(200);
+    expect((await merchantPickup(app, prisma, held.taskId)).statusCode).toBe(200);
+    const pricing = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: held.orderId } });
+    const graduation = new Date(Date.now() + 60000);
+    await reviewEligibility(prisma, admin, rider.riderId, { action: 'SET_GRADUATION', expectedVersion: 1, requestKey: randomUUID(), reason: 'Verified fixture graduation', verificationMethod: 'Fixture student portal manual check', expectedGraduationAt: graduation.toISOString(), graduationReminderAt: new Date(graduation.getTime() - 60000).toISOString() });
+    const finalBefore = await ready(); await claimTask(prisma, rider, finalBefore.taskId, new Date(graduation.getTime() - 1));
+    const denied = await ready();
+    await expect(claimTask(prisma, rider, denied.taskId, graduation)).rejects.toMatchObject({ code: 'RIDER_QUALIFICATION_REQUIRED', details: { state: 'GRADUATED' } });
+    await reviewEligibility(prisma, admin, rider.riderId, { action: 'SET_GRADUATION', expectedVersion: 2, requestKey: randomUUID(), reason: 'Corrected verified fixture graduation in past', verificationMethod: 'Fixture manual followup', expectedGraduationAt: at(-1), graduationReminderAt: at(-2) });
+    expect((await available()).json()).toEqual([]);
+    expect((await claim(denied.taskId)).statusCode).toBe(409);
+    expect(await prisma.riderSettlement.findUnique({ where: { id: income.id } })).toEqual(income);
+    expect(await prisma.orderPricing.findUnique({ where: { orderId: held.orderId } })).toEqual(pricing);
+    expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${held.taskId}/deliver`, headers: headers(rider.id), payload: {} })).statusCode).toBe(200);
+    expect(await prisma.deliveryTask.findUnique({ where: { id: held.taskId } })).toMatchObject({ status: 'COMPLETED' });
+    expect(await prisma.riderSettlement.count({ where: { riderId: rider.riderId } })).toBe(2);
+    expect(await prisma.user.findUnique({ where: { id: rider.id } })).toMatchObject({ active: true });
+  });
+
+  it('serializes qualification changes with claim and preserves an earlier legitimate assignment', async () => {
+    const term = await createAcademicTerm(prisma, admin, termInput());
+    await reviewEligibility(prisma, admin, rider.riderId, approval(term.id)); await enableGate();
+    const task = await ready();
+    const results = await Promise.allSettled([claimTask(prisma, rider, task.taskId), reviewEligibility(prisma, admin, rider.riderId, { action: 'REJECT', termId: term.id, expectedVersion: 1, requestKey: randomUUID(), reason: 'Fixture concurrent rejection', verificationMethod: 'Fixture material recheck' })]);
+    expect(results[1]!.status).toBe('fulfilled');
+    const claimSucceeded = results[0]!.status === 'fulfilled';
+    expect(await prisma.deliveryAssignment.count({ where: { taskId: task.taskId, status: 'ACTIVE' } })).toBe(claimSucceeded ? 1 : 0);
+    const another = await ready();
+    expect((await claim(another.taskId)).statusCode).toBe(409);
+    expect((await available()).json()).toEqual([]);
+  });
+
+  it('uses live time after lock waits so a pre-expiry request cannot claim after graduation', async () => {
+    const term = await createAcademicTerm(prisma, admin, termInput());
+    await reviewEligibility(prisma, admin, rider.riderId, approval(term.id)); await enableGate();
+    const task = await ready();
+    const graduation = new Date(Date.now() + 500);
+    await reviewEligibility(prisma, admin, rider.riderId, { action: 'SET_GRADUATION', expectedVersion: 1, requestKey: randomUUID(), reason: 'Verified fixture expiry during wait', verificationMethod: 'Fixture manual portal check', expectedGraduationAt: graduation.toISOString(), graduationReminderAt: at(-1) });
+    let release!: () => void, acquired!: () => void;
+    const waitForRelease = new Promise<void>((resolve) => { release = resolve; });
+    const waitForLock = new Promise<void>((resolve) => { acquired = resolve; });
+    const blocker = prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${task.orderId}::uuid FOR UPDATE`; acquired(); await waitForRelease; });
+    await waitForLock;
+    const result = claimTask(prisma, rider, task.taskId).catch((error: unknown) => error);
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    const releasedAt = Date.now(); release(); await blocker;
+    const error = await result;
+    expect(error).toMatchObject({ code: 'RIDER_QUALIFICATION_REQUIRED', details: { state: 'GRADUATED' } });
+    const evaluatedAt = (error as { details: { evaluatedAt: string } }).details.evaluatedAt;
+    expect(new Date(evaluatedAt).getTime()).toBeGreaterThanOrEqual(releasedAt);
+    expect(await prisma.deliveryAssignment.count({ where: { taskId: task.taskId } })).toBe(0);
+  });
+
+  it('keeps exactly one claim under concurrency with explicit verification for both riders', async () => {
+    const term = await createAcademicTerm(prisma, admin, termInput());
+    await reviewEligibility(prisma, admin, rider.riderId, approval(term.id));
+    await reviewEligibility(prisma, admin, seedIds.riderB, approval(term.id)); await enableGate();
+    const task = await ready();
+    const results = await Promise.allSettled([claimTask(prisma, rider, task.taskId), claimTask(prisma, { id: seedIds.riderBUser, role: 'RIDER', riderId: seedIds.riderB }, task.taskId)]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(await prisma.deliveryAssignment.count({ where: { taskId: task.taskId, status: 'ACTIVE' } })).toBe(1);
+  });
+
+  it('serializes first-time enforcement versions and preserves only claims that precede activation', async () => {
+    await createAcademicTerm(prisma, admin, termInput());
+    const task = await ready();
+    const results = await Promise.allSettled([enableGate(), enableGate(), claimTask(prisma, rider, task.taskId)]);
+    expect(results.slice(0, 2).filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(await prisma.businessConfig.count({ where: { key: eligibilityPolicyKey } })).toBe(1);
+    expect(await prisma.businessConfigAudit.count({ where: { key: eligibilityPolicyKey } })).toBe(1);
+    const initialClaimSucceeded = results[2]!.status === 'fulfilled';
+    expect(await prisma.deliveryAssignment.count({ where: { taskId: task.taskId } })).toBe(initialClaimSucceeded ? 1 : 0);
+    const afterActivation = await ready();
+    expect((await claim(afterActivation.taskId)).json()).toMatchObject({ code: 'RIDER_QUALIFICATION_REQUIRED', details: { state: 'NONE' } });
   });
 });

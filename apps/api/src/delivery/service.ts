@@ -22,6 +22,8 @@ import { openExceptionCase } from '../exception-cases/service.js';
 import { recordFirstNormalDelivery, resolveRiderCapacity } from '../riders/capacity.js';
 import { requireRider } from '../riders/blocklist.js';
 import { assertNoPickupDispute } from './custody-guard.js';
+import { assertQualificationCanClaim, eligibilityPolicyLock, loadEligibilityGate } from '../riders/eligibility-gate.js';
+import { qualificationSnapshot } from '../riders/eligibility-policy.js';
 
 const taskSelect = {
   id: true,
@@ -159,19 +161,24 @@ async function requireEvidence(
 
 export async function listAvailableTasks(prisma: PrismaClient, actor: Actor, limit: number, offset: number) {
   const riderId = requireRider(actor);
-  const tasks = await prisma.deliveryTask.findMany({
-    where: {
-      status: DeliveryTaskStatus.OPEN,
-      riderId: null,
-      claimDeadline: { gt: new Date() },
-      order: { merchant: { blockedBy: { none: { riderId } } } },
-    },
-    select: taskSelect,
-    orderBy: { createdAt: 'asc' },
-    take: limit,
-    skip: offset,
-  });
-  return tasks.map((task) => presentRiderTask(task));
+  return prisma.$transaction(async (tx) => {
+    const now = new Date();
+    const gate = await loadEligibilityGate(tx);
+    if (gate.enforced && (await qualificationSnapshot(tx, riderId, now)).state !== 'VALID') return [];
+    const tasks = await tx.deliveryTask.findMany({
+      where: {
+        status: DeliveryTaskStatus.OPEN,
+        riderId: null,
+        claimDeadline: { gt: now },
+        order: { merchant: { blockedBy: { none: { riderId } } } },
+      },
+      select: taskSelect,
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+      skip: offset,
+    });
+    return tasks.map((task) => presentRiderTask(task));
+  }, { isolationLevel: 'RepeatableRead' });
 }
 
 export async function listRiderTasks(prisma: PrismaClient, actor: Actor, limit: number, offset: number) {
@@ -190,11 +197,10 @@ export async function claimTask(
   prisma: PrismaClient,
   actor: Actor,
   taskId: string,
-  now = new Date(),
+  now?: Date,
   campusTimeZone = 'Asia/Shanghai',
 ) {
-  if (!actor.riderId) throw forbidden();
-  const riderId = actor.riderId;
+  const riderId = requireRider(actor);
   const { config } = await loadPolicyConfig(prisma);
 
   return prisma.$transaction(async (tx) => {
@@ -204,9 +210,15 @@ export async function claimTask(
     });
     if (!taskIdentity) throw notFound('Delivery task');
     await tx.$queryRaw`SELECT "id" FROM "Rider" WHERE "id" = ${riderId}::uuid FOR UPDATE`;
+    // Serializes explicit enforcement changes, including creation of the first config version.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(${eligibilityPolicyLock})`;
     await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${taskIdentity.orderId}::uuid FOR UPDATE`;
+    await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${taskId}::uuid FOR UPDATE`;
+    // Read live time after lock waits; all eligibility/deadline decisions use this instant.
+    now ??= new Date();
     const rider = await tx.rider.findUnique({ where: { id: riderId } });
     if (!rider || rider.status !== 'AVAILABLE') throw conflict('RIDER_UNAVAILABLE', 'Rider is not available to claim tasks');
+    await assertQualificationCanClaim(tx, riderId, now);
     await assertRiderCanClaim(tx, riderId, now);
     const capacity = await resolveRiderCapacity(tx, riderId, config, campusTimeZone, now);
 
@@ -220,7 +232,6 @@ export async function claimTask(
       throw conflict('RIDER_ORDER_LIMIT', 'Rider has reached the current concurrent order limit');
     }
 
-    await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id" = ${taskId}::uuid FOR UPDATE`;
     const task = await tx.deliveryTask.findUnique({
       where: { id: taskId },
       include: { order: { include: { pricing: true } } },

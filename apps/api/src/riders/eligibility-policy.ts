@@ -1,4 +1,4 @@
-import type { AcademicTerm, RiderEligibility, RiderTermQualification } from '@prisma/client';
+import type { AcademicTerm, RiderEligibility, RiderTermQualification, Prisma, PrismaClient } from '@prisma/client';
 import { badRequest } from '../shared/errors.js';
 
 export type TermInput = {
@@ -48,4 +48,17 @@ export function qualificationState(
     return now < review.validFrom ? 'NOT_YET_VALID' : 'RENEWAL_REQUIRED';
   }
   return hasApplication ? 'UNDER_REVIEW' : 'NONE';
+}
+
+export async function qualificationSnapshot(db: PrismaClient | Prisma.TransactionClient, riderId: string, now: Date) {
+  const fact = await db.riderEligibility.findUnique({ where: { riderId } });
+  const term = await db.academicTerm.findFirst({ where: { startsAt: { lte: now }, endsAt: { gt: now } } });
+  const review = term ? await db.riderTermQualification.findUnique({ where: { riderId_termId: { riderId, termId: term.id } } }) : null;
+  const application = term ? await db.riderRenewalRequest.findUnique({ where: { riderId_termId: { riderId, termId: term.id } } }) : null;
+  let state = qualificationState(fact, term, review, !!application && application.intent !== 'DECLINE', now);
+  if (state === 'NONE' || state === 'CALENDAR_UNCONFIGURED') {
+    const expired = await db.riderTermQualification.findFirst({ where: { riderId, decision: 'APPROVED', validUntil: { lte: now } }, select: { termId: true } });
+    if (expired) state = 'RENEWAL_REQUIRED';
+  }
+  return { fact, term, review, state };
 }
