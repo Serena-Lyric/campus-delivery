@@ -7,7 +7,7 @@ import { parseDate, qualificationState, validateTerm, type TermInput } from './e
 type Db = PrismaClient | Prisma.TransactionClient;
 export type RenewalInput = { termId: string; intent: 'CONTINUE' | 'DECLINE' | 'GRADUATE_EXCEPTION'; requestKey: string };
 export type ReviewInput = {
-  expectedVersion: number; requestKey: string; reason: string;
+  expectedVersion: number; requestKey: string; reason: string; verificationMethod: string;
 } & ({ action: 'APPROVE'; termId: string; validFrom: string; validUntil: string }
   | { action: 'REJECT'; termId: string }
   | { action: 'SET_GRADUATION'; expectedGraduationAt: string | null; graduationReminderAt: string | null });
@@ -113,6 +113,7 @@ export async function submitRenewal(prisma: PrismaClient, actor: Actor, input: R
 
 export async function reviewEligibility(prisma: PrismaClient, actor: Actor, riderId: string, input: ReviewInput, now = new Date()) {
   requireAdminLevel(actor, ['SUPER_ADMIN']);
+  if (!input.verificationMethod?.trim()) throw badRequest('VERIFICATION_METHOD_REQUIRED', 'Record the actual manual verification method');
   return prisma.$transaction(async (tx) => {
     await lockRider(tx, riderId);
     const prior = await tx.riderEligibilityReview.findUnique({ where: { riderId_requestKey: { riderId, requestKey: input.requestKey } } });

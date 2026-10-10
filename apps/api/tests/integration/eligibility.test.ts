@@ -14,7 +14,7 @@ const headers = (id: string) => ({ 'x-user-id': id });
 const now = new Date();
 const at = (days: number) => new Date(now.getTime() + days * 86400000).toISOString();
 const termInput = (): TermInput => ({ name: 'EXPLICIT TEST FIXTURE, NOT SCHOOL CALENDAR', timeZone: 'Asia/Singapore', startsAt: at(-30), endsAt: at(90), renewalOpensAt: at(-40), renewalClosesAt: at(10), reminderStartsAt: at(-45), requestKey: randomUUID(), reason: 'Test calendar only' });
-const approval = (termId: string, expectedVersion = 0): ReviewInput => ({ action: 'APPROVE', termId, expectedVersion, requestKey: randomUUID(), reason: 'Fixture: trusted manual verification of enrolled student', validFrom: at(-30), validUntil: at(90) });
+const approval = (termId: string, expectedVersion = 0): ReviewInput => ({ action: 'APPROVE', termId, expectedVersion, requestKey: randomUUID(), reason: 'Fixture: trusted manual verification of enrolled student', verificationMethod: 'Fixture student card checked in person', validFrom: at(-30), validUntil: at(90) });
 
 async function clearEligibility() {
   await prisma.riderEligibilityReview.deleteMany();
@@ -122,7 +122,7 @@ describe('student qualification facts and semester review APIs', () => {
     expect(await prisma.riderEligibilityReview.count()).toBe(1);
     await expect(reviewEligibility(prisma, admin, seedIds.riderA, { ...input, reason: 'modified retry' }, now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
     await expect(reviewEligibility(prisma, admin, seedIds.riderA, approval(term.id), now)).rejects.toMatchObject({ code: 'ELIGIBILITY_VERSION_CONFLICT' });
-    const rejections = await Promise.allSettled([1, 2].map(() => reviewEligibility(prisma, admin, seedIds.riderA, { action: 'REJECT', termId: term.id, expectedVersion: 1, requestKey: randomUUID(), reason: 'Fixture missing verification' }, now)));
+    const rejections = await Promise.allSettled([1, 2].map(() => reviewEligibility(prisma, admin, seedIds.riderA, { action: 'REJECT', termId: term.id, expectedVersion: 1, requestKey: randomUUID(), reason: 'Fixture missing verification', verificationMethod: 'Fixture screenshot review, insufficient material' }, now)));
     expect(rejections.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect((await getMyEligibility(prisma, rider, now)).state).toBe('REJECTED');
     await submitRenewal(prisma, rider, { termId: term.id, intent: 'CONTINUE', requestKey: randomUUID() }, now);
@@ -149,7 +149,7 @@ describe('student qualification facts and semester review APIs', () => {
 
   it('derives graduation from verified facts only and never approves a graduate exception', async () => {
     const term = await createAcademicTerm(prisma, admin, termInput());
-    await reviewEligibility(prisma, admin, seedIds.riderA, { action: 'SET_GRADUATION', expectedVersion: 0, requestKey: randomUUID(), reason: 'Verified fixture graduation', expectedGraduationAt: at(1), graduationReminderAt: at(-1) }, now);
+    await reviewEligibility(prisma, admin, seedIds.riderA, { action: 'SET_GRADUATION', expectedVersion: 0, requestKey: randomUUID(), reason: 'Verified fixture graduation', verificationMethod: 'Fixture student portal viewed manually', expectedGraduationAt: at(1), graduationReminderAt: at(-1) }, now);
     await expect(reviewEligibility(prisma, admin, seedIds.riderA, approval(term.id, 1), now)).rejects.toMatchObject({ code: 'GRADUATE_EXCEPTION_NOT_DEFINED' });
     await reviewEligibility(prisma, admin, seedIds.riderA, { ...approval(term.id, 1), action: 'APPROVE', termId: term.id, validFrom: at(-30), validUntil: at(1) }, now);
     expect(await getMyEligibility(prisma, rider, now)).toMatchObject({ state: 'VALID', graduationReminderDue: true });
@@ -160,5 +160,19 @@ describe('student qualification facts and semester review APIs', () => {
     await expect(reviewEligibility(prisma, admin, seedIds.riderA, { ...approval(term.id, 2), action: 'APPROVE', termId: term.id, validFrom: at(-30), validUntil: at(1) }, graduated)).rejects.toMatchObject({ code: 'GRADUATE_EXCEPTION_NOT_DEFINED' });
     expect(await prisma.user.findUnique({ where: { id: rider.id } })).toMatchObject({ active: true, role: 'RIDER' });
     expect(await prisma.rider.findUnique({ where: { id: rider.riderId } })).toMatchObject({ status: 'AVAILABLE' });
+  });
+
+  it('requires manual verification method and retains it without collecting original student documents', async () => {
+    const term = await createAcademicTerm(prisma, admin, termInput());
+    const input = approval(term.id);
+    await expect(reviewEligibility(prisma, admin, seedIds.riderA, { ...input, verificationMethod: ' ' }, now)).rejects.toMatchObject({ code: 'VERIFICATION_METHOD_REQUIRED' });
+    const { verificationMethod: _method, ...missing } = input;
+    expect((await app.inject({ method: 'POST', url: `/admin/riders/${seedIds.riderA}/eligibility/reviews`, headers: headers(seedIds.admin), payload: missing })).statusCode).toBe(400);
+    await reviewEligibility(prisma, admin, seedIds.riderA, input, now);
+    expect((await prisma.riderEligibilityReview.findFirstOrThrow()).request).toMatchObject({ verificationMethod: input.verificationMethod });
+    const doc = app.swagger();
+    expect(doc.paths).toHaveProperty('/riders/me/eligibility');
+    expect(doc.paths).toHaveProperty('/admin/academic-terms');
+    expect(doc.paths).toHaveProperty('/admin/riders/{riderId}/eligibility/reviews');
   });
 });

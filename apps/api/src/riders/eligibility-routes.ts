@@ -26,7 +26,7 @@ export async function registerEligibilityRoutes(app: FastifyInstance, prisma: Pr
   async (req, reply) => reply.status(201).send(await createAcademicTerm(prisma, actorOf(req), req.body)));
   app.get<{ Params: { riderId: string } }>('/admin/riders/:riderId/eligibility', { preHandler: admin, schema: { tags, params } },
     async (req) => getAdminEligibility(prisma, actorOf(req), req.params.riderId));
-  const base = { expectedVersion: Type.Integer({ minimum: 0 }), requestKey: uuid(), reason: note() };
+  const base = { expectedVersion: Type.Integer({ minimum: 0 }), requestKey: uuid(), reason: note(), verificationMethod: note() };
   app.post<{ Params: { riderId: string }; Body: ReviewInput }>('/admin/riders/:riderId/eligibility/reviews', { preHandler: admin, schema: { tags, params,
     description: 'Administrator verified facts only; no graduate exception approval. Version and idempotency protected.',
     body: Type.Union([
