@@ -1,126 +1,117 @@
-# CODEX_REPORT — 第 2 轮：个人商家黑名单、商家取餐确认与交接争议
+# CODEX_REPORT — 第 3 轮：学生骑手资格、学期续签和毕业到期
 
-日期：2026-10-10（Asia/Singapore）。执行当前 `CODEX_TASK.md` 的 A、B1/B2/B3 和 C 验证要求；没有重新实施上一轮商品分类/取证/更正 A/B/C。上一轮报告仍保留在 `CODEX_REPORT_2026-10-10_FRAGILE_ABC.md`。
+日期：2026-10-10（Asia/Singapore）。仅执行本轮 CODEX_TASK.md 的 A、B 和验收/报告，没有开展其他任务。
 
-## 1. 提交与交付
+## 1. 结论、额度与提交
 
-- 同步前本地 main：`4f09f53`，工作区干净。fetch 后 fast-forward 到最新 main，没有 reset、覆盖用户工作或 force push。
-- 本轮起点：`d1203ff9663519e3ed75b5a88a978ac8d64775b2`。
-- 阶段 A：`9cdb1c8537b4a4ae5fd603c96a93564a9e98961f` — 骑手个人黑名单、按本人过滤订单池、接单串行化。
-- 阶段 B / 实现结束：`73030e095abfea4a2a51ddd1e38fe054141330e5` — 商家确认、骑手短码、交接争议、受控事实纠正及漏报支路原子恢复。
-- A 独立提交后才推进 B。B1/B2/B3 同一实现提交、完整通过后一次推送，没有激活缺少反向申诉的商家确认路径。
-- A/B 已正常 push 到 `origin/main`；`git ls-remote --heads origin main` 已核验远端为 `73030e095abfea4a2a51ddd1e38fe054141330e5`。
-- 报告生成前 `git status --short --branch` 为 `## main...origin/main`，没有未提交文件。本报告最后独立提交/推送；报告自身 SHA 可用 `git log -1 -- CODEX_REPORT.md` 查询，最终同步与工作区以报告推送后的 CLI 核验为准。
-- 对 B 提交查询 GitHub：Actions runs = 0，check runs = 0，combined statuses = 0（state 为 pending）；仓库 workflows = 0。以下均为本地实际执行结果，**没有独立 CI 通过证据**。
+阶段 A、B 均已完整实现并通过各自验证、独立提交和普通推送。**全局资格拦截尚未启用**：没有真实校历和逐人核定资料，不能把演示日期或未知历史资料当成学生审核事实。当前只能在管理员明确启用门槛后，宣称新 claim 受毕业/学期资格约束。
 
-## 2. 产品规则与实现选择
+- 同步前本地 main：`f935404`；工作区干净。安全 fetch、fast-forward 到本轮任务起点 `8bdefb4a3547672511e27283052ca69fb434afa3`。
+- 初始评估：A 为中等规模的模型/API/审核/提醒闭环；B 是较小但必须完整验证的 claim、迁移兼容及并发改动。主要风险为旧骑手事实缺失、校历未知、旧管理员身份语义、锁等待跨过资格到期，以及已有订单/收入被错误改写。
+- 额度工具快照：开始五小时剩余约 40%、周剩余约 91%；A 最终通过并推送后五小时剩余约 26%；B 推送后约 20%、周约 88%。这些是账户共享额度快照，不是可精确预测的工作时长。本轮没有使用额度重置或信用额度。
+- A 初始实现：`5c7dc462043b6670866e3159addda19f2986015c`。
+- A 首次推送遇到远端并行文档更新，普通推送被拒绝。检查后合并至 `9558d11`，保留远端 `e0ed306` 及其人工学生核验细则，没有 reset/rebase/force push。新增细则与本轮方向一致；补齐必填核验方式后重跑全部测试。
+- A 最终完成及推送：`e8d81eb66a244158927e4e2c83e7ba9170659c0a`，含核验方式必填及审计验证。
+- B / 实现结束：`c0a9d5abb78cbfa718fd0b477446b82ed209285a`。
+- `git ls-remote --heads origin main` 已核验 B 推送后的远端 SHA 为 `c0a9d5abb78cbfa718fd0b477446b82ed209285a`，报告前工作区干净。报告最后独立提交并推送；报告自身结束 SHA 通过 `git log -1 -- CODEX_REPORT.md` 查询，最终同步以该推送后的核验为准。
+- 上轮报告已归档在 `CODEX_REPORT_2026-10-10_PICKUP_AND_BLOCKLIST.md`，没有重新实施黑名单、交接争议、短码或分类/定价任务。
 
-以 PRODUCT_DECISIONS.md 的 2026-10-10 交接方向为准，明确替换此前普通骑手确认取餐方向。新商家确认是正常业务推进声明，不是独立的物理交货或责任证明；照片与电话短码也不自动判责。
+## 2. 产品规则与数据边界
 
-保留原创建时冻结的 PHOTO / PICKUP_CODE 和核心易损 REQUIRED 义务，未修改金额阈值、分类规则、价格/保证收益快照。40 分钟仅限制新的 claim：截止前有效承接可以在截止后取餐和配送；纠正后释放承接再回池时仍用原截止时间。
+按 PRODUCT_DECISIONS.md 的学生资格、准入分工及新增人工核验规则实施；ADMIN_ROLE_DECISIONS.md 的 Root 保护、正式 RBAC 与统一登录边界未修改。新增 API 暂由旧 SUPER_ADMIN 承担一级运营审核职责，**没有将其升级为 Root，也没有实现正式 L1/L2/Root 迁移**。
 
-事实纠正采用**获分派案件的管理员核实**路径。商家承认误点只增加双方事实材料，不自动解除争议。未交货、已交货和证据不足分开记录；没有自动责任、罚款、补偿、债务或账号限制政策。
+新增五个模型：
 
-## 3. 阶段 A 要求到运行时清单
+- AcademicTerm：单校园后端的显式学期、一个续签窗口、预提醒时点、时区、配置者/理由/时间。时间输入要求显式偏移，时区由 Intl 校验；日期和窗口顺序在服务和数据库校验。学期与续签窗口分别防重叠，边界采用 `[开始, 结束)`。
+- RiderEligibility：仅保存管理员核定的预计毕业生效时间、毕业提醒时间及版本。没有记录代表未知，迁移不插入“已毕业”或“学生已审核”结论。
+- RiderTermQualification：每骑手/学期唯一的当前人工审核结论及有效区间，不同学期独立保存，批准区间不能超出本学期。
+- RiderRenewalRequest：本人 CONTINUE / DECLINE / GRADUATE_EXCEPTION 意愿；本人/学期和本人/requestKey 唯一。它不是资质来源，也不批准毕业例外。
+- RiderEligibilityReview：运行时仅追加审核日志，保存操作人、动作、时间、适用学期、请求、理由、核验方式、前后事实和版本。审核纠正更新当前事实，但保留过去的审计记录；没有公开更新/删除历史审核的 API。未声称数据库特权用户无法直接修改日志。
 
-| 要求 | 实际执行点 | 验证 |
+不新增身份证、学号原件或学生证/学籍图片存储字段。人工核验方式由管理员如实填写，不调用学校系统，也不把截图或骑手自报日期自动变成可信事实。核验方式保存在审核日志的 request.verificationMethod 中。
+
+## 3. 阶段 A：要求到运行时与验证
+
+| 要求 | 运行时执行点 | 验证 |
 | --- | --- | --- |
-| A1 本人持久屏蔽/解除、唯一与幂等 | RiderBlockedMerchant 复合主键 riderId/merchantId；blocklist.ts requireRider、upsert/deleteMany；鉴权 Actor 提供 riderId | blocklist 单测；重复 PUT/DELETE、跨身份、两个骑手隔离 |
-| A2 本人订单池、先过滤后分页 | listAvailableTasks 接收 Actor；SQL relation predicate merchant.blockedBy.none(riderId)，然后 take/skip | 两页各有合法单、另一个同名商家不被屏蔽、商家更名后仍按 ID 屏蔽 |
-| A3 服务器再次检查及并发语义 | claimTask 在现有 Rider → Order → Task 锁下读黑名单；屏蔽修改共享 Rider 行锁 | block vs claim 并发；屏蔽成功后后续直接 taskId claim 被拒绝 |
-| A4 仅未来偏好、不更改其他事实 | 屏蔽只写个人关系表，不触碰持单、商家风险或资金 | 既有 CLAIMED/assignment 保留，其他骑手仍可见，无取消/收入记录 |
-| A5 独立验证/提交 | A typecheck、38 单测、build、21 个迁移及 drift；原 101 PG 回归通过，新增 3 PG 测试修正清理顺序后全部通过 | 独立提交 9cdb1c8；最终完整 PG 124 项通过 |
+| A1 资格与账号/在线/冷却/容量独立 | 独立资格模型；reviewEligibility 不写 User、Rider.status、restriction、assignment 或资金 | AVAILABLE 仍可派生 NONE/REJECTED/GRADUATED；权限测试；B 的已有履约和收入测试 |
+| A2 一个配置窗口、合法时间、未知不推断 | createAcademicTerm / validateTerm；事务 advisory lock；日期 CHECK 和两个范围排斥约束 | 并发重复配置、校历/窗口重叠、非法时区/日期、假期窗口、相邻学期 |
+| A3 查询提醒与继续意愿 | getMyEligibility / submitRenewal；显式 reminderStartsAt / graduationReminderAt；窗口可申请提示 | 窗口开始前/开始时、毕业前提醒、CONTINUE/DECLINE、重复与并发申请 |
+| A4 毕业到期事实 | qualificationState 在核定毕业时间优先派生 GRADUATED；批准不能跨已核定毕业时间，也不能给已毕业者作普通批准 | 毕业前 1ms 和精确生效时点；申请例外后仍 GRADUATED；账号和 AVAILABLE 保留。新 claim 的实际拦截在 B 且依赖启用开关 |
+| A5 每学期审核与不可自审 | reviewEligibility：SUPER_ADMIN、Rider 行锁、expectedVersion、requestKey、每学期当前结论及追加日志 | 服务/路由权限；骑手/商家/用户/OPERATOR 无审批权；重试、变更重试、陈旧版本、并发审核、跨学期独立与有审计纠正 |
+| A6 毕业例外仅保留请求 | GRADUATE_EXCEPTION 仅登记意愿；APPROVE 不能覆盖有效毕业事实 | 例外申请不改变 GRADUATED，不产生批准 |
+| A7 真实状态、原因、待办 | readEligibility 返回 NONE/UNDER_REVIEW/VALID/NOT_YET_VALID/RENEWAL_REQUIRED/GRADUATED/REJECTED/CALENDAR_UNCONFIGURED 和窗口/原因/nextAction | 未知老数据、未来有效区间、过期/未续签/拒绝、自报日期无效、完整序列化负向隐私检查 |
+| 最新人工核验细则 | ReviewInput 必填非空 verificationMethod，审核请求原样记入审计 | 缺方式/空白方式失败；日志保留方式；OpenAPI 路径存在 |
 
-串行化语义：屏蔽先取得 Rider 锁则之后 claim 拒绝；claim 先取得锁则该合法承接成立，随后屏蔽仅约束未来，不撤销它。列表读取反映请求时数据库可见的偏好。
+提醒仅是查询时返回的提示，不存在微信订阅消息、短信或后台推送。身份事实未知没有专门 UNKNOWN 枚举：由不存在的资格记录、null 毕业日期及 NONE/CALENDAR_UNCONFIGURED 明确表达，不能解释为已审在读。
 
-API：`GET /rider/blocked-merchants`、`PUT /rider/blocked-merchants/:merchantId`、`DELETE /rider/blocked-merchants/:merchantId`。仅 RIDER，本人身份由鉴权确定，无代改 riderId 参数。保存当前偏好及 createdAt；没有额外构建屏蔽撤回历史流水或平台商家惩戒。
+骑手接口：`GET /riders/me/eligibility`、`POST /riders/me/renewal-requests`。本人身份来自鉴权，不接受代填 riderId。Fastify 会移除未知请求字段；测试证明自填 validUntil / expectedGraduationAt 被忽略且不创建资质事实。
 
-## 4. 阶段 B 完整安全闭环
+临时一级审核接口：`GET/POST /admin/academic-terms`、`GET /admin/riders/:riderId/eligibility`、`POST /admin/riders/:riderId/eligibility/reviews`。审核动作是 APPROVE、REJECT 和 SET_GRADUATION；最后一项用于有审计地录入/纠正经核实日期。重复成功请求返回原审计结果；变更重试内容和陈旧版本失败。
 
-| 要求 | 实际执行点 | 验证 |
+骑手 DTO 仅显式返回本人资格、日期、待办和学期显示事实；完整响应负向验证无 actorId、createdById、riderId、userId、requestKey、审核历史或前后内部快照。管理员才可查看核验历史。新增模型没有被 spread 到既有客户/商家/骑手订单响应。
+
+## 4. 阶段 B：门槛、并发与历史兼容
+
+| 要求 | 运行时执行点 | 验证 |
 | --- | --- | --- |
-| B1 本单商家推进有效承接 | confirmRiderPickup，Order → Task 锁，当前 ACTIVE assignmentId、expectedRevision、CLAIMED 双状态校验 | 普通单无需骑手二次点击；跨商家/跨角色、无人承接、暂停、陈旧承接/版本和终态失败 |
-| B1 一次推进和历史审计 | requestKey 幂等；PickupHandoff 与 OrderEvent 关联，保存操作者、承接、版本、方式、证据/验证码 ID；orderId/revision 唯一 | 并发重试同一 handoff/event；换 key 不能再次取餐；变更重试字段拒绝 |
-| B1 原窗口语义 | 商家确认不使用 claimDeadline 拒绝已经有效承接的订单 | 模拟原截止后确认成功，firstPublishedAt/claimDeadline 相同 |
-| B1 旧入口停用 | pickUpTask 始终返回 MERCHANT_PICKUP_CONFIRMATION_REQUIRED；旧发码与骑手验码均拒绝并在 OpenAPI deprecate | 旧 rider POST 409、旧 merchant 发码 409、旧 rider 验码 409，非 rider 403 |
-| B2 改变短码信任方向 | issueRiderPickupCode 只向当前骑手返回六位码；protocolVersion=1，绑定订单/assignment/revision，商家确认时检查；scrypt 盐/哈希仅内部存储 | 他人/商家/Customer/Operator 发码失败；旧、过期、重发、跨单/承接码拒绝；正确码记录 issuer Rider / verifier Merchant |
-| B2 有效期、次数及一次使用 | TTL 为现有版本化配置与 10 分钟工程上限的较小值；承接 10 分钟窗口最多 5 次签发、5 次错误；重发使旧码失效；成功消费和推进同事务 | 并发猜码累计真实 failedAttempts；重新签发不清零；第六次签发、锁定后正确码拒绝；更正后旧码拒绝 |
-| B2 电话可用、明文隔离 | merchant 只传六位 code 也可查到本次唯一有效码；codeId 可选；普通详情/时间线不返回码或 hash/salt | 不传 UUID 的确认与重试成功；商家响应敏感字段负向测试 |
-| B2 原照片与额外 REQUIRED 并行 | PHOTO 或 REQUIRED 查当前骑手 RIDER_PICKUP_PHOTO、同单、CLAIMED、当前承接时间、assignmentId 与交接 revision；图片 MIME 和 Mock storage 引用；CODE 再并行检查 | 原 PHOTO、CODE+核心照片；仅码/仅照片失败；跨单、错人/角色/阶段/类型、非图片、无引用、旧承接照片回归 |
-| B3 即时异议与共享人工案件 | disputePickup 绑定 handoff/assignment/原商家事件；同 handoff 唯一；保存原因、证据、可选 catalogRiskClaim，创建 PICKUP_CUSTODY_DISPUTE case | 他人/伪造承接拒绝；并发一次案件；相同陈述幂等、改变陈述冲突；mine 中当前骑手有可用入口 |
-| B3 未决行为暂停 | assertNoPickupDispute 在 Order → Task 锁内用于 deliver、确认、发码、异常状态处分与退款/赔付；包括通过本单其他 case 退款 | OPEN/INCONCLUSIVE 无法送达、重新确认、退款/通用结案；其他 case 不能绕过；deny vs deliver 只能一条成功 |
-| B3 商家一致事实材料 | acknowledgePickupMistake 校验本单商家/争议版本，单独保留误点及商品在店声明 | 商家承认后仍保持 PICKED_UP/争议；陈旧确认失败；日志保留 |
-| B3 专用核实及更正 | resolvePickupDispute 先锁 case，再 Order → Task；当前处理人、合法案件状态、争议及 case 双版本；requestKey 幂等 | 未领取、陈旧任一版本、普通已升级 handler 拒绝；SUPER_ADMIN 经 takeover 后可核实；冲突并发结论一次生效 |
-| B3 未交货/已交货/证据不足 | NOT_HANDED_OVER 专用审计回到 CLAIMED，revision+1，保留原 handoff/assignment/event；HANDED_OVER 保留保管并恢复正常配送；INCONCLUSIVE 继续 WAITING_FOR_PARTICIPANT 和阻断 | 更正后新证据/新码才能再确认；原事件保留；已交货后正常 deliver；终态不可自由回退，无补偿债务 |
-| B3 漏报支路 | 未交货核实同时存在 catalogRiskClaim 时，在同事务复用 recordCatalogRiskReport：结束原承接、释放持单、RISK_REVIEW；实际操作人为管理员，原举报骑手保留在 metadata | 商家确认后仍可提出漏报异议；核实前不能机械拒取；核实后自动风险暂停，原订单/窗口保留、不计普通取消，不能被再次确认抢先覆盖 |
-| C 回归及角色隔离 | 原 4 个集成文件通过新的 merchantPickup helper 继续测试原风险/资金断言；角色 DTO 显式 selects，Customer 无 assignment/handoff 内部信息、历史骑手不看到另一有效承接的 handoff | 原 37 单测+101 集成均保留；新增 A/B 单测与 PG；完整序列共 40+124，通过 |
+| B1 新 claim 实时校验 | claimTask → assertQualificationCanClaim → qualificationSnapshot；启用时仅 VALID 可进入原有接单路径 | AVAILABLE 的未知/待审核/未到有效期/过期/拒绝/毕业均拒绝；直接 taskId 无绕过；精确有效期开始允许接单 |
+| B2 订单池一致 | listAvailableTasks 在 RepeatableRead 查询同一资格判定；启用且非 VALID 返回空数组 | 未知/拒绝/毕业不可见；批准后可见；原黑名单和分页回归仍通过。具体原因通过资格 GET 查询 |
+| B3 到期和竞争 | Rider → 开关 shared advisory lock → Order → Task；锁等待后获取统一 now，再读资格、期限及执行 claim；审核也锁 Rider | 锁等待跨毕业时点后拒绝；审核/claim 竞争；首个开关版本竞争；两名已显式核验骑手竞争同一 task 只有一个有效 assignment |
+| B4 旧用户安全过渡 | RIDER_ELIGIBILITY_POLICY 未配置时 enforced=false/version=0；不补毕业日期，不补审核；明确管理员版本化启用 | 默认未知仍可合法 claim；启用后未知被拒绝；Seed 不写资格、不关闭已启用开关 |
+| B5 既有履约/收入 | 门槛只接入 available/claim，不接入取餐、送达或结算路径；审核只写资格表及审计 | 先合法接单再毕业，已 PICKED_UP 仍正常送达；旧已得 RiderSettlement 与持单 OrderPricing 逐字段不变；账号保留，无自动取消/删除 |
 
-### API 与请求边界
+普通 claim 的业务错误是 `RIDER_QUALIFICATION_REQUIRED`（409），含状态、策略版本、统一判定时间、学期和下一步提示。资格 GET 同时明确 claimGateEnforced、enforcementConfigVersion、qualificationAllowsNewClaims 和未启用过渡提示；最后一项资格许可不替代在线、容量、冷却和订单期限等其他条件。
 
-- `POST /delivery-tasks/:taskId/pickup-code`：当前 RIDER；assignmentId；201 仅此响应有明文 code。
-- `POST /merchant/orders/:orderId/confirm-rider-pickup`：本单 MERCHANT；assignmentId、expectedRevision、requestKey；可选 photoEvidenceId、code、codeId。
-- `POST /delivery-tasks/:taskId/dispute-pickup`：RIDER；assignmentId、handoffId、reason；可选 evidenceIds、catalogRiskClaim（orderItemId、CAKE/SUNDAE）。
-- `POST /merchant/orders/:orderId/acknowledge-pickup-mistake`：本单 MERCHANT；disputeId、expectedVersion、note。
-- `POST /admin/pickup-disputes/:disputeId/resolve`：当前案件处理人；expectedVersion、expectedCaseVersion、requestKey、outcome、note。
-- 旧 `/delivery-tasks/:taskId/pick-up`、`/delivery-tasks/:taskId/verify-pickup-code`、`/orders/:orderId/pickup-code` 保留路径但明确拒绝，客户端必须迁移，不能当作成功兼容转换。
+开关修改复用 `PUT /admin/business-configs/RIDER_ELIGIBILITY_POLICY`：只接受 `{ enforced: boolean }`，此 key 必填 expectedVersion，首次是 0；修改理由、操作者、前后配置和版本均审计。启用前必须有当前学期。事务 exclusive advisory lock 与 claim 的 shared lock 协作，包含第一次配置无行可锁的情况；旧版本重试失败且不新增配置/审计，这不是另一个 requestKey 幂等接口。其他业务配置原有不传 expectedVersion 的调用仍兼容。
 
-merchant 详情可读 activeAssignmentId、pickupProtocol.revision 和最近 handoff/争议；rider mine 可读本人当前承接的 handoff、争议状态和 canDisputePickup。普通用户只读商家确认模式，没有额外暴露验证码、盐、hash 或承接标识。原时间线继续保留备餐、商家交付声明、骑手否认、商家更正说明与管理员核实事件。
+审核与 claim 的串行语义：claim 先取得 Rider 锁则该时点合法承接成立，后续拒绝/到期不撤销它；审核先取得锁则之后 claim 使用新事实。开关和 claim 同样按取得锁的先后生效。查询列表是请求时的一致快照，真正接单始终服务端复核。
 
-短码错误返回在事务**提交失败计数后**才抛出 HTTP 错误；不会因回滚导致限次形同虚设。重发限次和错误计数按当前承接跨 code 记录聚合；10 分钟/5 次是安全工程默认，不是新惩罚产品政策。
+## 5. 实际生效、事实记录和未实现内容
 
-## 5. 状态、并发和资金边界
+- **enforced behavior**：角色守卫、校历/日期/窗口校验、防重叠、申请唯一/幂等、审核方法必填、版本/重试保护、逐学期批准区间、毕业不能普通续签批准、查询时状态及提醒计算均已作用于运行时。资格门槛代码已完整接入并有正负向/竞争测试，**只在管理员启用时拦截新单**。
+- **data/telemetry available**：人工核验方法/结果/人员/时间/理由、继续或不继续意愿、毕业例外申请、版本和历史快照。意愿不授予资格；DECLINE 不自动撤销已审资格或取消既有订单。
+- **policy hook / placeholder**：GRADUATE_EXCEPTION 只有请求记录，批准标准/批准路径尚不存在；不能当成已实现毕业继续配送。未配置开关的过渡状态也不是学生认证证明。
+- **not implemented**：正式 Root/L1/L2 RBAC 迁移、正式登录、学校身份接口、真实材料上传/临时保留与删除、微信/短信推送、小程序 UI、毕业特批、教职工/校外类别、准入法规和确切资料保留期限。
 
-- 普通 state machine 仍不允许 PICKED_UP → CLAIMED；只有专用人工核实动作可作更正，必须保持当前承接、案件处理人/状态和双版本前置条件。DELIVERED 等终态不能通过此更正恢复。
-- 交接争议用独立 PickupCustodyDispute，OPEN/INCONCLUSIVE 真正阻断运行时；没有把可恢复暂停写为不可恢复 OrderStatus.EXCEPTION。
-- 旧 severe 报告和 deliver 的 Order → DeliveryTask 顺序保留。通用异常新增同顺序锁；refund 在既有 case 锁后加 Order → Task 的争议检查并重读订单事实，再进入原资金逻辑；原 RiderSettlement 排序锁、reservedMinor、HELD 释放不改。
-- 本轮确认、否认、商家承认、管理员核实不创建 RiderSettlement、CompensationObligation 或付款事实，不扣既得收入，不自动罚款/封禁。核实已交货后的正常 deliver 才走既有正常收入路径。
-- 漏报支路复用原风险更正及再发布，保留 sold items、OrderPricing、保证收益、rescue/tip/subsidy 和其他订单已得余额；新测试直接比较本单 pricing 和另一单含 reservedMinor 的 settlement 前后相等。
-- 无法取得强制照片仍只提供有审计的上报，**不能放行**。物理交接照片内容与电话参与码均不自动认定责任。
-- 没有重写旧退款/严重异常赔付的 earning、四类独立账务、商家初始配送款或历史财务迁移。既有未完成订单退款路径的收入/赔付语义仍属于已文档化待决范围；本轮争议阻断不能被理解为旧资金模型已经整体满足全部新分责产品规则。
+有意保持最小范围：校历按当前单校园后端维护；已创建学期/窗口无公开修改删除接口，后续配置新学期，不静默追改已审核区间。没有另造宽限期；当前资格区间限制在配置学期内。每人每学期一个不可变意愿提交，变更意愿会返回冲突；意愿修订和校历纠错流程需后续另行设计。提醒展示最多 10 个未关闭的窗口，后台历史最多 100 条，未实现专门历史分页。未扩大到用户/商家准入或其他财务治理。
 
-## 6. 迁移、Seed 与验证
+## 6. 迁移与验证结果
 
-新增迁移，仅追加，没有编辑已应用迁移：
+新增一个正式、纯增量迁移：`20261010000100_rider_eligibility`。没有修改已经应用的旧迁移，也没有回填老 Rider。B 没有 schema 改动或新增迁移；开关首次版本只能由明确管理员操作创建。
 
-1. `20261010000400_rider_merchant_blocklist`：个人关系表、复合主键、关系索引。
-2. `20261010000500_merchant_pickup_custody`：PickupHandoff、PickupCustodyDispute、独立争议 enum/type、Order.pickupHandoffRevision；VerificationCode.assignmentId/protocolVersion/handoffRevision/failedAttempts，唯一及外键约束；失效旧未用 merchant PICKUP 码，非负次数/版本约束。
-
-| 实际执行 | 结果 |
+| 实际命令/验证 | 结果 |
 | --- | --- |
-| Docker CLI `docker desktop status` / `docker info` / compose ps | running，engine 29.8.0，PostgreSQL healthy；没有重启或破坏性恢复 |
-| `pnpm db:generate` | 成功；最终完整验证再次生成 |
-| `pnpm typecheck` | A、B 及最后一轮通过 |
-| `pnpm test` | A 38；最终 40，15 个文件全部通过 |
-| `pnpm test:integration` | 最终 124，5 个文件全部通过（原 101 + 本轮 23） |
-| `vitest run tests/integration/pickup-protocol.test.ts` | 最终全量中 23 项通过；A 3 + B 20 |
-| `pnpm build` | A 与最终 B 通过 |
-| `pnpm db:migrate` / `prisma migrate status` | 当前库 22 个迁移完成，无待执行迁移 |
-| `prisma migrate diff --from-schema-datasource prisma/schema.prisma --to-schema-datamodel prisma/schema.prisma --exit-code` | 当前库、空库、旧库升级后均 No difference detected，exit 0 |
-| 独立空库 full migrate | 22 个迁移从零成功 |
-| 独立旧库 20 → 22 | 使用起点 schema/20 个迁移及旧 Client 建库，插入 FINALIZED settlement、历史 inactive BusinessConfig、sold item 和旧未用 PICKUP code 后升级成功 |
-| 旧库只读快照比较 | Order、OrderItem、OrderPricing、Settlement、RiderSettlement、DeliveryAssignment、BusinessConfig、Product、OrderEvent 共 9 类原始事实相等；只排除新 Order revision 字段；旧码失效、protocolVersion=0、assignmentId=null |
-| 空库连续两次 seedDatabase（pnpm db:seed 同一实现） | 语义摘要相等：users 6、merchants 1、products 2、orders 8、assignments 5、configs 1、guaranteed payout 合计1670 |
-| 当前库连续两次 seedDatabase | 语义摘要相等：users 10、merchants 2、products 174、orders 10、assignments 5、configs 2、guaranteed payout 合计2260；保留已有测试商品/商家，不把统计值当产品规则 |
-| OpenAPI / 权限 / 完整 DTO | 新路径存在、旧入口 deprecated、跨角色/归属及字段缺失负向断言通过 |
-| `git diff --check` | 通过 |
+| Docker Desktop CLI / docker info / compose ps | running，engine 29.8.0，PostgreSQL 容器 healthy；无需 restart，无破坏性恢复 |
+| `pnpm db:generate` | A/B 均成功，Prisma 6.19.3 |
+| `pnpm typecheck` | A/B 最终均 exit 0 |
+| `pnpm test` | A 43/43；B 最终 44/44（16 文件） |
+| `pnpm test:integration` | A 最终 132/132；B 最终 140/140（6 文件，约 180 秒） |
+| `pnpm build` | A/B 最终均 exit 0 |
+| 当前库 `pnpm db:migrate` / migrate status | 新迁移已应用；23 个迁移，up to date，无 pending |
+| 升级前旧库备份恢复到隔离库后 migrate deploy | 成功；升级前后 41 张既有业务表全部行数及按行内容排序的 MD5 摘要相同，包含订单、资金、骑手、审计及既有交接数据；新增资格/审核记录数均 0 |
+| 空库全部 migrate deploy | 全部 23 个迁移成功 |
+| `prisma migrate diff --from-schema-datasource prisma/schema.prisma --to-schema-datamodel prisma/schema.prisma --exit-code` | 当前库、旧库升级隔离库、空库均 No difference detected / exit 0 |
+| 连续两次 Seed | 当前库、旧库升级隔离库、空库均实际成功；无资格回填。额外测试证明 Seed 不关闭明确启用的资格开关 |
+| OpenAPI/权限/隐私 | 新路径存在；非 SUPER_ADMIN 审核和开关写入拒绝；完整骑手资格 DTO 负向检查通过 |
+| 既有行为回归 | 原有 124 项 PG 测试全部保留并通过，涵盖黑名单、取消冷却、容量、商家取餐、交接争议、退款、资金及定价快照 |
+| git diff --check | 通过 |
 
-Seed 为演示场景，不制造历史商家交接声明；新取餐协议/照片/短码/争议由真实 API 与 PostgreSQL 事务集成测试验证。旧已 PICKED_UP 历史保留，不追溯猜造商家确认；旧照片缺少本次承接/交接 revision 时需重新上传，旧商家码或旧验证 Evidence 不能替代新骑手码。
+初次 A 集成测试发现 advisory lock 的 void 返回值不能用 Prisma queryRaw 反序列化，改用 executeRaw 后完整重跑；负向自报字段测试调整为符合 Fastify 移除额外字段的实际行为。B 初次针对性测试发现跨学期状态从 NONE 精化为 RENEWAL_REQUIRED，更新相应预期并增加真实 claim 验证后重跑；以上失败没有被当成通过。
 
-开发中曾遇到测试清理顺序、错误响应结构/幂等重试断言及旧库 fixture 使用非法 config version=0 的准备错误，均已修正并实跑。最终无遗留失败或被阻塞的必要检查。生成专用旧 Client 时工具自动添加的根依赖已撤销，并用 frozen/offline install 恢复原依赖声明；最终没有新增依赖。
+两个隔离验证数据库 `campus_eligibility_upgrade_20261010`、`campus_eligibility_empty_20261010` 在验证后已删除，仅删除本轮创建的临时库。升级前备份仍位于 PostgreSQL 容器 `/tmp/campus_eligibility_before.dump`；验证临时脚本未进入 Git。没有删除应用数据库或 Docker volume。
 
-## 7. 能力状态、保留与未实现
+对 B 提交 `c0a9d5a` 实际查询 GitHub：combined statuses=0、check runs=0、Actions runs=0；仓库 workflows=0。上述通过结果均为本地实际执行，**没有独立 CI 通过证据**。
 
-| 分类 | 当前事实 |
-| --- | --- |
-| **enforced behavior** | 个人黑名单与 claim 串行化；商家唯一正常确认；承接/revision/幂等保护；仅骑手可见数字码、持久限次、旧码隔离；独立照片并行；即时否认及案件；未决交接阻断送达/资金处分；有权限人工更正、继续配送或等待；漏报免取消支路原子衔接 |
-| **data/telemetry available** | 原商家声明、承接/证据/短码参与者、失败尝试、双方陈述、漏报声明、处理人及核实结论、原始/纠正事件；不等于自动责任或处罚事实 |
-| **policy hook / placeholder** | 已有 purpose/protocolVersion/assignment/revision 能承载未来扫码验证语义；没有生成或验证 QR token，也没有扫码实现。原 Jev 仍为低风险建议边界 |
-| **not implemented** | QR/微信客户端 UI、真实相机和对象存储真实性验证、外部推送/短信、替代照片放行、争议期限/复杂费用/重做政策、商家处罚、Root/管理员等级/认证迁移、真实支付提现与完整分责四本账 |
+## 7. 交付状态与启用所需参数
 
-照片仍为 `MOCK_REFERENCE_ONLY`、authenticityVerified=false；短码证明验证参与而非实物当面交接。优惠分摊、治理风险阈值、处罚、赔付费用与管理员授权新体系没有擅自补定。核实有相互冲突的 severe 保管事实时安全拒绝未交货回退，不擦去严重事件或替管理员猜责任。
+报告前实际查询当前库：active RIDER_ELIGIBILITY_POLICY 版本数=0，AcademicTerm=0，RiderEligibility=0，RiderTermQualification=0；测试记录已清理，Seed 未伪造审核。故当前 enforced=false / version=0；**全局未启用时，已登记的毕业/过期事实也不会自动拦截 claim**。这是任务明确允许、等待正式数据的过渡方案，不是无限期免审的产品承诺。
 
-临时验证材料已移出 Git 工作区，保留在 `C:/Users/Serena Lyric/.codex/visualizations/2026/10/10/01a12331-e546-7fd3-900d-3977b985a574/round2-validation`，含旧库 before.json 及旧 schema/Client。验证数据库 `campus_round2_old`（首次 fixture 尝试）、`campus_round2_legacy_final`、`campus_round2_empty` 保留，不影响业务库与 Git 提交。
+正式启用前，运营管理员需要：
 
-**自动审批限制**：DROP 验证数据库和删除临时目录的组合清理命令被自动审批拒绝，仅返回 “blocked by policy”，未提供具体理由。没有绕过该删除限制；改为保留验证数据库及材料，并可逆地移动材料以保持 Git 工作区干净。功能、验证、提交与推送不受该清理限制影响。
+1. 按真实校历配置学期开始/结束、时区、一个续签窗口、预提醒时点；不得直接复制测试 fixture 日期。没有隐含宽限期。
+2. 逐人核验在读事实，记录核验方式和理由，并审核当期 validFrom/validUntil；如已核定预计毕业时间，录入生效时间及明确的提醒时间。未知资料保持未知，不能批量伪造通过。
+3. 查验待核实名单与已持单风险，再以明确理由和 expectedVersion=0 写入 `{ enforced: true }`；后续开关变更需当前版本。此操作只影响后续新 claim。
+4. 查看资格查询接口的状态/窗口/待办；没有真实消息推送，应另行安排实际运营提示。
 
-本轮完成后停止，不进入未授权新阶段。
+A、B 与报告完成后停止。毕业例外、材料留存、校历纠错和正式分权等未决/未实现项留待用户另行授权，不自行继续。
