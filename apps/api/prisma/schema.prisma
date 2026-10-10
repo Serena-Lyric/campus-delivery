@@ -338,6 +338,8 @@ model User {
   adminProfileChanges       AdminProfileAudit[]               @relation("AdminProfileAuditTarget")
   capacityEvents            RiderCapacityEvent[]              @relation("RiderCapacityEventActor")
   rescueContributionChanges MerchantRescueContributionEvent[]
+  academicTerms             AcademicTerm[]
+  eligibilityReviews        RiderEligibilityReview[]
   createdAt                 DateTime                          @default(now())
   updatedAt                 DateTime                          @updatedAt
 }
@@ -450,6 +452,83 @@ model Rider {
   remakeProposals             RemakeProposal[]
   capacityEvents              RiderCapacityEvent[]
   blockedMerchants            RiderBlockedMerchant[]
+  eligibility                 RiderEligibility?
+  termQualifications          RiderTermQualification[]
+  renewalRequests             RiderRenewalRequest[]
+  eligibilityReviews          RiderEligibilityReview[]
+}
+
+// No backfill: absence of a record means unknown, never verified or graduated.
+model RiderEligibility {
+  riderId                 String    @id @db.Uuid
+  rider                   Rider     @relation(fields: [riderId], references: [id])
+  expectedGraduationAt     DateTime?
+  graduationReminderAt    DateTime?
+  version                 Int       @default(0)
+}
+
+model AcademicTerm {
+  id                String   @id @default(uuid()) @db.Uuid
+  name              String
+  timeZone          String
+  startsAt          DateTime
+  endsAt            DateTime
+  renewalOpensAt    DateTime
+  renewalClosesAt   DateTime
+  reminderStartsAt  DateTime
+  requestKey        String   @unique @db.Uuid
+  createdById       String   @db.Uuid
+  createdBy         User     @relation(fields: [createdById], references: [id])
+  reason            String
+  createdAt         DateTime @default(now())
+  qualifications    RiderTermQualification[]
+  requests          RiderRenewalRequest[]
+  reviews           RiderEligibilityReview[]
+}
+
+model RiderTermQualification {
+  riderId       String @db.Uuid
+  termId        String @db.Uuid
+  rider         Rider @relation(fields: [riderId], references: [id])
+  term          AcademicTerm @relation(fields: [termId], references: [id])
+  decision      String
+  validFrom     DateTime?
+  validUntil    DateTime?
+  reason        String
+  reviewedAt    DateTime
+  @@id([riderId, termId])
+}
+
+model RiderRenewalRequest {
+  id          String @id @default(uuid()) @db.Uuid
+  riderId     String @db.Uuid
+  termId      String @db.Uuid
+  rider       Rider @relation(fields: [riderId], references: [id])
+  term        AcademicTerm @relation(fields: [termId], references: [id])
+  intent      String
+  requestKey  String @db.Uuid
+  createdAt   DateTime @default(now())
+  @@unique([riderId, termId])
+  @@unique([riderId, requestKey])
+}
+
+model RiderEligibilityReview {
+  id           String @id @default(uuid()) @db.Uuid
+  riderId      String @db.Uuid
+  rider        Rider @relation(fields: [riderId], references: [id])
+  termId       String? @db.Uuid
+  term         AcademicTerm? @relation(fields: [termId], references: [id], onDelete: Restrict)
+  actorId      String @db.Uuid
+  actor        User @relation(fields: [actorId], references: [id])
+  requestKey   String @db.Uuid
+  action       String
+  version      Int
+  request      Json
+  before       Json
+  after        Json
+  createdAt    DateTime @default(now())
+  @@unique([riderId, requestKey])
+  @@unique([riderId, version])
 }
 
 model RiderBlockedMerchant {

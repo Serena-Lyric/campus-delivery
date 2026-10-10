@@ -17,6 +17,7 @@ import { registerOrderRoutes } from './orders/routes.js';
 import { registerMarketPricingRoutes } from './pricing/routes.js';
 import { registerPricingViewRoutes } from './pricing/view-routes.js';
 import { registerRiderRoutes } from './riders/routes.js';
+import { registerEligibilityRoutes } from './riders/eligibility-routes.js';
 import { registerSettlementRoutes } from './settlements/routes.js';
 import { installErrorHandler } from './shared/errors.js';
 import { registerSubsidyRoutes } from './subsidy/routes.js';
@@ -58,6 +59,7 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
   await registerPricingViewRoutes(app, prisma, config);
   await registerDeliveryRoutes(app, prisma, config);
   await registerRiderRoutes(app, prisma, config);
+  await registerEligibilityRoutes(app, prisma, config);
   await registerSubsidyRoutes(app, prisma, config);
   await registerAdminConfigRoutes(app, prisma, config);
   await registerAdminProfileRoutes(app, prisma, config);
