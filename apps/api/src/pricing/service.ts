@@ -12,6 +12,7 @@ import type { Actor } from '../auth/auth.js';
 import { loadPolicyConfig } from '../merchant-policy/policies.js';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
 import { addMinor } from '../shared/money.js';
+import { assertStoredMinor, maxStoredMinor } from './config.js';
 
 export function riderGuaranteedPayoutMinor(pricing: {
   riderBasePayoutMinor: number;
@@ -19,12 +20,12 @@ export function riderGuaranteedPayoutMinor(pricing: {
   customerRiderTipMinor: number;
   platformSubsidyMinor: number;
 }): number {
-  return addMinor(
+  return assertStoredMinor(addMinor(
     pricing.riderBasePayoutMinor,
     pricing.merchantRescueContributionMinor,
     pricing.customerRiderTipMinor,
     pricing.platformSubsidyMinor,
-  );
+  ));
 }
 
 export function deliveryPlatformContributionMinor(pricing: {
@@ -74,6 +75,7 @@ export async function repriceOrder(
   if (!Number.isSafeInteger(newMinor) || newMinor < 0) {
     throw badRequest('INVALID_MONEY', 'newMinor must be a non-negative integer');
   }
+  assertStoredMinor(newMinor);
   const { config } = await loadPolicyConfig(prisma);
 
   return prisma.$transaction(async (tx) => {
@@ -171,7 +173,7 @@ export async function adjustRiderTip(
   now = new Date(),
 ) {
   if (actor.role !== 'CUSTOMER') throw forbidden();
-  if (!Number.isSafeInteger(deltaMinor) || deltaMinor === 0) {
+  if (!Number.isSafeInteger(deltaMinor) || deltaMinor === 0 || Math.abs(deltaMinor) > maxStoredMinor) {
     throw badRequest('INVALID_TIP_ADJUSTMENT', 'deltaMinor must be a non-zero integer');
   }
 
@@ -207,6 +209,8 @@ export async function adjustRiderTip(
     if (balanceAfterMinor < 0) {
       throw conflict('TIP_BALANCE_NEGATIVE', 'Rider incentive cannot be reduced below zero');
     }
+    assertStoredMinor(balanceAfterMinor);
+    assertStoredMinor(pricing.itemSubtotalMinor + pricing.customerDeliveryFeeMinor + balanceAfterMinor);
 
     const activeAssignment = claimed
       ? await tx.deliveryAssignment.findFirst({
@@ -221,7 +225,7 @@ export async function adjustRiderTip(
       throw new AppError(500, 'MISSING_ASSIGNMENT', 'Claimed task is missing its assignment');
     }
 
-    const nextPayout = pricing.riderGuaranteedPayoutMinor + deltaMinor;
+    const nextPayout = assertStoredMinor(pricing.riderGuaranteedPayoutMinor + deltaMinor);
     await tx.orderPricing.update({
       where: { orderId },
       data: {

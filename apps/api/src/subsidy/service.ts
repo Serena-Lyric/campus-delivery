@@ -10,6 +10,7 @@ import { requireAdminLevel, type Actor } from '../auth/auth.js';
 import { loadPolicyConfig } from '../merchant-policy/policies.js';
 import { deliveryPlatformContributionMinor, riderGuaranteedPayoutMinor } from '../pricing/service.js';
 import { AppError, badRequest, conflict, notFound } from '../shared/errors.js';
+import { assertStoredMinor } from '../pricing/config.js';
 import {
   BudgetSubsidyEligibilityPolicy,
   CappedSubsidyIncrementPolicy,
@@ -43,6 +44,7 @@ export async function addPlatformSubsidy(
   if (input.requestedMinor !== undefined && (!Number.isSafeInteger(input.requestedMinor) || input.requestedMinor <= 0)) {
     throw badRequest('INVALID_SUBSIDY_INCREMENT', 'requestedMinor must be a positive integer');
   }
+  if (input.requestedMinor !== undefined) assertStoredMinor(input.requestedMinor);
   const { version, config } = await loadPolicyConfig(prisma);
 
   return prisma.$transaction(async (tx) => {
@@ -149,7 +151,7 @@ export async function addPlatformSubsidy(
     }
 
     const previousPlatformSubsidyMinor = pricing.platformSubsidyMinor;
-    const newPlatformSubsidyMinor = previousPlatformSubsidyMinor + increment.addedMinor;
+    const newPlatformSubsidyMinor = assertStoredMinor(previousPlatformSubsidyMinor + increment.addedMinor);
     const nextPayout = riderGuaranteedPayoutMinor({
       ...pricing,
       platformSubsidyMinor: newPlatformSubsidyMinor,
@@ -158,7 +160,7 @@ export async function addPlatformSubsidy(
       ...pricing,
       platformSubsidyMinor: newPlatformSubsidyMinor,
     });
-    const usedMinor = account.subsidyUsedMinor + increment.addedMinor;
+    const usedMinor = assertStoredMinor(account.subsidyUsedMinor + increment.addedMinor);
     const subsidyUsageBps = account.subsidyLimitMinor === 0
       ? (usedMinor === 0 ? 0 : 10_000)
       : Math.min(10_000, Math.floor(usedMinor * 10_000 / account.subsidyLimitMinor));

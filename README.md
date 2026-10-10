@@ -183,13 +183,21 @@ DELIVERY_DISPUTE 会把相关 RiderSettlement 更新为 HELD，但不会扣除�
 
 ## 配送定价、救单与价格快照
 
-配送价格当前明确区分商家初始配送金额、用户基础配送费、骑手基础收益、商家真实救单出资、用户红包、平台补贴、骑手保证收益和平台配送贡献。当前 runtime 暂时把 `merchantBaseDeliveryPrice` 当作 reference input，不从商家结算中等额扣除；这是 provisional 实现，不是最终商业规则。商家初始金额是否为真实成本、是否从商品结算扣除或采用其他资金方式，仍待 W/真实运营经验验证。
+配送价格区分商家基础参考报价B、用户基础配送费、骑手基础收益、商家真实救单出资、用户红包、平台补贴、骑手保证收益和平台配送贡献。2026-10-10已确认B不出资、不从商家商品结算等额扣除；用户承担第一版基础配送费。
 
-第一版确定性 policy 使用全局默认、商家 override 和总数量计算彼此独立的 customerDeliveryFee / riderBasePayout，并拒绝负基础价差。merchant category、取餐/目的地区域、reference price 和 classifier foodType 当前只进入 inputs snapshot，尚未影响金额。
+为保护旧配置，未配置 `DELIVERY_PRICING_POLICY` 时继续旧 `ORDER_POLICY` 定额/商家override/数量规则。新模式需旧SUPER_ADMIN（临时代行一级运营配置权限，不是Root）通过 `PUT /admin/business-configs/DELIVERY_PRICING_POLICY` 明确启用，提交expectedVersion（首次0）与理由。payload包含 `mode: REFERENCE_BPS`、独立 `customerMarkupBps` / `riderDeductionBps`（0..10000）、`rounding: FLOOR_ADJUSTMENTS`、`maxMerchantBaseMinor`（1..1073741823分安全上限）。比例没有默认；演示20%不是正式费率。也可显式配置 `mode: LEGACY_ORDER_POLICY` 回退，仅影响新订单。
+
+新模式 `customer=B+floor(B×markupBps/10000)`，`riderBase=B-floor(B×deductionBps/10000)`，不叠加旧定额/override/数量收费，不制造最低价或最低收益。两侧金额、B、比例、舍入、基础价差和两种策略版本保存在内部订单/claim快照。商家类别、区域、AI分类与数量在新模式只记录、不决定金额；长期舍入/费率/限额仍待确认。
+
+商家通过 `GET/PUT /merchant/base-delivery-quote` 读写自己的未来B，使用报价expectedVersion和非空理由；记录旧/新价、操作人、时间、版本。安全限额可由新策略配置，旧模式报价编辑采用100000分工程上限（不是商业推荐价）。提示“仅对后续订单生效，已付款订单不变”，不UPDATE既有订单。
+
+用户先 `POST /orders/price-preview` 获取仅含自己承担金额的预览与quoteToken，再向 `POST /orders` 提交 `expectedQuoteToken`。新模式必须确认；旧模式选填但一旦提供就核验。商家报价、策略、商品/数量、目的地或交付方式变化将返回409，用户需重新预览/确认。订单创建仅为 `CREATED` 冷静期及开发内账报价合同，不等于微信付款；没有PAID或真实支付回调。配置/报价编辑与下单通过事务锁防止并发快照混用。
 
 未接单前商家可以增加真实 rescue contribution；只允许增加，增量 100% 进入骑手保证收益并从商家结算扣除，平台配送贡献不扩大。兼容 endpoint `/delivery-quote` 已在 OpenAPI 标记 `newRescueContributionMinor` 语义。
 
-骑手接单事务原子冻结 customer fee、rider base、merchant rescue、tip、subsidy、guaranteed payout、platform contribution、policy version 和 inputs snapshot。角色价格视图彼此隔离：用户只看自己的费用/tip，商家看到当前 provisional initial/reference 与 rescue/history，骑手只看保证收益，SUPER_ADMIN 看完整账务。
+骑手接单事务原子冻结 customer fee、rider base、merchant rescue、tip、subsidy、guaranteed payout、platform contribution、policy version 和 inputs snapshot。角色价格视图彼此隔离：用户只看自己的费用/tip，商家看到自己的基础参考与rescue/history，骑手只看保证收益，管理员按现有权限查看后台账务。救单、红包、补贴均不重算基础双侧价差；补贴降低配送贡献并占用预算。
+
+新增迁移 `20261011000100_merchant_base_delivery_quote` 仅添加商家报价版本（旧库初始0）与独立审计表，无历史财务或配置重解释。Seed保留已有报价/版本与ORDER_POLICY；已有演示订单及关联财务/承接事实不再被重写，新双侧策略不会由Seed启用。Seed仍是本地演示初始化工具，会维护其他演示资料，不作为生产运维入口。
 
 商品佣金字段与计算 plumbing 保留，但正式抽成规则未决定。当前默认 `platformCommissionBps=0`，正常创建/完成订单不会因此减少 merchant payable，也不会生成商品 commission revenue。
 
@@ -276,6 +284,8 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
 | POST | /orders/:orderId/delivery-code | 用户 | 签发交付码 |
 | POST | /orders/:orderId/pickup-code | 商家 | 已弃用，409；改用骑手签发接口 |
 | GET | /orders/:orderId/pricing | 订单相关方 | 角色隔离价格视图 |
+| POST | /orders/price-preview | 用户 | 只读价格预览与确认标识，不创建支付 |
+| GET / PUT | /merchant/base-delivery-quote | 商家 | 自有未来基础参考价、CAS版本与审计 |
 | POST | /orders/:orderId/rider-tip-adjustments | 用户 | 调整或追加骑手激励 |
 | POST | /merchant/orders/:orderId/confirm | 商家 | 确认并立即发布到骑手池 |
 | PATCH | /merchant/orders/:orderId/delivery-quote | 商家 | 未接单前增加真实救单出资（兼容路径名） |

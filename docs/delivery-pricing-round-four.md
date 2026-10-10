@@ -36,3 +36,12 @@ maxMerchantBaseMinor 为管理员指定安全输入上限，最多1073741823分�
 - 新增20261011000100_merchant_base_delivery_quote，仅加版本列和审计表，无账务/历史配置UPDATE。旧库副本和应用当前库升级后六类账务/配置表指纹一致；空库24条全迁移通过，current status与drift通过。
 - Seed首次检测到历史承接/待结算updatedAt漂移后修复为新场景才创建关联记录；连续两次Seed后OrderPricing/Settlement/DeliveryAssignment/RiderSettlement/BusinessConfig/BusinessConfigAudit指纹均不变。Seed不改已有商家B/版本，不启用或覆盖新模式，不回滚既有ORDER_POLICY。
 - B最终db:generate/typecheck/build通过；unit 48/48；全量PostgreSQL integration 146/146（Seed修复后重新执行）。针对跨店额外字段的初次负向测试失败后，增加preValidation明确拒绝，复验通过。
+
+## C 阶段核对
+
+- 新模式资金链：B250/两侧2000bps→user300/rider200/spread100；rescue100→rider300/merchant1900；tip100→rider400；subsidy50→rider450/contribution50。claim完整来源及输入快照，后续改B/改比例不回写，后claim红包只增加postClaimTip。测试原40分钟窗口不变。
+- 三角色完整order/pricing/timeline序列化负向检查，以及预览只展示用户金额；独立报价与旧救单路径OpenAPI可见。旧FINALIZED结算/已得骑手资金在报价/策略变更后完全保留。
+- 溢出与原子失败：基础价、checkout总额、红包、rescue、保证收益与补贴预算写入前检查PostgreSQL整数范围；失败无pricing/event/budget追加。0/极小B不暗加最低费用，回退旧模式仍拒绝携带的陈旧确认。
+- C最终db:generate/typecheck/build通过；unit48/48；全量PostgreSQL integration151/151（6文件）。既有40分钟、短码、交接争议、核心易损mock照片、取消冷却、学生资格gate、个人屏蔽、冻结/退款/补贴回归全部通过。
+- 应用当前库24条migration、status/drift通过；六表账务/配置指纹保持原值。新策略配置0条、报价审计0条，未替运营决定启用或费率。
+- 测试为本地执行，不代表独立CI验证。真实支付、钱包、商家48小时提现、正式Root/L1/L2、代买、真实媒体仍未实现，异常分责资金模型未顺带扩展。

@@ -18,6 +18,9 @@ import type { ItemClassifier } from '../../src/item-classifier/classifier.js';
 import { demoPolicy, seedDatabase, seedIds } from '../../prisma/seed.js';
 import { updateMerchantBaseQuote } from '../../src/pricing/merchant-quote.js';
 import { defaultDeliveryPricingPolicy } from '../../src/pricing/policy.js';
+import { repriceOrder } from '../../src/pricing/service.js';
+import { addPlatformSubsidy } from '../../src/subsidy/service.js';
+import { claimTask } from '../../src/delivery/service.js';
 
 const prisma = new PrismaClient();
 const config: AppConfig = {
@@ -569,5 +572,115 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
     expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } })).toEqual(pricing);
     expect(await prisma.businessConfig.findFirstOrThrow({ where: { key: 'ORDER_POLICY', isActive: true } })).toMatchObject({ version: 2, payload: { deliveryPricingDefaultCustomerFeeMinor: 450 } });
     expect(await prisma.businessConfig.findFirstOrThrow({ where: { key: 'DELIVERY_PRICING_POLICY', isActive: true } })).toMatchObject({ version: 1, payload: referencePayload });
+  });
+
+  it('passes reference-mode rescue +100, tip +100 and subsidy +50 through without changing base spread or the 40-minute window', async () => {
+    expect((await configureReference()).statusCode).toBe(200);
+    expect((await editQuote(250, 0)).statusCode).toBe(200);
+    const ready = await createReady();
+    const taskBefore = await prisma.deliveryTask.findUniqueOrThrow({ where: { id: ready.taskId } });
+    expect(taskBefore.claimDeadline!.getTime() - taskBefore.firstPublishedAt!.getTime()).toBe(40 * 60 * 1000);
+    const initial = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } });
+    expect(initial).toMatchObject({ customerDeliveryFeeMinor: 300, riderBasePayoutMinor: 200, deliveryPlatformContributionMinor: 100, merchantSettlementMinor: 2000, platformCommissionMinor: 0 });
+    await repriceOrder(prisma, { id: seedIds.merchantUser, role: 'MERCHANT', merchantId: seedIds.merchant }, ready.orderId, 100, 'Fixture funded from merchant order payable', new Date(taskBefore.firstPublishedAt!.getTime() + 20000));
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } })).toMatchObject({ merchantRescueContributionMinor: 100, merchantSettlementMinor: 1900, riderGuaranteedPayoutMinor: 300, deliveryPlatformContributionMinor: 100 });
+    const tip = await app.inject({ method: 'POST', url: `/orders/${ready.orderId}/rider-tip-adjustments`, headers: headers(seedIds.customer), payload: { deltaMinor: 100 } });
+    expect(tip.statusCode).toBe(201);
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } })).toMatchObject({ customerRiderTipMinor: 100, riderGuaranteedPayoutMinor: 400, deliveryPlatformContributionMinor: 100 });
+    const subsidyAt = new Date(taskBefore.firstPublishedAt!.getTime() + 601000);
+    await addPlatformSubsidy(prisma, { id: seedIds.admin, role: 'ADMIN', adminLevel: 'SUPER_ADMIN' }, ready.orderId, { requestedMinor: 50, reason: 'Isolated timed budget fixture' }, undefined, subsidyAt);
+    const beforeClaim = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } });
+    expect(beforeClaim).toMatchObject({ merchantBaseDeliveryPriceMinor: 250, customerDeliveryFeeMinor: 300, riderBasePayoutMinor: 200, merchantRescueContributionMinor: 100, customerRiderTipMinor: 100, platformSubsidyMinor: 50, riderGuaranteedPayoutMinor: 450, deliveryPlatformContributionMinor: 50, merchantSettlementMinor: 1900, pricingInputsSnapshot: { basePlatformSpreadMinor: 100 } });
+    expect((await prisma.merchantSubsidyAccount.findUniqueOrThrow({ where: { id: seedIds.subsidyAccount } })).subsidyUsedMinor).toBe(50);
+    await claimTask(prisma, { id: seedIds.riderAUser, role: 'RIDER', riderId: seedIds.riderA }, ready.taskId, new Date(subsidyAt.getTime() + 1000), config.campusTimeZone);
+    const assignment = await prisma.deliveryAssignment.findFirstOrThrow({ where: { taskId: ready.taskId } });
+    expect(assignment).toMatchObject({ customerDeliveryFeeMinorAtClaim: 300, riderBasePayoutMinorAtClaim: 200, merchantRescueContributionMinorAtClaim: 100, customerTipMinorAtClaim: 100, platformSubsidyMinorAtClaim: 50, riderGuaranteedPayoutMinorAtClaim: 450, deliveryPlatformContributionMinorAtClaim: 50, pricingInputsSnapshotAtClaim: beforeClaim.pricingInputsSnapshot });
+    expect((await editQuote(500, 1)).statusCode).toBe(200);
+    expect((await configureReference(1, { ...referencePayload, customerMarkupBps: 4000, riderDeductionBps: 4000 })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/orders/${ready.orderId}/rider-tip-adjustments`, headers: headers(seedIds.customer), payload: { deltaMinor: 100 } })).statusCode).toBe(201);
+    const after = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } });
+    expect(after).toMatchObject({ customerDeliveryFeeMinor: 300, riderBasePayoutMinor: 200, riderGuaranteedPayoutMinor: 550, deliveryPlatformContributionMinor: 50, pricingInputsSnapshot: initial.pricingInputsSnapshot });
+    expect(await prisma.deliveryAssignment.findUniqueOrThrow({ where: { id: assignment.id } })).toMatchObject({ riderGuaranteedPayoutMinorAtClaim: 450, postClaimTipMinor: 100, pricingInputsSnapshotAtClaim: beforeClaim.pricingInputsSnapshot });
+    const taskAfter = await prisma.deliveryTask.findUniqueOrThrow({ where: { id: ready.taskId } });
+    expect(taskAfter.firstPublishedAt).toEqual(taskBefore.firstPublishedAt);
+    expect(taskAfter.claimDeadline).toEqual(taskBefore.claimDeadline);
+  });
+
+  it('hides both rates, policy/input snapshots and other-role funds throughout serialized public responses', async () => {
+    expect((await configureReference()).statusCode).toBe(200);
+    expect((await editQuote(250, 0)).statusCode).toBe(200);
+    const previewResponse = await preview();
+    const ready = await createReady();
+    expect((await claim(ready.taskId, seedIds.riderAUser)).statusCode).toBe(200);
+    const hiddenInternal = ['customerMarkupBps', 'riderDeductionBps', 'customerMarkupMinor', 'riderDeductionMinor', 'basePlatformSpreadMinor', 'pricingInputsSnapshot', 'deliveryPricingPolicyVersion', 'pricingPolicyVersion', 'merchantBaseQuoteVersion', 'activeInputs', 'reservedInputs'];
+    for (const hidden of [...hiddenInternal, 'merchantBaseDeliveryPriceMinor', 'riderBasePayoutMinor', 'merchantRescueContributionMinor', 'platformSubsidyMinor']) expect(previewResponse.body).not.toContain(hidden);
+    for (const [actorId, hiddenFunds] of [
+      [seedIds.customer, ['merchantBaseDeliveryPriceMinor', 'riderBasePayoutMinor', 'merchantRescueContributionMinor', 'platformSubsidyMinor', 'deliveryPlatformContributionMinor']],
+      [seedIds.merchantUser, ['customerDeliveryFeeMinor', 'customerRiderTipMinor', 'riderBasePayoutMinor', 'platformSubsidyMinor', 'deliveryPlatformContributionMinor']],
+      [seedIds.riderAUser, ['customerDeliveryFeeMinor', 'customerRiderTipMinor', 'merchantBaseDeliveryPriceMinor', 'riderBasePayoutMinor', 'merchantRescueContributionMinor', 'platformSubsidyMinor', 'deliveryPlatformContributionMinor']],
+    ] as const) {
+      for (const url of [`/orders/${ready.orderId}`, `/orders/${ready.orderId}/pricing`, `/orders/${ready.orderId}/timeline`]) {
+        const response = await app.inject({ method: 'GET', url, headers: headers(actorId) });
+        expect(response.statusCode, response.body).toBe(200);
+        for (const hidden of [...hiddenInternal, ...hiddenFunds]) expect(response.body, `${actorId} ${url}: ${hidden}`).not.toContain(hidden);
+      }
+    }
+    const docs = (await app.inject({ method: 'GET', url: '/docs/json' })).json();
+    expect(docs.paths['/orders/price-preview']?.post).toBeTruthy();
+    expect(docs.paths['/merchant/base-delivery-quote']?.get).toBeTruthy();
+    expect(docs.paths['/merchant/base-delivery-quote']?.put).toBeTruthy();
+    expect(docs.paths['/merchant/orders/{orderId}/delivery-quote']?.patch.description).toContain('rescue');
+  });
+
+  it('rejects extreme checkout and incentive amounts atomically without price, event or budget drift', async () => {
+    expect((await configureReference()).statusCode).toBe(200);
+    expect((await editQuote(250, 0)).statusCode).toBe(200);
+    const ready = await createReady();
+    const initial = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } });
+    expect((await app.inject({ method: 'POST', url: `/orders/${ready.orderId}/rider-tip-adjustments`, headers: headers(seedIds.customer), payload: { deltaMinor: 2_147_483_647 } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'PATCH', url: `/merchant/orders/${ready.orderId}/delivery-quote`, headers: headers(seedIds.merchantUser), payload: { newRescueContributionMinor: 2_147_483_648 } })).statusCode).toBe(400);
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } })).toEqual(initial);
+    expect(await prisma.riderTipEvent.count({ where: { orderId: ready.orderId } })).toBe(0);
+    expect(await prisma.merchantRescueContributionEvent.count({ where: { orderId: ready.orderId } })).toBe(0);
+    const subtotalOverflow = { ...checkoutInput(), items: [{ productId: seedIds.productRice, quantity: 99 }] };
+    await prisma.product.update({ where: { id: seedIds.productRice }, data: { priceMinor: 100_000_000 } });
+    try { expect((await preview(subtotalOverflow)).statusCode).toBe(400); } finally { await prisma.product.update({ where: { id: seedIds.productRice }, data: { priceMinor: 1500 } }); }
+    const repeated = { ...checkoutInput(), items: [{ productId: seedIds.productRice, quantity: 99 }, { productId: seedIds.productRice, quantity: 1 }] };
+    expect((await preview(repeated)).statusCode).toBe(400);
+  });
+
+  it('preserves finalized legacy accounting and earned rider income across later quote and policy activation', async () => {
+    const delivered = await createReady();
+    expect((await claim(delivered.taskId, seedIds.riderAUser)).statusCode).toBe(200);
+    expect((await merchantPickup(app, prisma, delivered.taskId)).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/delivery-tasks/${delivered.taskId}/deliver`, headers: headers(seedIds.riderAUser), payload: {} })).statusCode).toBe(200);
+    const pricing = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: delivered.orderId } });
+    const settlement = await prisma.settlement.findUniqueOrThrow({ where: { orderId: delivered.orderId } });
+    const income = await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: delivered.orderId } });
+    const assignment = await prisma.deliveryAssignment.findFirstOrThrow({ where: { taskId: delivered.taskId } });
+    expect(settlement.status).toBe('FINALIZED');
+    expect((await editQuote(250, 0)).statusCode).toBe(200);
+    expect((await configureReference()).statusCode).toBe(200);
+    expect((await preview()).json().customerDeliveryFeeMinor).toBe(300);
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: delivered.orderId } })).toEqual(pricing);
+    expect(await prisma.settlement.findUniqueOrThrow({ where: { orderId: delivered.orderId } })).toEqual(settlement);
+    expect(await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: delivered.orderId } })).toEqual(income);
+    expect(await prisma.deliveryAssignment.findUniqueOrThrow({ where: { id: assignment.id } })).toEqual(assignment);
+  });
+
+  it('rounds tiny references without an invented minimum and rejects stale confirmations even after switching back to legacy', async () => {
+    expect((await configureReference()).statusCode).toBe(200);
+    expect((await editQuote(0, 0)).statusCode).toBe(200);
+    const zero = (await preview()).json();
+    expect(zero.customerDeliveryFeeMinor).toBe(0);
+    const created = await submitQuote(zero.quoteToken);
+    expect(created.statusCode).toBe(201);
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: created.json().id } })).toMatchObject({ customerDeliveryFeeMinor: 0, riderBasePayoutMinor: 0 });
+    expect((await editQuote(1, 1)).statusCode).toBe(200);
+    const tiny = (await preview()).json();
+    expect(tiny.customerDeliveryFeeMinor).toBe(1);
+    expect((await app.inject({ method: 'PUT', url: '/admin/business-configs/DELIVERY_PRICING_POLICY', headers: headers(seedIds.admin), payload: { payload: { mode: 'LEGACY_ORDER_POLICY' }, expectedVersion: 1, reason: 'Explicit rollback fixture' } })).statusCode).toBe(200);
+    expect((await submitQuote(tiny.quoteToken)).json()).toMatchObject({ code: 'CHECKOUT_QUOTE_CHANGED' });
+    expect((await submitQuote()).statusCode).toBe(201);
   });
 });
