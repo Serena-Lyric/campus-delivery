@@ -338,6 +338,7 @@ model User {
   adminProfileChanges       AdminProfileAudit[]               @relation("AdminProfileAuditTarget")
   capacityEvents            RiderCapacityEvent[]              @relation("RiderCapacityEventActor")
   rescueContributionChanges MerchantRescueContributionEvent[]
+  baseDeliveryQuoteChanges  MerchantBaseDeliveryQuoteAudit[]
   academicTerms             AcademicTerm[]
   eligibilityReviews        RiderEligibilityReview[]
   createdAt                 DateTime                          @default(now())
@@ -371,6 +372,8 @@ model Merchant {
   maxConcurrentOrders       Int                        @default(0)
   deliveryContributionMinor Int                        @default(0)
   baseDeliveryPriceMinor    Int                        @default(0)
+  baseDeliveryQuoteVersion  Int                        @default(0)
+  baseDeliveryQuoteAudits   MerchantBaseDeliveryQuoteAudit[]
   supportedDeliveryMethods  DeliveryMethod[]           @default([DESIGNATED_POINT, DOOR, FACE_TO_FACE])
   pickupVerificationMode    PickupVerificationMode     @default(CONFIRMATION)
   blockedBy                 RiderBlockedMerchant[]
@@ -382,6 +385,22 @@ model Merchant {
   exposureDecisions         MerchantExposureDecision[]
   createdAt                 DateTime                   @default(now())
   updatedAt                 DateTime                   @updatedAt
+}
+
+model MerchantBaseDeliveryQuoteAudit {
+  id              String   @id @default(uuid()) @db.Uuid
+  merchantId      String   @db.Uuid
+  merchant        Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  version         Int
+  previousMinor   Int
+  newMinor        Int
+  actorId         String   @db.Uuid
+  actor           User     @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  reason          String
+  createdAt       DateTime @default(now())
+
+  @@unique([merchantId, version])
+  @@index([merchantId, createdAt])
 }
 
 model ProductCategory {

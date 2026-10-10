@@ -1,8 +1,6 @@
 import {
-  DeliveryMethod,
   DeliveryTaskStatus,
   ExceptionType,
-  MerchantExposureState,
   OrderEventActorType,
   OrderEventType,
   OrderStatus,
@@ -27,14 +25,9 @@ import { openExceptionCase } from '../exception-cases/service.js';
 import { DeterministicItemClassifier, classifyItemSafely, type ItemClassifier } from '../item-classifier/classifier.js';
 import { pickupRiskSnapshot } from '../delivery/pickup-risk.js';
 import { defaultDeliveryPricingPolicy, type DeliveryPricingPolicy } from '../pricing/policy.js';
-import { loadDeliveryPricingConfig, pricingConfigLock } from '../pricing/config.js';
+import { calculateCheckoutQuote, checkoutQuantities, readCheckoutFacts, type CheckoutInput } from './quote.js';
 
-export type CreateOrderInput = {
-  merchantId: string;
-  destinationLocationId: string;
-  deliveryMethod: DeliveryMethod;
-  items: Array<{ productId: string; quantity: number }>;
-};
+export type CreateOrderInput = CheckoutInput;
 
 const orderInclude = {
   pickupHandoffs: { select: { id: true, assignmentId: true, revision: true, eventId: true, createdAt: true, dispute: { select: { id: true, caseId: true, status: true, version: true, merchantAcknowledgedAt: true } } }, orderBy: { revision: 'desc' as const }, take: 1 },
@@ -152,15 +145,7 @@ export async function createOrder(
   pricingPolicy: DeliveryPricingPolicy = defaultDeliveryPricingPolicy,
 ) {
   if (actor.role !== 'CUSTOMER') throw forbidden();
-  if (input.items.length === 0) throw badRequest('EMPTY_ORDER', 'Order must contain at least one item');
-
-  const quantities = new Map<string, number>();
-  for (const item of input.items) {
-    if (!Number.isSafeInteger(item.quantity) || item.quantity <= 0) {
-      throw badRequest('INVALID_QUANTITY', 'Item quantity must be a positive safe integer');
-    }
-    quantities.set(item.productId, (quantities.get(item.productId) ?? 0) + item.quantity);
-  }
+  const quantities = checkoutQuantities(input);
 
   const codeDay = shortCodeDay(now, campusTimeZone);
 
@@ -198,33 +183,10 @@ export async function createOrder(
     const shortCode = generateShortCode();
     try {
       return await prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(${pricingConfigLock})`;
-        const { version: policyVersion, config } = await loadPolicyConfig(tx);
-        const pricingConfig = await loadDeliveryPricingConfig(tx);
+        const facts = await readCheckoutFacts(tx, input, quantities);
+        const { version: policyVersion, config, merchant, location, products } = facts;
         const coolingOffEndsAt = new Date(now.getTime() + config.coolingOffSeconds * 1000);
         const tipDeadline = new Date(now.getTime() + config.riderTipWindowSeconds * 1000);
-        // Hold catalog rows through snapshot insertion, including concurrent platform-rule edits.
-        const productIds = [...quantities.keys()].sort();
-        await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id" IN (${Prisma.join(productIds.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY "id" FOR SHARE`;
-        const categoryCodes = [...new Set(productsToClassify.map((product) => product.deliveryCategoryCode))].sort();
-        await tx.$queryRaw`SELECT "code" FROM "DeliveryCategory" WHERE "code" IN (${Prisma.join(categoryCodes)}) ORDER BY "code" FOR SHARE`;
-        const [merchant, location, products] = await Promise.all([
-          tx.merchant.findUnique({ where: { id: input.merchantId }, include: { campusLocation: true } }),
-          tx.campusLocation.findUnique({ where: { id: input.destinationLocationId } }),
-          tx.product.findMany({ where: { id: { in: [...quantities.keys()] } }, include: { category: { select: { name: true } }, deliveryCategory: true } }),
-        ]);
-        if (!merchant) throw notFound('Merchant');
-        if (!location) throw notFound('Campus location');
-        if (!merchant.isOpen || merchant.exposureState === MerchantExposureState.HIDDEN || merchant.exposureState === MerchantExposureState.SUSPENDED) {
-          throw conflict('MERCHANT_UNAVAILABLE', 'Merchant is not currently accepting visible orders');
-        }
-        if (!merchant.supportedDeliveryMethods.includes(input.deliveryMethod)
-          || !location.supportedDeliveryMethods.includes(input.deliveryMethod)) {
-          throw badRequest('DELIVERY_METHOD_UNAVAILABLE', 'Selected delivery method is not available for this merchant and location');
-        }
-        if (products.length !== quantities.size || products.some((product) => product.merchantId !== merchant.id || !product.isAvailable)) {
-          throw badRequest('INVALID_PRODUCTS', 'Every product must be available from the selected merchant');
-        }
         if (products.some((product) => {
           const before = preclassifiedItems.get(product.id)?.facts;
           return !before
@@ -283,20 +245,15 @@ export async function createOrder(
             subtotalMinor: multiplyMinor(product.priceMinor, quantity),
           };
         });
-        const itemSubtotalMinor = itemData.reduce((sum, item) => sum + item.subtotalMinor, 0);
-        if (!Number.isSafeInteger(itemSubtotalMinor)) {
-          throw badRequest('MONEY_OVERFLOW', 'Money calculation overflowed');
+        const { itemSubtotalMinor, deliveryPricing, quoteToken } = calculateCheckoutQuote(
+          facts, input, quantities, pricingPolicy, [...new Set(itemData.map((item) => item.suggestedFoodType))],
+        );
+        if (facts.pricingConfig.config.mode === 'REFERENCE_BPS' && !input.expectedQuoteToken) {
+          throw conflict('QUOTE_CONFIRMATION_REQUIRED', 'Preview and confirm the current checkout quote before creating an order');
         }
-        const totalQuantity = itemData.reduce((sum, item) => sum + item.quantity, 0);
-        const deliveryPricing = pricingPolicy.evaluate({
-          merchantId: merchant.id,
-          merchantBaseDeliveryPriceMinor: merchant.baseDeliveryPriceMinor,
-          merchantCategoryNames: [...new Set(itemData.map((item) => item.merchantCategoryNameSnapshot))],
-          pickupRegion: merchant.campusLocation.regionLabel,
-          destinationRegion: location.regionLabel,
-          suggestedFoodTypes: [...new Set(itemData.map((item) => item.suggestedFoodType))],
-          totalQuantity,
-        }, config, pricingConfig);
+        if (input.expectedQuoteToken !== undefined && input.expectedQuoteToken !== quoteToken) {
+          throw conflict('CHECKOUT_QUOTE_CHANGED', 'Checkout quote changed; preview again and ask the customer to confirm');
+        }
         const platformCommissionMinor = basisPoints(itemSubtotalMinor, config.platformCommissionBps);
 
         return tx.order.create({
@@ -330,7 +287,14 @@ export async function createOrder(
                 platformCommissionMinor,
                 merchantSettlementMinor: itemSubtotalMinor - platformCommissionMinor,
                 pricingPolicyVersion: policyVersion,
-                pricingInputsSnapshot: deliveryPricing.inputsSnapshot,
+                pricingInputsSnapshot: {
+                  ...(deliveryPricing.inputsSnapshot as Prisma.InputJsonObject),
+                  merchantBaseQuoteVersion: merchant.baseDeliveryQuoteVersion,
+                  orderPolicyVersion: policyVersion,
+                  quoteToken,
+                  customerConfirmation: input.expectedQuoteToken ? 'PREVIEW_CONFIRMED' : 'LEGACY_DIRECT_CREATION',
+                  contract: 'DEVELOPMENT_QUOTE_ONLY',
+                },
                 pricingReason: deliveryPricing.reason,
               },
             },

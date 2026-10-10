@@ -3,6 +3,7 @@ import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
 import { actorOf, adminGuard, authGuard } from '../auth/auth.js';
 import type { AppConfig } from '../config.js';
+import { previewOrderQuote, type CheckoutInput } from './quote.js';
 import {
   cancelOrder,
   confirmOrder,
@@ -19,6 +20,16 @@ const Pagination = Type.Object({
   offset: Type.Optional(Type.Integer({ minimum: 0, default: 0 })),
 });
 const ReasonBody = Type.Object({ reason: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })) });
+const CheckoutBody = Type.Object({
+  merchantId: Type.String({ format: 'uuid' }),
+  destinationLocationId: Type.String({ format: 'uuid' }),
+  deliveryMethod: Type.Enum(DeliveryMethod),
+  items: Type.Array(Type.Object({
+    productId: Type.String({ format: 'uuid' }),
+    quantity: Type.Integer({ minimum: 1, maximum: 99 }),
+  }, { additionalProperties: false }), { minItems: 1, maxItems: 50 }),
+  expectedQuoteToken: Type.Optional(Type.String({ pattern: '^[0-9a-f]{64}$', description: 'Confirmation from POST /orders/price-preview; required in reference-BPS mode, checked whenever provided. This is not proof of payment.' })),
+}, { additionalProperties: false });
 
 export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaClient, config: AppConfig) {
   const anyUser = authGuard(prisma, config);
@@ -26,26 +37,17 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   const merchant = authGuard(prisma, config, ['MERCHANT']);
   const admin = adminGuard(prisma, config);
 
-  app.post<{
-    Body: {
-      merchantId: string;
-      destinationLocationId: string;
-      deliveryMethod: DeliveryMethod;
-      items: Array<{ productId: string; quantity: number }>;
-    };
-  }>('/orders', {
+  app.post<{ Body: CheckoutInput }>('/orders/price-preview', {
+    preHandler: customer,
+    schema: { tags: ['pricing'], description: 'Read-only customer checkout preview; no order or payment is created.', body: CheckoutBody },
+  }, async (request) => previewOrderQuote(prisma, actorOf(request), request.body));
+
+  app.post<{ Body: CheckoutInput }>('/orders', {
     preHandler: customer,
     schema: {
       tags: ['orders'],
-      body: Type.Object({
-        merchantId: Type.String({ format: 'uuid' }),
-        destinationLocationId: Type.String({ format: 'uuid' }),
-        deliveryMethod: Type.Enum(DeliveryMethod),
-        items: Type.Array(Type.Object({
-          productId: Type.String({ format: 'uuid' }),
-          quantity: Type.Integer({ minimum: 1, maximum: 99 }),
-        }), { minItems: 1, maxItems: 50 }),
-      }),
+      description: 'Creates a CREATED development quote snapshot, not a payment success. Reference-BPS pricing requires confirmed preview token.',
+      body: CheckoutBody,
     },
   }, async (request, reply) => {
     const actor = actorOf(request);

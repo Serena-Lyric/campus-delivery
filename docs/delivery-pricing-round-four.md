@@ -26,4 +26,13 @@ maxMerchantBaseMinor 为管理员指定安全输入上限，最多1073741823分�
 - A2 独立BPS/边界/审计：pricing/config.ts 校验、policy.ts BigInt计算、admin/config-service.ts expectedVersion及事务锁；单元边界及并发首次配置测试覆盖。无正式费率默认。
 - A3 历史兼容：配置缺省旧模式；新数据使用现有JSON快照，不需要数据库迁移；测试证明切换/回滚不改既有OrderPricing/Settlement。
 - db:generate、typecheck、build通过；unit 48/48；PostgreSQL integration 141/141；当前库23条迁移已应用，migration→当前库diff无漂移。第一次diff因未创建隔离shadow库失败，创建后重跑通过。
-- B/C尚未开发；新模式阶段A尚未提供用户预览确认，阶段B补齐。
+- A交付时B/C尚未开发；新模式阶段A尚未提供用户预览确认，阶段B补齐。
+
+## B 阶段核对
+
+- B1 自有报价：pricing/merchant-quote.ts 与 GET/PUT /merchant/base-delivery-quote；Merchant版本从0开始，CAS、行锁、限额、理由与独立审计。并发改价只一成功，跨店字段明确拒绝。
+- B2 旧救单路径：原delivery-quote仍由repriceOrder执行增量出资；已claim明确409。本单基础价没有写接口。
+- B3 重确认/创建快照：orders/quote.ts 共用价格计算和事务读锁；新模式必需expectedQuoteToken，旧模式选填但提供就严格核对。测试覆盖报价、策略、商品、数量变化，分类期间改价优先/订单快照优先两个交错顺序，旧订单及claim/settlement不漂移；订单仍CREATED。
+- 新增20261011000100_merchant_base_delivery_quote，仅加版本列和审计表，无账务/历史配置UPDATE。旧库副本和应用当前库升级后六类账务/配置表指纹一致；空库24条全迁移通过，current status与drift通过。
+- Seed首次检测到历史承接/待结算updatedAt漂移后修复为新场景才创建关联记录；连续两次Seed后OrderPricing/Settlement/DeliveryAssignment/RiderSettlement/BusinessConfig/BusinessConfigAudit指纹均不变。Seed不改已有商家B/版本，不启用或覆盖新模式，不回滚既有ORDER_POLICY。
+- B最终db:generate/typecheck/build通过；unit 48/48；全量PostgreSQL integration 146/146（Seed修复后重新执行）。针对跨店额外字段的初次负向测试失败后，增加preValidation明确拒绝，复验通过。

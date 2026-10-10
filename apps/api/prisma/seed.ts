@@ -21,6 +21,7 @@ import {
 import { scryptSync } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
+import { pricingConfigLock } from '../src/pricing/config.js';
 
 export const seedIds = {
   customer: '00000000-0000-4000-8000-000000000001',
@@ -107,6 +108,7 @@ export const demoPolicy = {
 };
 
 async function seedScenarioOrders(client: PrismaClient) {
+  const createdScenarioIds = new Set<string>();
   const now = new Date();
   const day = new Date('2026-09-22T00:00:00.000Z');
   const scenarios = [
@@ -121,6 +123,9 @@ async function seedScenarioOrders(client: PrismaClient) {
   ] as const;
 
   for (const [id, shortCode, status, deliveryMethod, deliveryVerificationMode] of scenarios) {
+    // Demo scenarios are insert-only: rerunning seed must not rewrite historical prices or workflow facts.
+    if (await client.order.findUnique({ where: { id }, select: { id: true } })) continue;
+    createdScenarioIds.add(id);
     await client.order.upsert({
       where: { id },
       update: {
@@ -237,6 +242,7 @@ async function seedScenarioOrders(client: PrismaClient) {
   ] as const;
 
   for (const [orderId, taskId, status, riderId] of taskScenarios) {
+    if (!createdScenarioIds.has(orderId)) continue;
     const firstPublishedAt = new Date(now.getTime() - 600_000);
     const claimDeadline = new Date(firstPublishedAt.getTime() + demoPolicy.orderClaimWindowSeconds * 1000);
     const platformSubsidyMinor = orderId === scenarioIds.requiresCode ? 50 : 0;
@@ -320,7 +326,7 @@ async function seedScenarioOrders(client: PrismaClient) {
     }
   }
 
-  await client.subsidyRecord.upsert({
+  if (createdScenarioIds.has(scenarioIds.requiresCode)) await client.subsidyRecord.upsert({
     where: { id: '61000000-0000-4000-8000-000000000005' },
     update: {
       previousPlatformSubsidyMinor: 0,
@@ -341,7 +347,7 @@ async function seedScenarioOrders(client: PrismaClient) {
     },
   });
 
-  await client.evidence.upsert({
+  if (createdScenarioIds.has(scenarioIds.evidence)) await client.evidence.upsert({
     where: { id: 'c0000000-0000-4000-8000-000000000007' },
     update: {},
     create: {
@@ -357,7 +363,7 @@ async function seedScenarioOrders(client: PrismaClient) {
     },
   });
 
-  await client.exceptionEvent.upsert({
+  if (createdScenarioIds.has(scenarioIds.unreachable)) await client.exceptionEvent.upsert({
     where: { id: 'd0000000-0000-4000-8000-000000000006' },
     update: {},
     create: {
@@ -371,7 +377,7 @@ async function seedScenarioOrders(client: PrismaClient) {
     },
   });
 
-  await client.exceptionEvent.upsert({
+  if (createdScenarioIds.has(scenarioIds.dispute)) await client.exceptionEvent.upsert({
     where: { id: 'd0000000-0000-4000-8000-000000000008' },
     update: {},
     create: {
@@ -385,7 +391,7 @@ async function seedScenarioOrders(client: PrismaClient) {
     },
   });
 
-  await client.riderSettlement.upsert({
+  if (createdScenarioIds.has(scenarioIds.dispute)) await client.riderSettlement.upsert({
     where: { orderId: scenarioIds.dispute },
     update: { status: RiderSettlementStatus.HELD, holdReason: ExceptionType.DELIVERY_DISPUTE },
     create: {
@@ -401,7 +407,7 @@ async function seedScenarioOrders(client: PrismaClient) {
   });
 
   const salt = 'seed-delivery-code';
-  await client.verificationCode.upsert({
+  if (createdScenarioIds.has(scenarioIds.requiresCode)) await client.verificationCode.upsert({
     where: { id: 'f0000000-0000-4000-8000-000000000005' },
     update: {
       salt,
@@ -494,7 +500,6 @@ export async function seedDatabase(client: PrismaClient) {
       trialExposureOverrideBps: 10_000,
       maxConcurrentOrders: 20,
       deliveryContributionMinor: 0,
-      baseDeliveryPriceMinor: 100,
       supportedDeliveryMethods: [DeliveryMethod.DESIGNATED_POINT, DeliveryMethod.DOOR, DeliveryMethod.FACE_TO_FACE],
       pickupVerificationMode: PickupVerificationMode.CONFIRMATION,
     },
@@ -559,14 +564,11 @@ export async function seedDatabase(client: PrismaClient) {
       subsidyUsageBps: 500,
     },
   });
-  await client.businessConfig.updateMany({
-    where: { key: 'ORDER_POLICY' },
-    data: { isActive: false },
-  });
-  await client.businessConfig.upsert({
-    where: { id: seedIds.policyConfig },
-    update: { key: 'ORDER_POLICY', version: 1, isActive: true, payload: demoPolicy },
-    create: { id: seedIds.policyConfig, key: 'ORDER_POLICY', version: 1, isActive: true, payload: demoPolicy },
+  await client.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${pricingConfigLock})`;
+    if (!await tx.businessConfig.findFirst({ where: { key: 'ORDER_POLICY' }, select: { id: true } })) {
+      await tx.businessConfig.create({ data: { id: seedIds.policyConfig, key: 'ORDER_POLICY', version: 1, isActive: true, payload: demoPolicy } });
+    }
   });
 
   await seedScenarioOrders(client);

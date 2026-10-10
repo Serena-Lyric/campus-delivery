@@ -16,6 +16,8 @@ import { releaseExpiredCoolingOrders } from '../../src/orders/lifecycle.js';
 import { createOrder } from '../../src/orders/service.js';
 import type { ItemClassifier } from '../../src/item-classifier/classifier.js';
 import { demoPolicy, seedDatabase, seedIds } from '../../prisma/seed.js';
+import { updateMerchantBaseQuote } from '../../src/pricing/merchant-quote.js';
+import { defaultDeliveryPricingPolicy } from '../../src/pricing/policy.js';
 
 const prisma = new PrismaClient();
 const config: AppConfig = {
@@ -40,6 +42,7 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
   });
 
   beforeEach(async () => {
+    await prisma.merchantBaseDeliveryQuoteAudit.deleteMany();
     await prisma.riderBlockedMerchant.deleteMany();
     await prisma.riderCapacityEvent.deleteMany();
     await prisma.compensationAllocation.deleteMany();
@@ -63,7 +66,7 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
     });
     await prisma.merchant.update({
       where: { id: seedIds.merchant },
-      data: { exposureState: MerchantExposureState.NORMAL, trialExposureOverrideBps: 10_000, pickupVerificationMode: PickupVerificationMode.CONFIRMATION },
+      data: { baseDeliveryPriceMinor: 100, baseDeliveryQuoteVersion: 0, exposureState: MerchantExposureState.NORMAL, trialExposureOverrideBps: 10_000, pickupVerificationMode: PickupVerificationMode.CONFIRMATION },
     });
     await prisma.rider.update({
       where: { id: seedIds.riderA },
@@ -76,19 +79,24 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
   });
 
   afterAll(async () => {
+    await prisma.merchantBaseDeliveryQuoteAudit.deleteMany();
+    await prisma.merchant.update({ where: { id: seedIds.merchant }, data: { baseDeliveryPriceMinor: 100, baseDeliveryQuoteVersion: 0 } });
     await app.close();
     await prisma.$disconnect();
   });
 
   async function createReady() {
+    const input = {
+      merchantId: seedIds.merchant,
+      destinationLocationId: seedIds.dormLocation,
+      deliveryMethod: DeliveryMethod.DESIGNATED_POINT,
+      items: [{ productId: seedIds.productRice, quantity: 1 }, { productId: seedIds.productTea, quantity: 1 }],
+    };
+    const preview = await app.inject({ method: 'POST', url: '/orders/price-preview', headers: headers(seedIds.customer), payload: input });
+    expect(preview.statusCode, preview.body).toBe(200);
     const created = await app.inject({
       method: 'POST', url: '/orders', headers: headers(seedIds.customer),
-      payload: {
-        merchantId: seedIds.merchant,
-        destinationLocationId: seedIds.dormLocation,
-        deliveryMethod: DeliveryMethod.DESIGNATED_POINT,
-        items: [{ productId: seedIds.productRice, quantity: 1 }, { productId: seedIds.productTea, quantity: 1 }],
-      },
+      payload: { ...input, expectedQuoteToken: preview.json().quoteToken },
     });
     expect(created.statusCode, created.body).toBe(201);
     const orderId = created.json().id as string;
@@ -445,5 +453,121 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
     } finally {
       await prisma.merchant.update({ where: { id: seedIds.merchant }, data: { baseDeliveryPriceMinor: 100 } });
     }
+  });
+
+  const checkoutInput = () => ({ merchantId: seedIds.merchant, destinationLocationId: seedIds.dormLocation, deliveryMethod: DeliveryMethod.DESIGNATED_POINT, items: [{ productId: seedIds.productRice, quantity: 1 }] });
+  const referencePayload = { mode: 'REFERENCE_BPS', customerMarkupBps: 2000, riderDeductionBps: 2000, rounding: 'FLOOR_ADJUSTMENTS', maxMerchantBaseMinor: 100000 };
+  const configureReference = (expectedVersion = 0, payload = referencePayload) => app.inject({ method: 'PUT', url: '/admin/business-configs/DELIVERY_PRICING_POLICY', headers: headers(seedIds.admin), payload: { payload, expectedVersion, reason: 'Isolated reference fixture, not business defaults' } });
+  const editQuote = (baseDeliveryPriceMinor: number, expectedVersion: number, userId: string = seedIds.merchantUser) => app.inject({ method: 'PUT', url: '/merchant/base-delivery-quote', headers: headers(userId), payload: { baseDeliveryPriceMinor, expectedVersion, reason: 'Future quote fixture' } });
+  const preview = (input = checkoutInput()) => app.inject({ method: 'POST', url: '/orders/price-preview', headers: headers(seedIds.customer), payload: input });
+  const submitQuote = (quoteToken?: string, input = checkoutInput()) => app.inject({ method: 'POST', url: '/orders', headers: headers(seedIds.customer), payload: { ...input, ...(quoteToken ? { expectedQuoteToken: quoteToken } : {}) } });
+
+  it('edits only future merchant reference quotes and preserves created, claimed and accounting snapshots', async () => {
+    expect((await configureReference()).statusCode).toBe(200);
+    expect((await editQuote(250, 0)).json()).toMatchObject({ baseDeliveryPriceMinor: 250, baseDeliveryQuoteVersion: 1, notice: '仅对后续订单生效，已付款订单不变' });
+    const ready = await createReady();
+    expect((await claim(ready.taskId, seedIds.riderAUser)).statusCode).toBe(200);
+    const before = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } });
+    const assignment = await prisma.deliveryAssignment.findFirstOrThrow({ where: { taskId: ready.taskId } });
+    const settlement = await prisma.settlement.findUniqueOrThrow({ where: { orderId: ready.orderId } });
+    expect((await editQuote(500, 1)).statusCode).toBe(200);
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } })).toEqual(before);
+    expect(await prisma.deliveryAssignment.findUniqueOrThrow({ where: { id: assignment.id } })).toEqual(assignment);
+    expect(await prisma.settlement.findUniqueOrThrow({ where: { orderId: ready.orderId } })).toEqual(settlement);
+    expect((await app.inject({ method: 'PATCH', url: `/merchant/orders/${ready.orderId}/delivery-quote`, headers: headers(seedIds.merchantUser), payload: { newRescueContributionMinor: 100 } })).json()).toMatchObject({ code: 'ORDER_ALREADY_CLAIMED' });
+    const quote = await preview();
+    expect(quote.json()).toMatchObject({ customerDeliveryFeeMinor: 600, quoteConfirmationRequired: true, contract: 'DEVELOPMENT_QUOTE_ONLY', paymentIntegration: 'NOT_IMPLEMENTED' });
+    const next = await submitQuote(quote.json().quoteToken);
+    expect(next.statusCode, next.body).toBe(201);
+    expect(next.json().status).toBe('CREATED');
+    expect(next.json().paymentStatus).toBeUndefined();
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: next.json().id } })).toMatchObject({ merchantBaseDeliveryPriceMinor: 500, customerDeliveryFeeMinor: 600, riderBasePayoutMinor: 400, pricingInputsSnapshot: { merchantBaseQuoteVersion: 2, customerConfirmation: 'PREVIEW_CONFIRMED' } });
+    const own = await app.inject({ method: 'GET', url: '/merchant/base-delivery-quote', headers: headers(seedIds.merchantUser) });
+    expect(own.json().history).toHaveLength(2);
+    expect(own.json().history[0]).toMatchObject({ previousMinor: 250, newMinor: 500, actorId: seedIds.merchantUser, version: 2 });
+  });
+
+  it('requires customer reconfirmation for changed merchant, policy, product or checkout facts without writing an order', async () => {
+    expect((await configureReference()).statusCode).toBe(200);
+    expect((await submitQuote()).json()).toMatchObject({ code: 'QUOTE_CONFIRMATION_REQUIRED' });
+    const count = await prisma.order.count();
+    const original = (await preview()).json();
+    expect(await prisma.order.count()).toBe(count);
+    expect((await editQuote(250, 0)).statusCode).toBe(200);
+    expect((await submitQuote(original.quoteToken)).json()).toMatchObject({ code: 'CHECKOUT_QUOTE_CHANGED' });
+    const quoted = (await preview()).json();
+    expect((await configureReference(1, { ...referencePayload, customerMarkupBps: 3000 })).statusCode).toBe(200);
+    expect((await submitQuote(quoted.quoteToken)).json()).toMatchObject({ code: 'CHECKOUT_QUOTE_CHANGED' });
+    const policyQuote = (await preview()).json();
+    const changedQuantity = { ...checkoutInput(), items: [{ productId: seedIds.productRice, quantity: 2 }] };
+    expect((await submitQuote(policyQuote.quoteToken, changedQuantity)).statusCode).toBe(409);
+    await prisma.product.update({ where: { id: seedIds.productRice }, data: { priceMinor: 1600, version: { increment: 1 } } });
+    try {
+      expect((await submitQuote(policyQuote.quoteToken)).statusCode).toBe(409);
+      expect(await prisma.order.count()).toBe(count);
+      const confirmed = (await preview()).json();
+      expect((await submitQuote(confirmed.quoteToken)).statusCode).toBe(201);
+    } finally {
+      await prisma.product.update({ where: { id: seedIds.productRice }, data: { priceMinor: 1500 } });
+    }
+  });
+
+  it('isolates own merchant quote edits, rejects malformed/out-of-range values and serializes competing CAS updates', async () => {
+    for (const id of [seedIds.customer, seedIds.riderAUser, seedIds.operator, seedIds.admin]) {
+      expect((await editQuote(250, 0, id)).statusCode).toBe(403);
+      expect((await app.inject({ method: 'GET', url: '/merchant/base-delivery-quote', headers: headers(id) })).statusCode).toBe(403);
+    }
+    const otherOwner = await prisma.user.create({ data: { role: 'MERCHANT', displayName: 'Quote isolation fixture' } });
+    const other = await prisma.merchant.create({ data: { ownerId: otherOwner.id, name: 'Other quote fixture', campusLocationId: seedIds.merchantLocation, baseDeliveryPriceMinor: 77 } });
+    try {
+      expect((await app.inject({ method: 'GET', url: '/merchant/base-delivery-quote', headers: headers(otherOwner.id) })).json()).toMatchObject({ id: other.id, baseDeliveryPriceMinor: 77 });
+      expect((await app.inject({ method: 'PUT', url: '/merchant/base-delivery-quote', headers: headers(seedIds.merchantUser), payload: { merchantId: other.id, baseDeliveryPriceMinor: 250, expectedVersion: 0, reason: 'Forbidden cross-store field' } })).statusCode).toBe(400);
+      for (const value of [-1, 0.5, 100001, 2_147_483_647]) expect((await editQuote(value, 0)).statusCode).toBe(400);
+      const edits = await Promise.all([editQuote(250, 0), editQuote(500, 0)]);
+      expect(edits.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+      expect(await prisma.merchantBaseDeliveryQuoteAudit.count({ where: { merchantId: seedIds.merchant } })).toBe(1);
+      expect(await prisma.merchant.findUniqueOrThrow({ where: { id: other.id } })).toMatchObject({ baseDeliveryPriceMinor: 77, baseDeliveryQuoteVersion: 0 });
+    } finally {
+      await prisma.merchant.delete({ where: { id: other.id } }); await prisma.user.delete({ where: { id: otherOwner.id } });
+    }
+  });
+
+  it('serializes a merchant edit that wins during classification and an edit waiting behind an order snapshot', async () => {
+    expect((await configureReference()).statusCode).toBe(200);
+    const firstPreview = (await preview()).json();
+    const classifier: ItemClassifier = { classify: async () => {
+      await updateMerchantBaseQuote(prisma, { id: seedIds.merchantUser, role: 'MERCHANT', merchantId: seedIds.merchant }, { baseDeliveryPriceMinor: 250, expectedVersion: 0, reason: 'Edit wins before order transaction' });
+      return { suggestedFoodType: FoodType.RICE_MEAL, handlingTags: [], source: 'FIXTURE', version: 'FIXTURE', confidenceBps: 0 };
+    } };
+    await expect(createOrder(prisma, { id: seedIds.customer, role: 'CUSTOMER' }, { ...checkoutInput(), expectedQuoteToken: firstPreview.quoteToken }, config.campusTimeZone, new Date(), classifier)).rejects.toMatchObject({ code: 'CHECKOUT_QUOTE_CHANGED' });
+    expect(await prisma.order.count()).toBe(0);
+    const quote = (await preview()).json();
+    let editing: ReturnType<typeof updateMerchantBaseQuote> | undefined;
+    const order = await createOrder(prisma, { id: seedIds.customer, role: 'CUSTOMER' }, { ...checkoutInput(), expectedQuoteToken: quote.quoteToken }, config.campusTimeZone, new Date(), undefined, {
+      evaluate: (input, policy, pricing) => {
+        editing = updateMerchantBaseQuote(prisma, { id: seedIds.merchantUser, role: 'MERCHANT', merchantId: seedIds.merchant }, { baseDeliveryPriceMinor: 500, expectedVersion: 1, reason: 'Edit waits for already locked order snapshot' });
+        return defaultDeliveryPricingPolicy.evaluate(input, policy, pricing);
+      },
+    });
+    await editing;
+    expect(order.pricing).toMatchObject({ merchantBaseDeliveryPriceMinor: 250, customerDeliveryFeeMinor: 300, riderBasePayoutMinor: 200, pricingInputsSnapshot: { merchantBaseQuoteVersion: 1 } });
+    expect((await preview()).json().customerDeliveryFeeMinor).toBe(600);
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: order.id } })).toEqual(order.pricing);
+  });
+
+  it('keeps seed from overwriting audited merchant quotes, policy versions or existing order money', async () => {
+    expect((await configureReference()).statusCode).toBe(200);
+    expect((await editQuote(250, 0)).statusCode).toBe(200);
+    const ready = await createReady();
+    const pricing = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } });
+    const audit = await prisma.merchantBaseDeliveryQuoteAudit.findMany();
+    const oldPolicy = await app.inject({ method: 'PUT', url: '/admin/business-configs/ORDER_POLICY', headers: headers(seedIds.admin), payload: { payload: { ...demoPolicy, deliveryPricingDefaultCustomerFeeMinor: 450 }, expectedVersion: 1, reason: 'Preserve this explicitly configured legacy policy on seed' } });
+    expect(oldPolicy.statusCode).toBe(200);
+    await seedDatabase(prisma); await seedDatabase(prisma);
+    expect(await prisma.merchant.findUniqueOrThrow({ where: { id: seedIds.merchant } })).toMatchObject({ baseDeliveryPriceMinor: 250, baseDeliveryQuoteVersion: 1 });
+    expect(await prisma.merchantBaseDeliveryQuoteAudit.findMany()).toEqual(audit);
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } })).toEqual(pricing);
+    expect(await prisma.businessConfig.findFirstOrThrow({ where: { key: 'ORDER_POLICY', isActive: true } })).toMatchObject({ version: 2, payload: { deliveryPricingDefaultCustomerFeeMinor: 450 } });
+    expect(await prisma.businessConfig.findFirstOrThrow({ where: { key: 'DELIVERY_PRICING_POLICY', isActive: true } })).toMatchObject({ version: 1, payload: referencePayload });
   });
 });
