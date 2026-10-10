@@ -5,6 +5,7 @@ import { badRequest, conflict, notFound } from '../shared/errors.js';
 import { eligibilityPolicyKey, eligibilityPolicyLock, validateEligibilityPolicy } from '../riders/eligibility-gate.js';
 import { deliveryPricingPolicyKey, pricingConfigLock, validateDeliveryPricingConfig } from '../pricing/config.js';
 import { paymentCostPolicyKey, validatePaymentCostPolicy } from '../finance/costs.js';
+import { reservePolicyKey, validateReservePolicy } from '../finance/reserve.js';
 
 export async function getBusinessConfig(prisma: PrismaClient, actor: Actor, key: string) {
   requireAdminLevel(actor, ['SUPER_ADMIN']);
@@ -34,14 +35,15 @@ export async function updateBusinessConfig(
     ? validatePolicyPayload(payload as Prisma.JsonValue)
     : key === eligibilityPolicyKey ? validateEligibilityPolicy(payload as Prisma.JsonValue)
       : key === deliveryPricingPolicyKey ? validateDeliveryPricingConfig(payload as Prisma.JsonValue)
-        : key === paymentCostPolicyKey ? validatePaymentCostPolicy(payload as Prisma.JsonValue) : payload;
-  if ((key === eligibilityPolicyKey || key === deliveryPricingPolicyKey || key === paymentCostPolicyKey) && expectedVersion === undefined) {
+        : key === paymentCostPolicyKey ? validatePaymentCostPolicy(payload as Prisma.JsonValue)
+          : key === reservePolicyKey ? validateReservePolicy(payload as Prisma.JsonValue) : payload;
+  if ([eligibilityPolicyKey, deliveryPricingPolicyKey, paymentCostPolicyKey, reservePolicyKey].includes(key) && expectedVersion === undefined) {
     throw badRequest('CONFIG_VERSION_REQUIRED', 'This policy requires the expected config version (0 when unconfigured)');
   }
   if (!reason.trim()) throw badRequest('CONFIG_REASON_REQUIRED', 'A non-blank audit reason is required');
 
   return prisma.$transaction(async (tx) => {
-    if (key === deliveryPricingPolicyKey || key === 'ORDER_POLICY' || key === paymentCostPolicyKey) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${pricingConfigLock})`;
+    if ([deliveryPricingPolicyKey, 'ORDER_POLICY', paymentCostPolicyKey, reservePolicyKey].includes(key)) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${pricingConfigLock})`;
     if (key === eligibilityPolicyKey) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${eligibilityPolicyLock})`;
     await tx.$queryRaw`SELECT "id" FROM "BusinessConfig" WHERE "key" = ${key} FOR UPDATE`;
     const current = await tx.businessConfig.findFirst({

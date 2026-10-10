@@ -26,6 +26,7 @@ import { DeterministicItemClassifier, classifyItemSafely, type ItemClassifier } 
 import { pickupRiskSnapshot } from '../delivery/pickup-risk.js';
 import { defaultDeliveryPricingPolicy, type DeliveryPricingPolicy } from '../pricing/policy.js';
 import { estimatePaymentCost } from '../finance/costs.js';
+import { unverifiedRiderBalanceView } from '../finance/permissions.js';
 import { calculateCheckoutQuote, checkoutQuantities, readCheckoutFacts, type CheckoutInput } from './quote.js';
 
 export type CreateOrderInput = CheckoutInput;
@@ -123,9 +124,7 @@ function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown) {
     riderSettlement: actor.role === 'RIDER' || actor.role === 'ADMIN'
       ? riderSettlement && {
         id: riderSettlement.id,
-        amountMinor: riderSettlement.amountMinor,
-        reservedMinor: riderSettlement.reservedMinor,
-        withdrawableMinor: Math.max(0, riderSettlement.amountMinor - riderSettlement.reservedMinor),
+        ...unverifiedRiderBalanceView(riderSettlement.amountMinor, riderSettlement.reservedMinor),
         status: riderSettlement.status,
         pendingUntil: riderSettlement.pendingUntil,
         availableAt: riderSettlement.availableAt,

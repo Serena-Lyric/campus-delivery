@@ -1,6 +1,9 @@
 import type { PrismaClient } from '@prisma/client';
 import { requireAdminLevel, type Actor } from '../auth/auth.js';
 import { notFound } from '../shared/errors.js';
+import { pricingConfigLock } from '../pricing/config.js';
+import { loadReservePolicy, previewOperatingBudget, type BudgetScenario } from './reserve.js';
+import { realWithdrawalStatus } from './permissions.js';
 
 export async function getOrderFinanceProjection(prisma: PrismaClient, actor: Actor, orderId: string) {
   requireAdminLevel(actor, ['SUPER_ADMIN']);
@@ -21,7 +24,7 @@ export async function getOrderFinanceProjection(prisma: PrismaClient, actor: Act
   const finalized = order.status === 'DELIVERED' && order.settlement.status === 'FINALIZED';
   return {
     orderId: order.id, orderStatus: order.status, settlementStatus: order.settlement.status,
-    simulated: true, notVerified: true, realWithdrawalEnabled: false, realWithdrawableMinor: 0,
+    simulated: true, notVerified: true, ...realWithdrawalStatus(),
     source: 'DEVELOPMENT_ORDER_SNAPSHOTS',
     operating: { merchandiseCommissionMinor, baseDeliverySpreadMinor, platformSubsidyMinor: p.platformSubsidyMinor,
       contractContributionMinor, finalizedOperatingContributionMinor: finalized ? order.settlement.platformRevenueMinor : 0,
@@ -34,4 +37,18 @@ export async function getOrderFinanceProjection(prisma: PrismaClient, actor: Act
       finalizedRiderPayableMinor: order.settlement.riderPayableMinor, customerRefundObligationMinor: p.customerRefundMinor,
       includedInPlatformIncome: false, note: 'Separate rights, not verified channel payments or available cash' },
   };
+}
+
+export async function getOperatingBudgetPreview(prisma: PrismaClient, actor: Actor, scenario: BudgetScenario) {
+  requireAdminLevel(actor, ['SUPER_ADMIN']);
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(${pricingConfigLock})`;
+    const policy = await loadReservePolicy(tx);
+    return {
+      ...previewOperatingBudget(scenario, policy), simulated: true, notVerified: true, ...realWithdrawalStatus(),
+      source: 'CLIENT_SUPPLIED_HYPOTHETICAL_SCENARIO',
+      automaticForecastFromRealOrders: false, externallyVerifiedOwnCashMinor: null,
+      note: '模拟预算，未核实；不构成工资批准、资金预留、可提现余额或真实支付。',
+    };
+  });
 }

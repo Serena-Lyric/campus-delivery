@@ -731,6 +731,73 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
     expect(Object.keys(docs.paths).some((path) => /withdraw|salary|cash-balance|external-receipt/.test(path))).toBe(false);
   });
 
+  it('keeps operating budgets explicitly unconfigured until audited CAS config, then simulates higher reserve and safe bounds without writes', async () => {
+    const scenario = { hypotheticalCashBeforeObligationsMinor: 1000, hypotheticalLegalEarningsBeforeReserveMinor: 600, forecastDays: 7,
+      obligations: [
+        { sourceId: 'merchant', kind: 'MERCHANT_PAYABLE', amountMinor: 100, alreadyDeductedFromCash: false, alreadyDeductedFromEarnings: true },
+        { sourceId: 'rider', kind: 'RIDER_INCOME', amountMinor: 50, alreadyDeductedFromCash: false, alreadyDeductedFromEarnings: true },
+        { sourceId: 'refund', kind: 'CUSTOMER_REFUND', amountMinor: 50, alreadyDeductedFromCash: false, alreadyDeductedFromEarnings: true },
+        { sourceId: 'ops', kind: 'COMMITTED_OPERATING_COST', amountMinor: 100, alreadyDeductedFromCash: false, alreadyDeductedFromEarnings: true },
+        { sourceId: 'salary', kind: 'APPROVED_SALARY_RESERVATION', amountMinor: 100, alreadyDeductedFromCash: false, alreadyDeductedFromEarnings: false },
+      ], forecast: [{ sourceId: 'future', kind: 'REFUND_LOSS', amountMinor: 200 }] };
+    const previewBudget = (payload: Record<string, unknown> = scenario) => app.inject({ method: 'POST', url: '/admin/finance/budget-preview', headers: headers(seedIds.admin), payload });
+    expect((await previewBudget()).json()).toMatchObject({ status: 'UNCONFIGURED', reserveRequiredMinor: null, simulatedDistributableUpperBoundMinor: null, realWithdrawalEnabled: false, realWithdrawableMinor: 0 });
+    const configureReserve = (floor: number, expectedVersion?: number) => app.inject({ method: 'PUT', url: '/admin/business-configs/FINANCE_RESERVE_POLICY', headers: headers(seedIds.admin), payload: { payload: { fixedFloorMinor: floor, forecastDays: 7, forecastMultiplierBps: 10000 }, expectedVersion, reason: 'Isolated simulation policy, not approved business parameters' } });
+    expect((await configureReserve(100)).statusCode).toBe(400);
+    const competing = await Promise.all([configureReserve(100, 0), configureReserve(100, 0)]);
+    expect(competing.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+    const ready = await createReady();
+    const pricing = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } });
+    const settlement = await prisma.settlement.findUniqueOrThrow({ where: { orderId: ready.orderId } });
+    const auditBefore = await prisma.businessConfigAudit.count();
+    const orderCount = await prisma.order.count();
+    const result = await previewBudget();
+    expect(result.statusCode, result.body).toBe(200);
+    expect(result.json()).toMatchObject({ status: 'SIMULATED', simulated: true, notVerified: true, policyVersion: 1,
+      reserveRequiredMinor: 200, dynamicForecastMinor: 200, cashBoundMinor: 400, earningsBoundMinor: 300, simulatedDistributableUpperBoundMinor: 300,
+      automaticForecastFromRealOrders: false, externallyVerifiedOwnCashMinor: null, realWithdrawalEnabled: false, realWithdrawableMinor: 0 });
+    expect((await previewBudget({ ...scenario, hypotheticalCashBeforeObligationsMinor: 100 })).json().simulatedDistributableUpperBoundMinor).toBe(0);
+    expect((await previewBudget({ ...scenario, obligations: [...scenario.obligations, scenario.obligations[1], scenario.obligations[4]], forecast: [...scenario.forecast, { sourceId: 'refund', kind: 'REFUND_LOSS', amountMinor: 50 }] })).json()).toEqual(result.json());
+    expect((await previewBudget({ ...scenario, forecastDays: 3 })).statusCode).toBe(409);
+    expect((await previewBudget({ ...scenario, obligations: [...scenario.obligations, { ...scenario.obligations[1], amountMinor: 1 }] })).statusCode).toBe(409);
+    expect(await prisma.businessConfigAudit.count()).toBe(auditBefore);
+    expect(await prisma.order.count()).toBe(orderCount);
+    expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: ready.orderId } })).toEqual(pricing);
+    expect(await prisma.settlement.findUniqueOrThrow({ where: { orderId: ready.orderId } })).toEqual(settlement);
+    expect((await configureReserve(500, 1)).statusCode).toBe(200);
+    expect((await previewBudget()).json()).toMatchObject({ policyVersion: 2, reserveRequiredMinor: 500, simulatedDistributableUpperBoundMinor: 0, realWithdrawableMinor: 0 });
+    const configured = await prisma.businessConfig.findFirstOrThrow({ where: { key: 'FINANCE_RESERVE_POLICY', isActive: true } });
+    await seedDatabase(prisma);
+    expect(await prisma.businessConfig.findUniqueOrThrow({ where: { id: configured.id } })).toEqual(configured);
+    expect(await prisma.businessConfigAudit.findFirstOrThrow({ where: { key: 'FINANCE_RESERVE_POLICY', newVersion: 2 } })).toMatchObject({ actorId: seedIds.admin, previousVersion: 1, beforePayload: { fixedFloorMinor: 100 }, afterPayload: { fixedFloorMinor: 500 } });
+  });
+
+  it('rejects forged payment/Root inputs and all salary/withdrawal executions even with maximum simulated cash', async () => {
+    const scenario = { hypotheticalCashBeforeObligationsMinor: Number.MAX_SAFE_INTEGER, hypotheticalLegalEarningsBeforeReserveMinor: Number.MAX_SAFE_INTEGER, forecastDays: 1, obligations: [], forecast: [] };
+    const configUrl = '/admin/business-configs/FINANCE_RESERVE_POLICY';
+    const configure = (payload: unknown, userId: string = seedIds.admin) => app.inject({ method: 'PUT', url: configUrl, headers: headers(userId), payload: { payload, expectedVersion: 0, reason: 'No real withdrawal authorization' } });
+    expect((await configure({ fixedFloorMinor: 0, forecastDays: 1, forecastMultiplierBps: 0 }, seedIds.operator)).statusCode).toBe(403);
+    for (const payload of [{ fixedFloorMinor: 0 }, { fixedFloorMinor: -1, forecastDays: 1, forecastMultiplierBps: 0 }, { fixedFloorMinor: 0, forecastDays: 1, forecastMultiplierBps: 0, realWithdrawalEnabled: true }]) expect((await configure(payload)).statusCode).toBe(400);
+    expect((await configure({ fixedFloorMinor: 0, forecastDays: 1, forecastMultiplierBps: 0 })).statusCode).toBe(200);
+    const budgetUrl = '/admin/finance/budget-preview';
+    const result = await app.inject({ method: 'POST', url: budgetUrl, headers: { ...headers(seedIds.admin), 'x-root': 'true' }, payload: scenario });
+    expect(result.statusCode).toBe(200);
+    expect(result.json()).toMatchObject({ simulatedDistributableUpperBoundMinor: Number.MAX_SAFE_INTEGER, realWithdrawalEnabled: false, realWithdrawableMinor: 0, notVerified: true });
+    for (const addition of [{ externallyVerifiedOwnCashMinor: 100000 }, { status: 'EXTERNALLY_VERIFIED', externalReceipt: 'forged' }, { rootAuthenticated: true }, { realWithdrawalEnabled: true }]) {
+      expect((await app.inject({ method: 'POST', url: budgetUrl, headers: headers(seedIds.admin), payload: { ...scenario, ...addition } })).statusCode).toBe(400);
+    }
+    for (const userId of [seedIds.customer, seedIds.merchantUser, seedIds.riderAUser, seedIds.operator]) expect((await app.inject({ method: 'POST', url: budgetUrl, headers: headers(userId), payload: scenario })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'POST', url: budgetUrl, payload: scenario })).statusCode).toBe(401);
+    for (const userId of [seedIds.admin, seedIds.operator, seedIds.customer, seedIds.merchantUser, seedIds.riderAUser]) {
+      for (const url of ['/admin/finance/withdrawals', '/admin/finance/salary-approvals', '/admin/finance/salary-payments', '/admin/finance/salary-reservations']) {
+        expect((await app.inject({ method: 'POST', url, headers: headers(userId), payload: { amountMinor: 1, rootAuthenticated: true } })).statusCode).toBe(404);
+      }
+    }
+    const docs = (await app.inject({ method: 'GET', url: '/docs/json' })).json();
+    expect(docs.paths['/admin/finance/budget-preview'].post.description).toContain('Read-only');
+    expect(Object.keys(docs.paths).some((path) => /withdraw|salary-payment|salary-approval|salary-reservation/.test(path))).toBe(false);
+  });
+
   for (const mode of ['LEGACY_ORDER_POLICY', 'REFERENCE_BPS']) {
     it(`keeps merchandise commission independent in ${mode}, changes only future contracts and preserves finalized income`, async () => {
       if (mode === 'REFERENCE_BPS') {
@@ -746,6 +813,11 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
       const oldIncome = await prisma.riderSettlement.findUniqueOrThrow({ where: { orderId: old.orderId } });
       expect(oldPricing).toMatchObject({ platformCommissionMinor: 0, merchantSettlementMinor: 2000, pricingInputsSnapshot: { platformCommissionBps: 0 } });
       expect(oldSettlement).toMatchObject({ status: 'FINALIZED', merchantPayableMinor: 2000, platformRevenueMinor: 100 });
+      const riderOrder = await app.inject({ method: 'GET', url: `/orders/${old.orderId}`, headers: headers(seedIds.riderAUser) });
+      expect(riderOrder.json().riderSettlement).toMatchObject({ amountMinor: oldIncome.amountMinor, internalUnreservedMinor: oldIncome.amountMinor,
+        withdrawableMinor: 0, realWithdrawableMinor: 0, realWithdrawalEnabled: false, simulated: true, notVerified: true });
+      const riderLedger = await app.inject({ method: 'GET', url: '/riders/me/settlements', headers: headers(seedIds.riderAUser) });
+      expect(riderLedger.json().find((s: { id: string }) => s.id === oldIncome.id)).toMatchObject({ amountMinor: oldIncome.amountMinor, internalUnreservedMinor: oldIncome.amountMinor, withdrawableMinor: 0, realWithdrawableMinor: 0 });
       const configureCommission = (userId: string, expectedVersion?: number) => app.inject({
         method: 'PUT', url: '/admin/business-configs/ORDER_POLICY', headers: headers(userId),
         payload: { payload: { ...demoPolicy, platformCommissionBps: 1250 }, reason: 'Isolated commission fixture, never business default', ...(expectedVersion === undefined ? {} : { expectedVersion }) },

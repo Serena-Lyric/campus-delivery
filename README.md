@@ -420,3 +420,13 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
 - 真实提现和支付
 - 微信正式登录、手机号登录、短信验证码和强制实名认证
 - 复杂图片防伪
+
+## 第五轮财务安全基础（2026-10-11）
+
+- 商品佣金默认 0%，明确切换费率需要 ORDER_POLICY 当前版本和审计原因，只影响新订单。配送双侧比例与商品佣金独立。
+- `PAYMENT_COST_ESTIMATE` 显式配置 `feeBps` / `fixedFeeMinor` 后，仅在新订单财务快照保存 ESTIMATED 平台手续费；未配置及旧订单保持未知。估算基数是初始商品款加用户基础配送费，后续红包/退款手续费调整尚无真实渠道实现。估算不改变任何一方合同款项。
+- `GET /admin/finance/orders/:orderId/projection` 是旧 SUPER_ADMIN 可读的开发内账投影，分别显示商品佣金、配送基础价差、平台补贴、预计手续费与第三方权益；实际手续费、真实退款损失及运营实际支出未核实，不等于可分配利润或现金。
+- `FINANCE_RESERVE_POLICY` 必须显式配置 `fixedFloorMinor` / `forecastDays` / `forecastMultiplierBps`（10000表示倍数1，仅解释单位，不是默认值）。`POST /admin/finance/budget-preview` 只读模拟场景，不创建工资批准、预算预留或支付。预测组件为同一期间的退款损失、补贴、支付费用与短期运营成本估计，按来源去重，与已知义务对照后计算 `max(固定最低, 向上取整的动态预测)`。没有真实订单自动预测器。
+- 场景现金在扣除义务之前，场景合法收益在扣除安全储备之前；义务须说明是否已在各基数中扣减，避免重复计算。现金/收益分别减去尚未扣减义务、工资预留及储备，再取较小非负上限；这些输入始终是假设，客户端不可声明真实余额或 Root 认证。
+- 所有财务预览均标记 `simulated:true`、`notVerified:true`、`realWithdrawalEnabled:false`、`realWithdrawableMinor:0`。骑手既有 `withdrawableMinor` 也固定为0，原内账未预留额改由 `internalUnreservedMinor` 表达；已得收入、冻结与 AVAILABLE 账务状态不变。
+- 两项新财务配置无 Seed 默认值，复用现有配置 CAS/版本审计。没有新增迁移、真实收款/提现/工资审批接口，旧 SUPER_ADMIN 不是 Root。外部手续费去重/调整纯函数仅为隔离测试契约，可信渠道验证和实际费用持久化尚未实现。

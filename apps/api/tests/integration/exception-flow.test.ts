@@ -837,7 +837,8 @@ describe('audit gaps, rider exceptions, and admin operations', () => {
     expect(restored).toMatchObject({ status: 'AVAILABLE', reservedMinor: 50, holdReason: null });
     const riderView = await app.inject({ method: 'GET', url: '/riders/me/settlements', headers: headers(seedIds.riderAUser) });
     const visibleSettlement = riderView.json().find((item: { id: string }) => item.id === settlement.id);
-    expect(visibleSettlement.withdrawableMinor).toBe(restored.amountMinor - 50);
+    expect(visibleSettlement.internalUnreservedMinor).toBe(restored.amountMinor - 50);
+    expect(visibleSettlement).toMatchObject({ withdrawableMinor: 0, realWithdrawableMinor: 0, realWithdrawalEnabled: false, simulated: true, notVerified: true });
   });
 
   it('does not resolve linked events or release dispute holds for waiting or escalated cases', async () => {

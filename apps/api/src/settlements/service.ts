@@ -6,6 +6,7 @@ import {
 } from '@prisma/client';
 import type { Actor } from '../auth/auth.js';
 import { forbidden } from '../shared/errors.js';
+import { unverifiedRiderBalanceView } from '../finance/permissions.js';
 
 type TerminalExceptionCase = {
   exceptionEventId: string;
@@ -152,8 +153,16 @@ export async function listRiderSettlements(
     skip: offset,
   });
   return settlements.map((settlement) => ({
-    ...settlement,
-    withdrawableMinor: Math.max(0, settlement.amountMinor - settlement.reservedMinor),
+    id: settlement.id,
+    ...unverifiedRiderBalanceView(settlement.amountMinor, settlement.reservedMinor),
+    status: settlement.status,
+    pendingUntil: settlement.pendingUntil,
+    availableAt: settlement.availableAt,
+    heldAt: settlement.heldAt,
+    holdReason: settlement.holdReason,
+    createdAt: settlement.createdAt,
+    order: { id: settlement.order.id, shortCode: settlement.order.shortCode, status: settlement.order.status,
+      merchant: { id: settlement.order.merchant.id, name: settlement.order.merchant.name } },
   }));
 }
 
