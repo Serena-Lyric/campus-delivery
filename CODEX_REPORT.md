@@ -1,136 +1,131 @@
-# CODEX_REPORT — 第四轮双侧配送定价与商家未来报价
+# CODEX_REPORT — 第五轮财务安全基础
 
-日期：2026-10-11（Asia/Singapore）。只执行 CODEX_TASK.md 第四轮 A/B/C；实现及验证完成，阶段提交已普通推送 main，报告提交后停止。
+日期：2026-10-11（Asia/Singapore）。仅执行 CODEX_TASK.md 第五轮 A/B/C；三阶段分别完整验证、commit、普通 push main。实现及验证已完成，本报告随后独立提交推送，然后停止。
 
-## 1. 结果、启用状态与提交
+## 1. 结果与提交
 
-已实现B参与双侧基础定价、两侧独立整数BPS、自有未来报价CAS与审计、用户旧报价重确认，以及创建/claim快照保护。商家救单、用户红包与平台补贴继续独立记账，追加部分100%增加骑手收益，不重算基础价差。
+商品佣金默认0%，非零费率只影响新订单；预计平台支付手续费独立快照、独立投影，不减少商家或骑手款项、不增加用户收费。动态储备与工资安全上限提供只读模拟。真实提现/工资批准/支付入口均未开放，旧 SUPER_ADMIN 没有 Root 提现权。
 
-**默认仍为旧定额模式。** 应用当前库没有DELIVERY_PRICING_POLICY配置。新模式需旧SUPER_ADMIN明确启用并填写两侧比例；该身份临时代行一级运营配置权限，不是Root。没有替运营确定正式比例，没有将fixture的20%启用到应用库。POST创建仍为CREATED及开发内账报价合同，不等于真实付款。
-
-| 范围 | SHA | 结果 |
+| 阶段 | 完整 SHA | 内容 |
 | --- | --- | --- |
-| 同步前本地 | 1c20b2c | 工作区干净，fetch后fast-forward 7个提交 |
-| 本轮起点 | 3feccdad4961d3ad7d2190339fa51257a264fd15 | 最新任务与产品决策 |
-| A | 43743f64436df03ca9638081e0cd9674fede8c85 | 显式双侧模式、配置、历史兼容；独立验证/commit/push |
-| B | d8300090bdd6fd7cf12bad2d7d97008efa8075bb | 未来报价、增量迁移、审计、结账重确认、Seed保护；独立验证/commit/push |
-| C／实现终点 | 2c80477f0ff537f0881014d490283c0b538f31a2 | 完整资金链、隔离、边界、快照及回归；独立验证/commit/push |
+| 同步前 | 5df8019（第四轮报告） | 工作区干净，main |
+| 本轮起点 | de3909b8560039db9331baa9bf9010ee00ab3979 | fetch后fast-forward最新main及第五轮任务 |
+| A | 6b41e0a1b7b9fe7fb39685e6b671850a7a307282 | 佣金变更版本保护、费率快照、双模式结算/退款回归、整数精度 |
+| B | aad250c329c8e832d2428eed4002802b3224f933 | 平台预计手续费、独立只读投影、外部费用隔离测试契约 |
+| C／实现终点 | b3dfc12c52850b5667d2321f7e1e00b9109abef5 | 动态储备模拟、全员真实提现关闭、骑手内账/真实额度分离、角色和API文档 |
 
-报告随后独立文档提交/push。本轮无reset、丢弃工作、历史migration修改或force-push；上轮报告已归档于CODEX_REPORT_2026-10-10_RIDER_ELIGIBILITY.md。
+A/B/C均已推送origin/main。没有force-push、reset或丢弃未提交工作。第四轮任务与报告使用原归档文件；没有重复改双侧比例、商家未来报价或救单流程。
 
-## 2. 开发前模型、旧数据风险与决策对照
+## 2. 决策对照与开发前审查
 
-旧pricing/policy真正使用ORDER_POLICY全局定额、merchant override和总数量；B仅为reservedInputs。直接在旧价格上叠比例会重复收费，因此采用独立DELIVERY_PRICING_POLICY，未配置时继续旧模式，新模式不叠旧定额/override/数量费。原delivery-quote已经是商家应结款抵扣的救单，继续保持该语义。
+按根文档层级阅读产品决策、实施计划、任务、审计、异常处理及角色/运营背景，并阅读FINANCE_OPERATIONS_DECISIONS.md、ADMIN_ROLE_DECISIONS.md、DELIVERY_PRICING_DECISIONS.md和第四轮归档报告。
 
-PRODUCT_DECISIONS.md第6节2026-10-10确认已取代旧计划、审计中基础资金语义待确认的限制，已在IMPLEMENTATION_PLAN.md与AUDIT_FOLLOWUP.md置顶明确对照，保留历史记录。没有借此扩展异常分责资金模型，也没有宣布整个旧实施计划完成。
+PRODUCT_DECISIONS.md第6节2026-10-11确认允许版本化商品佣金、默认0%，明确平台手续费和动态储备边界。旧计划/专题中的“佣金未确认、仅hook”历史描述不能禁止此次明确授权的配置保护；**具体非零正式费率仍未决定**。本轮没有选择正式费率、储备金额、期间或系数。Root权限是未来边界，不等于已有Root账户或强认证。
 
-A使用现有JSON快照，无新SQL；B只新增报价版本与独立审计。旧OrderPricing、历史配置、已FINALIZED结算和已得骑手收入不重算。旧20260926000400_capacity_pool_pricing开发期重解释未修改，不作为本次迁移或未来生产财务模板。
+开发前佣金已有ORDER_POLICY校验、BusinessConfigAudit、创建计算、金额/版本快照、商家结算扣减与送达平台收入累计，Seed为0。缺口是费率变更可省略expectedVersion、JSON缺少明确佣金BPS、双模式完整保护测试。本轮复用现有配置接口，没有新增佣金控制API。
 
-发现旧Seed会覆盖演示B、策略、价格、承接及待结算事实，已保护本轮相关数据：保留既有B/版本及ORDER_POLICY，既有演示订单及关联事实只在首次场景创建时写入。Seed仍维护其他演示资料，不是生产运维或真实支付入口。
+B/C无需新迁移：费用估算使用既有OrderPricing JSON，预算由纯函数/只读输入计算，配置审计使用BusinessConfig / BusinessConfigAudit。没有新托管钱包、实际支付回执表或资金来源。不重解释历史价格、已FINALIZED结算或历史配置，不改变既有交易实收/退款、收益归属、冻结/暂缓、赔付/垫付四类内账事实。历史migration未修改。
 
-## 3. 要求到运行时和验证清单
+## 3. 要求到运行时与测试清单
 
-| 要求 | 执行点 | 验证 |
+| 要求 | 运行点与结果 | 验证 |
 | --- | --- | --- |
-| A1 禁止旧价格再叠收费 | pricing/policy.ts显式旧/新分支 | 单元及新旧订单测试证明新模式只用B与两率 |
-| A2 独立BPS、整数/上限、审计 | pricing/config.ts校验，policy.ts BigInt，admin/config-service.ts CAS/事务锁/BusinessConfigAudit | 一侧变化不影响另一侧；非法BPS、0/微小/最大B、首次并发配置一成一败 |
-| A3 显式启用、历史兼容与输入快照 | 缺省旧模式版本0；新策略版本存JSON，ORDER_POLICY版本仍独立 | 启用/回退不重算旧价格/Settlement；Seed不启用新配置 |
-| B1 商家自有未来B | pricing/merchant-quote.ts，GET/PUT /merchant/base-delivery-quote | CAS/行锁/上限/理由及旧新值、操作者、时间审计；越权拒绝、跨店字段拒绝、并发编辑一成一败 |
-| B2 原救单兼容与安全 | repriceOrder及原PATCH delivery-quote | 只增、冷却、合法商家应结款上限、版本/锁/历史；已claim明确409，原窗口/用户价不变 |
-| B3 重确认及并发创建快照 | orders/quote.ts共用读锁/计算，createOrder核对expectedQuoteToken | B/策略/商品/数量变化要求重确认；改价在分类期间先完成则旧创建失败；订单先持锁则保留旧价，新单用新价 |
-| C资金/快照/角色隔离 | rescue/tip/subsidy、claim来源复制、显式DTO | 精确资金链、预算占用、后claim红包、完整序列化负向检查、legacy FINALIZED和既得收入保留 |
-| C原机制回归与交付 | 既有履约、资格、异常及资金路径 | 40分钟、短码、交接争议、核心易损mock证据、取消冷却、学生gate、个人屏蔽、退款冻结和补贴回归 |
+| A1 复用佣金 | merchant-policy/policies.ts、admin/config-service.ts、orders/service.ts、delivery/service.ts | 原能力审查；默认0不扣商品款 |
+| A2 未来独立生效 | 创建JSON新增platformCommissionBps；已有pricingPolicyVersion及金额不回写 | LEGACY/REFERENCE_BPS两模式证明旧FINALIZED价格、商家权利、骑手收入不变；新订单1250bps仅fixture |
+| A2 不对增量抽佣金 | 原救单/红包/补贴不重算商品佣金或基础价差 | 商品2000、佣金250；救单100→商家1650，红包100/补贴50全给骑手，配送贡献50、最终平台收入300；取消仍退原用户合同全额 |
+| A3 CAS/审计/权限 | 配置锁内佣金费率变更强制expectedVersion；复用原API | 未传version拒绝；并发同version一成一败；前后费率/版本/actor/原因审计；OPERATOR拒绝，未新增Root |
+| B1 来源独立 | finance/service.ts显式DTO分开佣金、基础配送价差、补贴、手续费与第三方权益 | 未完成订单经营确认额0；已送达FINALIZED才确认内账贡献；商家2000/骑手220不计平台收入 |
+| B2 预计/实际隔离 | PAYMENT_COST_ESTIMATE显式配置；创建ESTIMATED平台承担快照；actualFeeMinor=null、NOT_VERIFIED | 2320初始合同、60bps→13；各方款项不变；改100bps旧估算13、新23；伪造actual/status拒绝 |
+| B2 外部幂等/结构 | finance/costs.ts纯函数契约，未接渠道或持久化实际事实 | fixture验证provider/account/transaction去重、变更冲突、退款费用冲正、退款损失/运营支出独立；缺回执/第三方owner/管理员自报拒绝 |
+| B3 不创造钱包 | GET /admin/finance/orders/:orderId/projection只读 | POST投影/回执/费用/余额404；业务角色响应不泄漏费用/内部策略；旧订单不回填 |
+| C1 显式配置/审计 | FINANCE_RESERVE_POLICY校验、CAS与审计，无Seed默认 | 初始UNCONFIGURED；并发一成一败；前后/版本/actor审计；Seed保留明确配置 |
+| C2 储备取高、上限取低 | finance/reserve.ts纯函数 | 固定100/动态200→200；现金1000/收益600，现金义务400/收益义务100→模拟上限300；固定升500→0；边界/精度/溢出拒绝 |
+| C2 不重复扣义务 | sourceId去重；明确各基数alreadyDeducted flags；已知义务从预测额排除 | 骑手收入/退款/已批工资重复不重复扣；金额/类型/基数冲突拒绝；已扣不再扣；期间不一致拒绝 |
+| C3 只读模拟 | POST /admin/finance/budget-preview只接hypothetical场景 | simulated/notVerified/关闭提现；预览前后审计数、订单数、pricing、settlement不变；无配置返回null |
+| C4 Root未启用全拒 | finance/permissions.ts真实状态关闭；预留requireRealWithdrawalApproval始终403；无执行路由 | SUPER_ADMIN/OPERATOR/三业务角色/伪造ROOT全拒；最大模拟额、x-root、回执/认证字段不能开启；工资/提现POST404 |
+| C 内账不冒充可提现 | orders/service.ts和settlements/service.ts共用显式unverifiedRiderBalanceView | 订单详情/骑手列表withdrawableMinor及realWithdrawableMinor=0；internalUnreservedMinor保留amount−reserved；冻结赔付回归通过 |
 
-## 4. 计算、配置与实际生效输入
+只完成第五轮具体要求，不宣布整个旧IMPLEMENTATION_PLAN已完成，不把全量回归当作所有待实现产品行为已上线。
 
-新配置必须明确包含mode=REFERENCE_BPS、customerMarkupBps、riderDeductionBps、rounding=FLOOR_ADJUSTMENTS及maxMerchantBaseMinor。通过现有管理员PUT配置接口提交非空reason与expectedVersion（首次0）；OPERATOR不能写。回退payload为mode=LEGACY_ORDER_POLICY，也版本化/审计，仅对新单生效。
+## 4. 金额、预测与可信边界
 
-- userBase = B + floor(B×customerMarkupBps/10000)。
-- riderBase = B − floor(B×riderDeductionBps/10000)。
-- baseSpread = userBase − riderBase；不叠加旧模式定额、override或数量费。
-- 两率各自0..10000，无费率默认、无暗加最低价/最低收益/最低价差。B=0→0/0；B=1、两率2000bps→1/1。
-- BigInt精确计算，两侧增减额分别向下取整。FLOOR_ADJUSTMENTS是明确可测试的工程舍入版本；长期政策待定，其他舍入版本尚未实现，不能声称已有任意舍入算法切换。
-- maxMerchantBaseMinor为管理员指定安全输入上限，最大1073741823分，保证100%上浮仍可存PostgreSQL Int。旧模式报价编辑使用100000分工程上限，不是商业推荐价；新模式限额可配置，旧fallback更改需代码更新。
-- 写账前校验基础价、checkout总额、红包/保证收益、rescue及补贴预算的整数范围，溢出返回4xx且事务不产生价格/event/budget漂移。
+预计手续费=floor(初始合同总额×feeBps/10000)+fixedFeeMinor，由平台承担，不修改用户报价、商家应结、骑手收入或FINALIZED Settlement。创建读取配置并在原共享配置锁内保存估算快照，后续配置不重算旧单。基数为初始商品款加用户基础配送费，**不覆盖后续红包或真实退款费用调整**。佣金及费用BPS使用BigInt精确整数计算。
 
-新模式金额决策真正使用B、两率、舍入和配置限额。商家ID、类别、区域、AI建议foodType、总数量仅为data/telemetry，全部**reserved/not yet active**，不是多因素智能价格。旧模式仍使用商家override与数量，B及区域/分类仍reserved。
+订单“预计净贡献”仅为已送达FINALIZED内账平台收入减本次费用估算，未知真实退款损失、运营成本等不包含，**不是完整净利润、合法可分配收益或现金余额**。其他平台实际成本为null；用户退款义务单列，不将全部应退款直接当平台实际损失。无实际渠道扣费事实。
 
-内部订单JSON记录B、两率、各增减额、基础价差、舍入、上限、配送策略版本、ORDER_POLICY版本、商家报价版本、输入与用户确认标识；claim原子复制JSON及全部资金来源。后续修改店铺B或比例不改本单基础价；后claim红包单独增加postClaimTip。
+动态预测为同一显式期间四类模拟估计额：退款/损失、补贴、支付费用、短期运营成本。按sourceId去重并排除已保护义务，合计乘forecastMultiplierBps/10000向上取整；reserveRequired=max(fixedFloor,dynamicForecast)。forecastDays用于期间一致性和标识，**没有从近期真实订单自动生成预测**。风险分群、真实样本、系数校准和滚动更新未实现。
 
-## 5. 预览、锁价、权限及支付事实
+模拟现金基数在义务扣减之前，模拟合法收益基数在储备扣减之前。已知义务注明是否已分别扣入现金/收益，包括商家应款、骑手收入、退款、承诺运营支出、已批未执行工资预留，同一来源仅扣一次。现金/收益分别减去尚未计入的义务（含工资预留）和储备，取两者较小非负值。全部为模拟输入，不核实合法性或实际资金；客户端不得声明真实余额或Root认证。
 
-POST /orders/price-preview仅供CUSTOMER，返回用户自己的商品行/合计、基础配送费、总额和opaque quoteToken，不创建订单/支付，不暴露B、两率、骑手基础价或平台价差。
+没有外部自有现金证据、渠道、正式Root强认证及合法收益核验。即使模拟上限=Number.MAX_SAFE_INTEGER，真实提现额也固定0；预览不批准工资、不占用或支付真实资金。
 
-新模式POST /orders必须带expectedQuoteToken，遗漏409 QUOTE_CONFIRMATION_REQUIRED；当前事实与标识不符409 CHECKOUT_QUOTE_CHANGED，要求重新预览并由用户确认，不静默加价。旧模式保留不带token直接创建兼容；一旦提供token仍严格核对，包括新模式回退旧模式的旧标识。旧客户端路径不宣称已有预览确认。
+## 5. 四档生效状态与应用配置
 
-标识覆盖B/报价版本、两种策略版本、商品版本/价格/名称/数量/履约类型、取餐及目的地快照、交付方式和实际用户金额，商品行稳定排序。它是乐观报价摘要，**不是付款凭证**；报价有效期、支付nonce及真正支付时并发细节未实现。
-
-配置→Merchant→catalog→locations锁顺序统一。配置写入排他advisory锁、checkout共享锁；商家改B排他Merchant行锁，预览/创建共享行锁，持续至订单快照插入事务结束。
-
-商家编辑返回“仅对后续订单生效，已付款订单不变”。merchantId/orderId等额外编辑字段在preValidation明确拒绝，避免Fastify默认去除字段后伪成功。本单无基础改价写接口，原救单在已claim时明确失败。未claim救单不改变原用户基础费或40分钟窗口。
-
-创建仍是CREATED及开发内账合同；无PAID、真实付款回调、外部冻结或商家48小时真实提现。本轮沿用旧SUPER_ADMIN/OPERATOR及开发x-user-id认证，未实现正式Root/L1/L2、生产登录或完整控制台UI。
-
-## 6. 资金来源及精确回归
-
-| 概念 | 运行时使用 | 真实支付边界 |
+| 分类 | 范围 | 当前状态 |
 | --- | --- | --- |
-| B | 纯参考，参与基础计算，不扣商家商品款 | 不是资金来源 |
-| 用户基础费 | 创建合同金额，后续B不回写 | 没有实际收款确认 |
-| 骑手基础报酬 | 锁定报价；正常送达按原模型形成收入 | 报价不等于已赚得或真实到账 |
-| merchant rescue | 从本单合法merchantSettlementMinor抵扣，超过可扣应结款拒绝，100%增骑手 | 有本单内账扣减；未验证外部商品款实收，不称为真实渠道付款 |
-| customer tip | 独立金额/event，100%增骑手，后claim不可撤回 | 现有开发内账，没有实收证明或新增支付渠道 |
-| platform subsidy | 实际增加subsidyUsedMinor占用受限内部预算，等额降贡献 | 内部预算消耗，不是银行/微信付款 |
+| **enforced** | 佣金创建快照、变更CAS、未来生效、角色隔离、明确估算配置、真实余额0/提现入口不存在、骑手内账与可提现额分离 | 应用ORDER_POLICY版本2，佣金0；未自动启用非零；旧SUPER_ADMIN无Root资金权 |
+| **only simulation** | 经营/预计费用投影、配置后新合同费用估算、动态储备和工资预算上限 | simulated=true/notVerified=true；应用PAYMENT_COST_ESTIMATE与FINANCE_RESERVE_POLICY均未配置；预算UNCONFIGURED，不用fixture参数 |
+| **hook** | 外部成本类型、provider/account/transaction/receipt/owner/核验来源、去重/冲正纯函数；全员拒绝未来执行守卫 | 仅隔离fixture验证；没有可信adapter、实际费用持久化或外部写API。守卫未连接执行器，因为执行器不存在 |
+| **not implemented** | 正式Root/L1/L2、强认证/恢复、真实支付/退款/分账/费用回执、可信现金/收益对账、工资批准/预留/执行/交接、真实订单自动预测、完整财务UI | 未开发，模拟不等于真实发薪/提现 |
 
-guaranteed = riderBase + rescue + tip + subsidy；deliveryContribution = customerFee − riderBase − subsidy（未计支付成本）。商品佣金platformCommissionBps独立、Seed/default为0，非零计算hook不代表收费已批准。
+应用DELIVERY_PRICING_POLICY不存在，仍默认LEGACY_ORDER_POLICY；RIDER_ELIGIBILITY_POLICY不存在，资格gate默认关闭。创建仍CREATED开发合同，无PAID或真实收款确认。未调用微信支付、创建平台/Root个人收款账户、工资收款人或自动薪酬规则。
 
-隔离fixture证明：B250、双侧2000bps→user300/rider200/baseSpread100；商品2000、rescue100→merchant1900/rider300；tip100→rider400；subsidy50→rider450/contribution50，预算usedMinor实际增加50。claim冻结300/200/100/100/50/450/50及原JSON。以后改B/比例，本单不变；后claim tip100仅令保证收益550、postClaimTip100，贡献仍50。原firstPublishedAt/claimDeadline保持、40分钟不刷新。
+既有骑手AVAILABLE仍是内部状态，不证明外部到账。两个DTO原正数withdrawableMinor现固定0，原值由internalUnreservedMinor表达；收入/预留/冻结和数据库状态不变。**这是API显示语义变化**，调用方应显示“内账未预留额”，不能显示为真实可提现款。README及ROLE_RESPONSIBILITIES.md已同步。
 
-这证明内账计算与约束，不证明真实收款或提现。既有异常退款/赔付只回归，未声称已符合尚未实现的完整分责结算规则。
-
-## 7. 实际测试、迁移和基础设施
+## 6. 实际运行验证
 
 | 检查 | A | B | C最终 |
 | --- | --- | --- | --- |
 | pnpm db:generate | 通过 | 通过 | 通过 |
-| pnpm typecheck | 类型修正后通过 | 通过 | 通过 |
-| pnpm test | 16文件48/48 | 16文件48/48 | 16文件48/48 |
-| pnpm test:integration | 6文件141/141 | 6文件146/146 | 6文件151/151 |
+| pnpm typecheck | 通过 | 通过 | 通过 |
+| pnpm test | 16文件48/48 | 17文件51/51 | 18文件55/55 |
+| pnpm test:integration | 6文件153/153 | 6文件155/155 | 6文件157/157 |
 | pnpm build | 通过 | 通过 | 通过 |
-| migration/status/drift | 无新增，原23条status/diff正常 | 当前库/旧库副本升级、空库24条全迁移通过 | deploy无pending，24条status正常，diff无漂移 |
-| Seed | 隔离integration Seed通过 | 首次Seed、连续两次及六表指纹稳定，保留已配置B/策略测试通过 | 全量integration重新执行migration+Seed通过 |
-| OpenAPI/权限 | 管理员配置权限回归 | 新报价/预览、旧救单保持 | 新路径和完整DTO负向测试通过 |
+| migration/Seed | 隔离空库24条迁移、Seed通过 | 无pending、Seed与配置保留测试通过 | 应用/旧库副本/独立空库deploy/status/drift通过；空库首轮及追加连续两轮Seed六表指纹一致 |
+| OpenAPI/权限 | 原配置回归 | 只读投影及伪造写入口拒绝 | 预算只读描述、角色拒绝、无提现/发薪路径 |
 
-开发期间失败已修复：A可选pricingConfig的TS类型错误；初次drift因shadow库尚不存在，创建后通过；B额外跨店字段被Fastify删除后返回200，增加明确拒绝后通过；连续Seed发现历史承接和待结算updatedAt漂移，限制关联事实为新场景才创建后两次复验一致。最终无失败或被基础设施阻塞的检查。
+PG回归覆盖原40分钟、商家短码/交接争议、核心易损证据、取消冷却、学生资格gate、个人屏蔽、退款冻结、赔付预留和补贴。媒体仍为mock reference，不代表真实相机/微信媒体。
 
-Docker初检Desktop未运行、Linux engine管道缺失，只做一次docker desktop restart；CLI恢复29.8.0，既有PostgreSQL服务启动并healthy。没有factory reset、purge、volume删除或应用数据库reset。所有测试使用本轮隔离库，未让deleteMany清理应用库。
+修复过的失败：A初次测试补贴函数参数与取消body错误；C新增测试helper unknown payload导致TS错误。修正后完整重跑；最后骑手withdrawable语义修正后再跑完整C。表中均为最终绿色结果，没有被基础设施阻塞的检查。
 
-唯一新增migration：20261011000100_merchant_base_delivery_quote。仅添加Merchant.baseDeliveryQuoteVersion（旧库初始0）与MerchantBaseDeliveryQuoteAudit；没有伪造操作审计，没有UPDATE价格、结算或历史配置。
+Docker CLI Desktop running、docker info正常、PostgreSQL healthy；未restart、factory reset、purge、删卷或应用DB reset。会清理数据的集成测试均在本轮隔离库。
 
-应用升级前容器备份保留于 `/tmp/campus_pricing_round4_before.dump`；副本升级和应用自身升级后，六表指纹全部保持：
+**独立CI未验证**：无跟踪的.github workflow，本轮未取得独立CI通过证据。表中是本地实际运行结果，不称为独立CI验证。
 
-| 表 | 记录数 | 升级前后MD5 |
+## 7. 迁移、历史一致性和备份
+
+新增迁移0，现有24条不修改。应用库deploy无pending/status up to date，对迁移目录shadow diff无漂移。原dump恢复至旧库副本后deploy/status/schema diff正常；独立空库全量迁移/Seed/schema diff正常。
+
+原应用库、dump恢复副本、最终应用库六表指纹相同：
+
+| 表 | 数量 | MD5 |
 | --- | ---: | --- |
-| OrderPricing | 2 | 45c3e7d9486c317f3fddbf35ddbaf3da |
-| Settlement | 2 | 085cf607e55cf18e9456727a29cedaea |
+| OrderPricing | 2 | 2d587eb3888bc64da2110f45597385d6 |
+| Settlement | 2 | 31c7ed73395b297f5a44af3b9ecbadb2 |
 | DeliveryAssignment | 0 | d41d8cd98f00b204e9800998ecf8427e |
 | RiderSettlement | 0 | d41d8cd98f00b204e9800998ecf8427e |
-| BusinessConfig | 2 | e979a3f79b374855cc2a8e44de3b2e38 |
+| BusinessConfig | 2 | 0bcef6c0031d7d9f0435437e7184801d |
 | BusinessConfigAudit | 1 | aba90bf63c9779d06e070b60d8adad52 |
 
-当前库无历史claim/骑手收入样本，零记录指纹不证明全部财务场景；额外集成测试完成legacy订单至FINALIZED及生成骑手收入，证明后续B/模式变更不回写。空库Seed有8个价格/结算、5个承接、1个骑手待结算样本，两次Seed六表指纹均不变。当前应用库新配送策略配置0、报价修改审计0、旧商家报价版本0，没有虚构管理员启用或商家操作。
+原库没有历史骑手收入样本，零记录指纹不能证明完整场景；另以两模式集成测试生成FINALIZED和骑手收入，证明后续费率/配置不漂移。
 
-验证后已仅删除本轮创建的六个隔离库：campus_pricing_round4_test_20261011、shadow_20261011、upgrade_20261011、empty_20261011、seedfirst_20261011、seedcheck_20261011（后五名同campus_pricing_round4_前缀）。保留升级前dump及Seed首轮 `/tmp/campus_pricing_round4_seedfirst.dump`，临时指纹脚本未提交。
+空库首轮及追加连续两次Seed指纹相同：OrderPricing8行(f01fdde8051ac281fef6985d86444192)、Settlement8行(02517419d933c5081a8c654e30e3e724)、DeliveryAssignment5行(0f28e210ae28b749aeafbbf6f6dd7594)、RiderSettlement1行(3a5d773f57303c77a35396c366f6dc67)、BusinessConfig1行(3b4afba91aace6eefe189e0ad29d3408)、BusinessConfigAudit0行。默认佣金0，无新费用/储备/双侧/资格配置。另有集成测试证明明确费用与储备配置不被Seed覆盖。
 
-**独立CI未验证。** GitHub API核对A/B/C提交Actions run各0；C check-runs 0、combined status条目0（pending不是通过）。仓库无跟踪的GitHub Actions workflow。本报告绿色结果均为本地执行，不能称为独立CI通过。
+备份保留容器/tmp及本机目录：
 
-## 8. 生效分类、未实现内容与待决事项
+`C:\Users\Serena Lyric\AppData\Local\campus-delivery\validation\2026-10-11-round5\`
 
-- **enforced behavior**：显式启用后B驱动双侧计算、独立比例、版本审计、自有报价CAS、预览重确认、创建/claim快照、合法救单抵扣、全额增量、原窗口、金额边界和角色隔离；默认旧模式，新模式尚未在应用库启用。
-- **data/telemetry available**：类别/区域/数量、AI建议和来源、B/比例/输入/基础价差/版本、激励事件；新模式类别/区域/数量/AI均reserved、不影响金额。
-- **policy hook / placeholder**：商品佣金计算保留但默认0；Jev为既有低风险hook，不决定钱/责任/资格；完整差异化矩阵、动态定价和其他舍入版本没有实现。
-- **not implemented**：真实支付/退款网关、钱包、支付机构冻结、商家有效完成后连续48小时可提现与真实提现、正式Root/L1/L2、代买、生产认证、真实媒体、完整前端/控制台。易损照片回归仅证明现有mock reference验证，不能称真实相机/媒体已接入。
-- 待确定：两侧正式比例、长期舍入、商业最低价/封顶、差异化规则、支付成本、真实支付时并发处理、quote有效期。未用fixture或工程限额代替商业决策。
-- 没有顺带重构严重异常分责/商家提现/代买；既有退款资金模型其他未实现规则仍须独立任务，不能从回归通过推定后续全部产品规则已落地。
+- campus_finance_round5_before.dump：186723字节，原应用库验证前备份。
+- campus_finance_round5_seedfirst.dump：174781字节，空库首轮Seed备份。
 
-实现与验证完成，A/B/C已推送；本报告提交推送后停止，不启动下一轮。
+验证后仅删除本轮创建的四个隔离库：campus_finance_round5_test_20261011、campus_finance_round5_upgrade_20261011、campus_finance_round5_empty_20261011、campus_finance_round5_shadow_20261011。应用库及Docker卷保留。
+
+## 8. 未完成与停止线
+
+- 正式非零佣金、费用费率、最低储备、预测期间和系数仍未确定；两项财务配置未在应用库启用。
+- 实际费用持久化、可信交易验证/对账/退款费用调整、完整净利润和合法可分配收益确认未实现。receipt-shaped fixture不构成真实核验。
+- 真实近期订单自动风险预测、差异化权重、储备自动滚动更新未实现；当前仅显式参数的模拟计算。
+- 正式Root强认证、合规支付资质/账户、真实微信/银行支付、商家真实48小时提现、工资审批/实际预留/执行/交接、个人分红算法未实现。
+- 旧异常业务待完善边界不在本轮重构，不从回归通过推定所有产品规则均已落地。代买、真实登录/媒体和完整前端未开展。
+
+完成A/B/C及报告提交推送后停止，不继续下一轮，不启用真实付款或提现。
