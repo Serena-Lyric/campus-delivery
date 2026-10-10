@@ -126,7 +126,7 @@ export function validatePolicyPayload(payload: Prisma.JsonValue): PolicyConfig {
   return config;
 }
 
-export async function loadPolicyConfig(prisma: PrismaClient): Promise<{ version: number; config: PolicyConfig }> {
+export async function loadPolicyConfig(prisma: PrismaClient | Prisma.TransactionClient): Promise<{ version: number; config: PolicyConfig }> {
   const row = await prisma.businessConfig.findFirst({
     where: { key: 'ORDER_POLICY', isActive: true },
     orderBy: { version: 'desc' },

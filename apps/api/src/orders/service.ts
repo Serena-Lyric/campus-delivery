@@ -27,6 +27,7 @@ import { openExceptionCase } from '../exception-cases/service.js';
 import { DeterministicItemClassifier, classifyItemSafely, type ItemClassifier } from '../item-classifier/classifier.js';
 import { pickupRiskSnapshot } from '../delivery/pickup-risk.js';
 import { defaultDeliveryPricingPolicy, type DeliveryPricingPolicy } from '../pricing/policy.js';
+import { loadDeliveryPricingConfig, pricingConfigLock } from '../pricing/config.js';
 
 export type CreateOrderInput = {
   merchantId: string;
@@ -161,10 +162,7 @@ export async function createOrder(
     quantities.set(item.productId, (quantities.get(item.productId) ?? 0) + item.quantity);
   }
 
-  const { version: policyVersion, config } = await loadPolicyConfig(prisma);
   const codeDay = shortCodeDay(now, campusTimeZone);
-  const coolingOffEndsAt = new Date(now.getTime() + config.coolingOffSeconds * 1000);
-  const tipDeadline = new Date(now.getTime() + config.riderTipWindowSeconds * 1000);
 
   const productsToClassify = await prisma.product.findMany({
     where: { id: { in: [...quantities.keys()] } },
@@ -200,6 +198,11 @@ export async function createOrder(
     const shortCode = generateShortCode();
     try {
       return await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(${pricingConfigLock})`;
+        const { version: policyVersion, config } = await loadPolicyConfig(tx);
+        const pricingConfig = await loadDeliveryPricingConfig(tx);
+        const coolingOffEndsAt = new Date(now.getTime() + config.coolingOffSeconds * 1000);
+        const tipDeadline = new Date(now.getTime() + config.riderTipWindowSeconds * 1000);
         // Hold catalog rows through snapshot insertion, including concurrent platform-rule edits.
         const productIds = [...quantities.keys()].sort();
         await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id" IN (${Prisma.join(productIds.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY "id" FOR SHARE`;
@@ -293,7 +296,7 @@ export async function createOrder(
           destinationRegion: location.regionLabel,
           suggestedFoodTypes: [...new Set(itemData.map((item) => item.suggestedFoodType))],
           totalQuantity,
-        }, config);
+        }, config, pricingConfig);
         const platformCommissionMinor = basisPoints(itemSubtotalMinor, config.platformCommissionBps);
 
         return tx.order.create({

@@ -414,4 +414,36 @@ describe('rider capacity, order pool facts, and split delivery pricing', () => {
     expect(docs.json().paths['/riders/me/capacity']?.get).toBeTruthy();
     expect(docs.json().paths['/admin/riders/{riderId}/capacity-override']?.put).toBeTruthy();
   });
+
+  it('activates reference BPS explicitly, audits CAS config changes and never reprices existing orders or settlements', async () => {
+    const old = await createReady();
+    const before = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: old.orderId } });
+    const settlementBefore = await prisma.settlement.findUniqueOrThrow({ where: { orderId: old.orderId } });
+    const payload = { mode: 'REFERENCE_BPS', customerMarkupBps: 2000, riderDeductionBps: 2000, rounding: 'FLOOR_ADJUSTMENTS', maxMerchantBaseMinor: 100000 };
+    const configure = (userId: string, expectedVersion?: number) => app.inject({
+      method: 'PUT', url: '/admin/business-configs/DELIVERY_PRICING_POLICY', headers: headers(userId),
+      payload: { payload, reason: 'Isolated test rates, not approved business rates', ...(expectedVersion === undefined ? {} : { expectedVersion }) },
+    });
+    expect((await configure(seedIds.operator, 0)).statusCode).toBe(403);
+    expect((await configure(seedIds.admin)).statusCode).toBe(400);
+    const concurrent = await Promise.all([configure(seedIds.admin, 0), configure(seedIds.admin, 0)]);
+    expect(concurrent.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+    expect(await prisma.businessConfigAudit.count({ where: { key: 'DELIVERY_PRICING_POLICY' } })).toBe(1);
+    await prisma.merchant.update({ where: { id: seedIds.merchant }, data: { baseDeliveryPriceMinor: 250 } });
+    try {
+      const next = await createReady();
+      const pricing = await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: next.orderId } });
+      expect(pricing).toMatchObject({ customerDeliveryFeeMinor: 300, riderBasePayoutMinor: 200, merchantSettlementMinor: 2000, platformCommissionMinor: 0, deliveryPlatformContributionMinor: 100 });
+      expect(pricing.pricingInputsSnapshot).toMatchObject({ merchantBaseDeliveryPriceMinor: 250, deliveryPricingPolicyVersion: 1, customerMarkupBps: 2000, riderDeductionBps: 2000, rounding: 'FLOOR_ADJUSTMENTS' });
+      expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: old.orderId } })).toEqual(before);
+      expect(await prisma.settlement.findUniqueOrThrow({ where: { orderId: old.orderId } })).toEqual(settlementBefore);
+      const rollback = await app.inject({ method: 'PUT', url: '/admin/business-configs/DELIVERY_PRICING_POLICY', headers: headers(seedIds.admin), payload: { payload: { mode: 'LEGACY_ORDER_POLICY' }, expectedVersion: 1, reason: 'Explicit rollback affects only new orders' } });
+      expect(rollback.statusCode, rollback.body).toBe(200);
+      expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: next.orderId } })).toEqual(pricing);
+      const legacy = await createReady();
+      expect(await prisma.orderPricing.findUniqueOrThrow({ where: { orderId: legacy.orderId } })).toMatchObject({ customerDeliveryFeeMinor: 320, riderBasePayoutMinor: 220 });
+    } finally {
+      await prisma.merchant.update({ where: { id: seedIds.merchant }, data: { baseDeliveryPriceMinor: 100 } });
+    }
+  });
 });
