@@ -11,6 +11,7 @@ import {
   overrideRiderRestriction,
 } from './restrictions.js';
 import { getMyCapacity, setRiderCapacityOverride } from './capacity.js';
+import { listBlockedMerchants, setMerchantBlocked } from './blocklist.js';
 
 const TaskParams = Type.Object({ taskId: Type.String({ format: 'uuid' }) });
 const RiderParams = Type.Object({ riderId: Type.String({ format: 'uuid' }) });
@@ -19,6 +20,16 @@ const RestrictionParams = Type.Object({ restrictionId: Type.String({ format: 'uu
 export async function registerRiderRoutes(app: FastifyInstance, prisma: PrismaClient, config: AppConfig) {
   const rider = authGuard(prisma, config, ['RIDER']);
   const superAdmin = adminGuard(prisma, config, ['SUPER_ADMIN']);
+
+  app.get('/rider/blocked-merchants', { preHandler: rider, schema: { tags: ['rider-blocklist'] } },
+    async (request) => listBlockedMerchants(prisma, actorOf(request)));
+  const merchantParams = Type.Object({ merchantId: Type.String({ format: 'uuid' }) });
+  app.put<{ Params: { merchantId: string } }>('/rider/blocked-merchants/:merchantId', {
+    preHandler: rider, schema: { tags: ['rider-blocklist'], params: merchantParams },
+  }, async (request) => setMerchantBlocked(prisma, actorOf(request), request.params.merchantId, true));
+  app.delete<{ Params: { merchantId: string } }>('/rider/blocked-merchants/:merchantId', {
+    preHandler: rider, schema: { tags: ['rider-blocklist'], params: merchantParams },
+  }, async (request) => setMerchantBlocked(prisma, actorOf(request), request.params.merchantId, false));
 
   app.post<{
     Params: { taskId: string };

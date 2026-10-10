@@ -363,6 +363,7 @@ model Merchant {
   baseDeliveryPriceMinor    Int                        @default(0)
   supportedDeliveryMethods  DeliveryMethod[]           @default([DESIGNATED_POINT, DOOR, FACE_TO_FACE])
   pickupVerificationMode    PickupVerificationMode     @default(CONFIRMATION)
+  blockedBy                 RiderBlockedMerchant[]
   categories                ProductCategory[]
   products                  Product[]
   orders                    Order[]
@@ -440,6 +441,18 @@ model Rider {
   updatedAt                   DateTime                 @updatedAt
   remakeProposals             RemakeProposal[]
   capacityEvents              RiderCapacityEvent[]
+  blockedMerchants            RiderBlockedMerchant[]
+}
+
+model RiderBlockedMerchant {
+  riderId    String @db.Uuid
+  merchantId String @db.Uuid
+  rider      Rider @relation(fields: [riderId], references: [id], onDelete: Cascade)
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@id([riderId, merchantId])
+  @@index([merchantId])
 }
 
 model Order {

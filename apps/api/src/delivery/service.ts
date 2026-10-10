@@ -22,6 +22,7 @@ import { verifyOrderCode } from '../verification/service.js';
 import { assertRiderCanClaim } from '../riders/restrictions.js';
 import { openExceptionCase } from '../exception-cases/service.js';
 import { recordFirstNormalDelivery, resolveRiderCapacity } from '../riders/capacity.js';
+import { requireRider } from '../riders/blocklist.js';
 
 const taskSelect = {
   id: true,
@@ -151,12 +152,14 @@ async function requireEvidence(
   return evidence;
 }
 
-export async function listAvailableTasks(prisma: PrismaClient, limit: number, offset: number) {
+export async function listAvailableTasks(prisma: PrismaClient, actor: Actor, limit: number, offset: number) {
+  const riderId = requireRider(actor);
   const tasks = await prisma.deliveryTask.findMany({
     where: {
       status: DeliveryTaskStatus.OPEN,
       riderId: null,
       claimDeadline: { gt: new Date() },
+      order: { merchant: { blockedBy: { none: { riderId } } } },
     },
     select: taskSelect,
     orderBy: { createdAt: 'asc' },
@@ -228,6 +231,9 @@ export async function claimTask(
       throw conflict('TASK_NOT_CLAIMABLE', 'Delivery task is no longer claimable');
     }
     if (!task.order.pricing) throw notFound('Order pricing');
+    if (await tx.riderBlockedMerchant.findUnique({ where: { riderId_merchantId: { riderId, merchantId: task.order.merchantId } } })) {
+      throw conflict('MERCHANT_BLOCKED', 'Unblock this merchant before claiming its orders');
+    }
 
     const claimed = await tx.deliveryTask.updateMany({
       where: {

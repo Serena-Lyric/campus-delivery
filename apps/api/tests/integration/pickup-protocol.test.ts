@@ -1,0 +1,102 @@
+import { PrismaClient } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { buildApp } from '../../src/app.js';
+import { demoPolicy, seedDatabase, seedIds } from '../../prisma/seed.js';
+import { releaseExpiredCoolingOrders } from '../../src/orders/lifecycle.js';
+import { claimTask } from '../../src/delivery/service.js';
+import { setMerchantBlocked } from '../../src/riders/blocklist.js';
+
+const prisma = new PrismaClient();
+const config = { databaseUrl: process.env.DATABASE_URL!, host: '127.0.0.1', port: 3000, enableDevAuth: true, enableBackgroundJobs: false, backgroundSweepIntervalMs: 5000, campusTimeZone: 'Asia/Shanghai', logLevel: 'silent' };
+const headers = (id: string) => ({ 'x-user-id': id });
+const rider = { id: seedIds.riderAUser, role: 'RIDER' as const, riderId: seedIds.riderA };
+
+describe('personal blocklist and merchant pickup protocol', () => {
+  let app: Awaited<ReturnType<typeof buildApp>>;
+  beforeAll(async () => { await seedDatabase(prisma); app = await buildApp(config, prisma); await app.ready(); });
+  afterAll(async () => { await app.close(); await prisma.$disconnect(); });
+  beforeEach(async () => {
+    await prisma.compensationAllocation.deleteMany();
+    await prisma.compensationObligation.deleteMany();
+    await prisma.remakeProposal.deleteMany();
+    await prisma.exceptionCaseAction.deleteMany();
+    await prisma.exceptionCase.deleteMany();
+    await prisma.riderRestrictionAudit.deleteMany();
+    await prisma.riderRestriction.deleteMany();
+    await prisma.riderCancellationEvent.deleteMany();
+    await prisma.merchantExposureDecision.deleteMany();
+    await prisma.subsidyRecord.deleteMany();
+    await prisma.deliveryTask.deleteMany();
+    await prisma.order.deleteMany();
+    await prisma.riderBlockedMerchant.deleteMany();
+    await prisma.businessConfigAudit.deleteMany();
+    await prisma.businessConfig.deleteMany({ where: { id: { not: seedIds.policyConfig } } });
+    await prisma.businessConfig.update({ where: { id: seedIds.policyConfig }, data: { payload: demoPolicy, isActive: true } });
+    await prisma.merchant.update({ where: { id: seedIds.merchant }, data: { exposureState: 'NORMAL', pickupVerificationMode: 'CONFIRMATION' } });
+    await prisma.product.update({ where: { id: seedIds.productRice }, data: { deliveryCategoryCode: 'ORDINARY_MEAL', priceMinor: 1500 } });
+    await prisma.rider.updateMany({ data: { status: 'AVAILABLE', capacityOverride: 10 } });
+  });
+  async function ready() {
+    const created = await app.inject({ method: 'POST', url: '/orders', headers: headers(seedIds.customer), payload: { merchantId: seedIds.merchant, destinationLocationId: seedIds.dormLocation, deliveryMethod: 'DESIGNATED_POINT', items: [{ productId: seedIds.productRice, quantity: 1 }] } });
+    expect(created.statusCode, created.body).toBe(201);
+    const orderId = created.json().id as string;
+    await prisma.order.update({ where: { id: orderId }, data: { coolingOffEndsAt: new Date(Date.now() - 1000) } });
+    await releaseExpiredCoolingOrders(prisma);
+    const response = await app.inject({ method: 'POST', url: `/merchant/orders/${orderId}/confirm`, headers: headers(seedIds.merchantUser) });
+    expect(response.statusCode, response.body).toBe(200);
+    return { orderId, taskId: response.json().deliveryTask.id as string };
+  }
+  const block = (method: 'PUT' | 'DELETE', user: string = seedIds.riderAUser) => app.inject({ method, url: `/rider/blocked-merchants/${seedIds.merchant}`, headers: headers(user) });
+  const available = (user: string = seedIds.riderAUser, query = '') => app.inject({ method: 'GET', url: `/delivery-tasks/available${query}`, headers: headers(user) });
+  it('persists idempotently, isolates riders and roles, and keeps claimed assignments intact', async () => {
+    const held = await ready();
+    await claimTask(prisma, rider, held.taskId);
+    const open = await ready();
+    expect((await block('PUT')).statusCode).toBe(200);
+    expect((await block('PUT')).statusCode).toBe(200);
+    expect(await prisma.riderBlockedMerchant.count()).toBe(1);
+    expect((await available()).json()).toEqual([]);
+    expect((await available(seedIds.riderBUser)).json().map((t: { id: string }) => t.id)).toContain(open.taskId);
+    await expect(claimTask(prisma, rider, open.taskId)).rejects.toMatchObject({ code: 'MERCHANT_BLOCKED' });
+    for (const user of [seedIds.customer, seedIds.merchantUser, seedIds.operator]) expect((await block('PUT', user)).statusCode).toBe(403);
+    const listed = await app.inject({ method: 'GET', url: '/rider/blocked-merchants', headers: headers(seedIds.riderBUser) });
+    expect(listed.json()).toEqual([]);
+    const oldName = (await prisma.merchant.findUniqueOrThrow({ where: { id: seedIds.merchant } })).name;
+    await prisma.merchant.update({ where: { id: seedIds.merchant }, data: { name: 'renamed' } });
+    expect((await available()).json()).toEqual([]);
+    await prisma.merchant.update({ where: { id: seedIds.merchant }, data: { name: oldName } });
+    expect(await prisma.deliveryTask.findUnique({ where: { id: held.taskId } })).toMatchObject({ status: 'CLAIMED', riderId: seedIds.riderA });
+    expect((await block('DELETE')).statusCode).toBe(200);
+    expect((await block('DELETE')).statusCode).toBe(200);
+    expect((await available()).json().map((t: { id: string }) => t.id)).toContain(open.taskId);
+    expect(await prisma.riderCancellationEvent.count()).toBe(0);
+    expect(await prisma.riderSettlement.count()).toBe(0);
+  });
+  it('filters before pagination and does not match another merchant with the same name', async () => {
+    await ready();
+    await block('PUT');
+    const user = await prisma.user.create({ data: { role: 'MERCHANT', displayName: randomUUID() } });
+    const other = await prisma.merchant.create({ data: { ownerId: user.id, name: (await prisma.merchant.findUniqueOrThrow({ where: { id: seedIds.merchant } })).name, campusLocationId: seedIds.merchantLocation } });
+    const one = await ready();
+    const two = await ready();
+    await prisma.order.updateMany({ where: { id: { in: [one.orderId, two.orderId] } }, data: { merchantId: other.id } });
+    expect((await available(seedIds.riderAUser, '?limit=1&offset=0')).json().map((t: { id: string }) => t.id)).toEqual([one.taskId]);
+    expect((await available(seedIds.riderAUser, '?limit=1&offset=1')).json().map((t: { id: string }) => t.id)).toEqual([two.taskId]);
+    await prisma.deliveryTask.deleteMany({ where: { orderId: { in: [one.orderId, two.orderId] } } });
+    await prisma.order.deleteMany({ where: { merchantId: other.id } });
+    await prisma.merchant.delete({ where: { id: other.id } });
+    await prisma.user.delete({ where: { id: user.id } });
+  });
+  it('serializes blocking with claim; an earlier successful claim stays held', async () => {
+    const task = await ready();
+    const results = await Promise.allSettled([claimTask(prisma, rider, task.taskId), setMerchantBlocked(prisma, rider, seedIds.merchant, true)]);
+    expect(results[1]!.status).toBe('fulfilled');
+    expect(await prisma.riderBlockedMerchant.count()).toBe(1);
+    const current = await prisma.deliveryTask.findUniqueOrThrow({ where: { id: task.taskId } });
+    expect(current.status).toBe(results[0]!.status === 'fulfilled' ? 'CLAIMED' : 'OPEN');
+    expect((await available()).json()).toEqual([]);
+    const next = await ready();
+    await expect(claimTask(prisma, rider, next.taskId)).rejects.toMatchObject({ code: 'MERCHANT_BLOCKED' });
+  });
+});
