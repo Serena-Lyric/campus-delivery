@@ -32,6 +32,7 @@ export async function registerAdminConfigRoutes(app: FastifyInstance, prisma: Pr
     },
     schema: {
       tags: ['admin-config'],
+      description: 'MERCHANT_DAILY_CONFIRMATION accepts only {time: HH:mm}, requires expectedVersion, and stores a server-owned nonretroactive transition. PRODUCT_DAILY_RESTORE remains independent.',
       params: KeyParams,
       body: ConfigBody,
     },
@@ -42,5 +43,6 @@ export async function registerAdminConfigRoutes(app: FastifyInstance, prisma: Pr
     request.body.payload as Prisma.InputJsonValue,
     request.body.reason,
     request.body.expectedVersion,
+    config.campusTimeZone,
   ));
 }

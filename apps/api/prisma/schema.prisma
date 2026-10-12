@@ -347,6 +347,7 @@ model User {
   baseDeliveryQuoteChanges  MerchantBaseDeliveryQuoteAudit[]
   operatingStatusChanges    MerchantOperatingStatusAudit[]
   dailyRestorePreferenceChanges MerchantDailyRestorePreferenceAudit[]
+  dailyConfirmationPreferenceChanges MerchantDailyConfirmationPreferenceAudit[]
   productSaleStatusChanges  ProductSaleStatusAudit[]
   academicTerms             AcademicTerm[]
   eligibilityReviews        RiderEligibilityReview[]
@@ -381,6 +382,10 @@ model Merchant {
   dailyProductRestoreVersion Int                       @default(0)
   dailyRestorePreferenceAudits MerchantDailyRestorePreferenceAudit[]
   dailyRestoreRuns MerchantDailyRestoreRun[]
+  dailyConfirmationEnabled Boolean @default(false)
+  dailyConfirmationVersion Int @default(0)
+  dailyConfirmationEffectiveAt DateTime?
+  dailyConfirmationPreferenceAudits MerchantDailyConfirmationPreferenceAudit[]
   operatingStatusAudits     MerchantOperatingStatusAudit[]
   productSaleStatusAudits   ProductSaleStatusAudit[]
   exposureState             MerchantExposureState      @default(TRIAL)
@@ -401,6 +406,22 @@ model Merchant {
   exposureDecisions         MerchantExposureDecision[]
   createdAt                 DateTime                   @default(now())
   updatedAt                 DateTime                   @updatedAt
+}
+
+model MerchantDailyConfirmationPreferenceAudit {
+  id String @id @default(uuid()) @db.Uuid
+  merchantId String @db.Uuid
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  version Int
+  previousEnabled Boolean
+  newEnabled Boolean
+  effectiveAt DateTime?
+  actorId String @db.Uuid
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  reason String
+  createdAt DateTime @default(now())
+  @@unique([merchantId, version])
+  @@index([merchantId, createdAt], map: "MerchantDailyConfirmationPreferenceAudit_merchantId_createdAt_i")
 }
 
 model MerchantDailyRestorePreferenceAudit {

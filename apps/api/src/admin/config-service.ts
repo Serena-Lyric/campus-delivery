@@ -7,6 +7,7 @@ import { deliveryPricingPolicyKey, pricingConfigLock, validateDeliveryPricingCon
 import { paymentCostPolicyKey, validatePaymentCostPolicy } from '../finance/costs.js';
 import { reservePolicyKey, validateReservePolicy } from '../finance/reserve.js';
 import { dailyRestoreKey, dailyRestoreConfigLock, validateDailyRestoreConfig } from '../catalog/daily-restore-config.js';
+import { dailyConfirmationKey, dailyConfirmationConfigLock, validateDailyConfirmationConfig, prepareDailyConfirmationConfig } from '../catalog/daily-confirmation-config.js';
 
 export async function getBusinessConfig(prisma: PrismaClient, actor: Actor, key: string) {
   requireAdminLevel(actor, ['SUPER_ADMIN']);
@@ -30,20 +31,22 @@ export async function updateBusinessConfig(
   payload: Prisma.InputJsonValue,
   reason: string,
   expectedVersion?: number,
+  campusTimeZone = 'Asia/Shanghai',
 ) {
   requireAdminLevel(actor, ['SUPER_ADMIN']);
-  const validatedPayload = key === dailyRestoreKey ? validateDailyRestoreConfig(payload as Prisma.JsonValue) : key === 'ORDER_POLICY'
+  let validatedPayload: Prisma.InputJsonValue = key === dailyConfirmationKey ? validateDailyConfirmationConfig(payload as Prisma.JsonValue) : key === dailyRestoreKey ? validateDailyRestoreConfig(payload as Prisma.JsonValue) : key === 'ORDER_POLICY'
     ? validatePolicyPayload(payload as Prisma.JsonValue)
     : key === eligibilityPolicyKey ? validateEligibilityPolicy(payload as Prisma.JsonValue)
       : key === deliveryPricingPolicyKey ? validateDeliveryPricingConfig(payload as Prisma.JsonValue)
         : key === paymentCostPolicyKey ? validatePaymentCostPolicy(payload as Prisma.JsonValue)
           : key === reservePolicyKey ? validateReservePolicy(payload as Prisma.JsonValue) : payload;
-  if ([dailyRestoreKey, eligibilityPolicyKey, deliveryPricingPolicyKey, paymentCostPolicyKey, reservePolicyKey].includes(key) && expectedVersion === undefined) {
+  if ([dailyConfirmationKey, dailyRestoreKey, eligibilityPolicyKey, deliveryPricingPolicyKey, paymentCostPolicyKey, reservePolicyKey].includes(key) && expectedVersion === undefined) {
     throw badRequest('CONFIG_VERSION_REQUIRED', 'This policy requires the expected config version (0 when unconfigured)');
   }
   if (!reason.trim()) throw badRequest('CONFIG_REASON_REQUIRED', 'A non-blank audit reason is required');
 
   return prisma.$transaction(async (tx) => {
+    if (key === dailyConfirmationKey) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${dailyConfirmationConfigLock})`;
     if (key === dailyRestoreKey) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${dailyRestoreConfigLock})`;
     if ([deliveryPricingPolicyKey, 'ORDER_POLICY', paymentCostPolicyKey, reservePolicyKey].includes(key)) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${pricingConfigLock})`;
     if (key === eligibilityPolicyKey) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${eligibilityPolicyLock})`;
@@ -60,6 +63,11 @@ export async function updateBusinessConfig(
     }
     if (expectedVersion !== undefined && expectedVersion !== (current?.version ?? 0)) throw conflict('CONFIG_VERSION_CONFLICT', 'Refresh the business config before changing it');
     if (key === dailyRestoreKey && current && validateDailyRestoreConfig(current.payload).time === validateDailyRestoreConfig(validatedPayload as Prisma.JsonValue).time) return current;
+    if (key === dailyConfirmationKey) {
+      const { time } = validateDailyConfirmationConfig(validatedPayload as Prisma.JsonValue);
+      if (current && (current.payload as { time?: string }).time === time) return current;
+      validatedPayload = await prepareDailyConfirmationConfig(tx, time, campusTimeZone);
+    }
     if (key === eligibilityPolicyKey && validateEligibilityPolicy(validatedPayload as Prisma.JsonValue).enforced) {
       const now = new Date();
       if (!await tx.academicTerm.findFirst({ where: { startsAt: { lte: now }, endsAt: { gt: now } }, select: { id: true } })) {

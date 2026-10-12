@@ -13,6 +13,7 @@ import { isMerchantVisibleToCustomer } from './visibility.js';
 import { getOperatingStatus, OperatingStatusBody, operatingStatusFields, updateOperatingStatus, type OperatingStatusInput } from './operating-status.js';
 import { productSaleFields, SaleStatusBody, updateProductSaleStatus, type SaleStatusInput } from './product-status.js';
 import { DailyRestorePreferenceBody, DailyRestorePreferenceView, DailyRestorePreferenceUpdateView, getDailyRestorePreference, updateDailyRestorePreference, type DailyRestorePreferenceInput } from './daily-restore-preference.js';
+import { DailyConfirmationPreferenceBody, DailyConfirmationPreferenceView, DailyConfirmationPreferenceUpdateView, getDailyConfirmationPreference, updateDailyConfirmationPreference, type DailyConfirmationPreferenceInput } from './daily-confirmation-preference.js';
 
 const IdParams = Type.Object({ merchantId: Type.String({ format: 'uuid' }) });
 const ProductUpdateBody = Type.Object({ ...ProductBody.properties, expectedVersion: Type.Integer({ minimum: 1 }) }, { additionalProperties: false });
@@ -21,6 +22,13 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
   const authenticate = authGuard(prisma, config);
 
   const merchantOnly = authGuard(prisma, config, ['MERCHANT']);
+  app.get('/merchant/daily-confirmation', { preHandler: merchantOnly, schema: { tags: ['catalog'], description: 'Owner preference and effective local business day; pending activation differs from active confirmation requirement. No client UI is provided.', response: { 200: DailyConfirmationPreferenceView } } },
+    async (request) => getDailyConfirmationPreference(prisma, actorOf(request), config.campusTimeZone));
+  app.put<{ Body: DailyConfirmationPreferenceInput }>('/merchant/daily-confirmation', {
+    preHandler: merchantOnly, preValidation: async (request) => {
+      if (!Value.Check(DailyConfirmationPreferenceBody, request.body)) throw badRequest('INVALID_DAILY_CONFIRMATION_PREFERENCE', 'Invalid daily confirmation fields');
+    }, schema: { tags: ['catalog'], description: 'Opt in from the next business-day boundary; opt out immediately. Neither action changes manual isOpen.', body: DailyConfirmationPreferenceBody, response: { 200: DailyConfirmationPreferenceUpdateView } },
+  }, async (request) => updateDailyConfirmationPreference(prisma, actorOf(request), request.body, config.campusTimeZone));
   app.get('/merchant/daily-product-restore', { preHandler: merchantOnly, schema: { tags: ['catalog'], response: { 200: DailyRestorePreferenceView } } },
     async (request) => getDailyRestorePreference(prisma, actorOf(request), config.campusTimeZone));
   app.put<{ Body: DailyRestorePreferenceInput }>('/merchant/daily-product-restore', {
