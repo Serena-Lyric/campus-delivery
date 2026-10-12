@@ -1,5 +1,7 @@
 # CODEX_TASK — 第七轮：商家手动营业与商品售罄三态（2026-10-12）
 
+> **本轮已执行完成（2026-10-12）**：A/B/C 分阶段验证与正常推送，实际提交和验证结果见 [CODEX_REPORT.md](CODEX_REPORT.md)。下文保留任务编制时的授权和验收要求，不自动启动后续库存、营业调度或支付开发。
+
 > 用户已批准“逐步实现已确认的商家端决策”。这是**新的待执行任务**，第六轮仅为文档优化（完成commit `d450d6d`），第五轮财务安全任务与报告分别归档在 `CODEX_TASK_2026-10-11_FINANCE_SAFEGUARDS.md` / `CODEX_REPORT_2026-10-11_FINANCE_SAFEGUARDS.md`。从Git最新main安全同步，先检查status/diff/迁移；遵守`AGENTS.md`任务范围读取`PRODUCT_DECISIONS.md`第1B/1C节、`MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md`、`CATALOG_DISPLAY_AND_DELIVERY_CLASSIFICATION.md`及受影响的角色说明，不默认加载全部历史报告。
 
 ## 本轮边界和明确不做的事

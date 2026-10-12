@@ -51,8 +51,8 @@
 
 **Files:** tests/integration/merchant-operations.test.ts、迁移验收脚本、README.md、ROLE_RESPONSIBILITIES.md、CODEX_REPORT.md。
 
-- [ ] 补充真实 PostgreSQL 双向锁竞态、旧写入/快照/资金/易损取证回归；先观察新增行为测试的失败再修补必要缺口。
-- [ ] 最终五命令通过；新旧空库迁移/状态/drift、重复 Seed 及完整历史指纹核验；逐项映射 A1–A5/B1–B5/C。
+- [x] 补充真实 PostgreSQL 双向锁竞态、旧写入/快照/资金/易损取证回归；先观察新增行为测试的失败再修补必要缺口。
+- [x] 最终五命令通过；新旧空库迁移/状态/drift、重复 Seed 及完整历史指纹核验；逐项映射 A1–A5/B1–B5/C。
 - [ ] 保留历史报告正文归档；更新实际结果、迁移/备份/兼容、阶段 SHA、已执行/仅 API/未实现和独立 CI 限制。
 - [ ] 独立提交并普通推送 C，最终核对远端一致后停止。
 
@@ -64,3 +64,5 @@
 - A：7 条新 API 测试先因路由缺失失败，随后通过；补充真实 PG 锁等待三个方向，共10项。完整 unit 55 / PG 167 通过，generate/typecheck/build通过。早期 PG 两轮各有旧目录计数1项失败，因新夹具泄漏；补清理后全绿。review 无严重问题，Minor 指纹范围已补全。旧副本与空库各连续 Seed 两次通过；应用库未执行可重写演示资料的 Seed，Seed行为在副本/空库和隔离集成测试验证。
 - A 已普通推送 bb7b15d。
 - B：4项三态失败测试红→绿；补实际 Product 锁等待竞态与完整编辑额外字段201→400红→绿（首轮全套也记录该1项失败）。最终 unit55 / PG174全绿，generate/typecheck/build通过；应用/旧副本/空库无drift，既有表指纹保持。旧副本历史false样本升级仍OFF_SHELF、version1、公共API隐藏；旧副本/空库各重复Seed两次保留三态、营业、18类历史/审计表摘要。review 最新快照无问题。
+- B 已普通推送 5586db0。
+- C：新增 OWNER 服务层伪绑定、旧 ORM bool 兼容、preview→售罄锁等待和真实完整履约/FINALIZED不变回归，新文件共21项，全套PG178、unit55通过，generate/typecheck/build通过。初次生命周期测试的商家资金隔离断言过宽和夹具DeliveryTask清理顺序已修正，无运行时代码改动。原备份恢复24迁移基准库，47张既有表与最终应用库原字段指纹完全一致；新空库从零26迁移、首轮Seed+两轮重复Seed通过。最终独立代码审查无问题；GitHub B实现提交无CI运行，独立CI不可用。C交付先提交推送，报告随后记录其实际SHA再单独提交；避免报告自引用提交哈希。

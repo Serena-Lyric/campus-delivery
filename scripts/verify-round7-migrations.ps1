@@ -1,5 +1,6 @@
 param(
   [ValidateSet('A', 'B', 'C')][string]$Stage,
+  [switch]$SnapshotOnly,
   [string[]]$Databases = @('campus-delivery', 'campus_round7_old', 'campus_round7_empty'),
   [string]$EvidenceDirectory = (Join-Path $env:LOCALAPPDATA 'Codex/backups/campus-delivery-round7-20261012')
 )
@@ -31,6 +32,12 @@ try {
   foreach ($database in $Databases) {
     if ($database -notmatch '^[a-zA-Z0-9_-]+$') { throw 'Invalid database name' }
     $before = Read-HistorySnapshot $database
+    if ($SnapshotOnly) {
+      [ordered]@{ stage = $Stage; database = $database; after = $before } | ConvertTo-Json -Depth 4 |
+        Set-Content -LiteralPath (Join-Path $EvidenceDirectory "$Stage-$database-history.json") -Encoding utf8
+      Write-Output "Snapshot saved: $database"
+      continue
+    }
     $env:DATABASE_URL = "postgresql://campus:campus@localhost:5432/${database}?schema=public"
     pnpm db:migrate
     if ($LASTEXITCODE -ne 0) { throw "Migration failed: $database" }

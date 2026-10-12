@@ -1,10 +1,14 @@
 import { DeliveryMethod, MerchantExposureState, PrismaClient } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import { seedDatabase, seedIds } from '../../prisma/seed.js';
 import { getMerchantBaseQuote } from '../../src/pricing/merchant-quote.js';
 import { createOrder } from '../../src/orders/service.js';
 import { checkoutQuantities, readCheckoutFacts } from '../../src/orders/quote.js';
+import { releaseExpiredCoolingOrders } from '../../src/orders/lifecycle.js';
+import { updateOperatingStatus } from '../../src/catalog/operating-status.js';
+import { updateProductSaleStatus } from '../../src/catalog/product-status.js';
 
 function barrier() {
   let release!: () => void;
@@ -40,11 +44,16 @@ describe('owner manual operations preserve catalog and existing contracts', () =
   async function cleanFixtures() {
     const fixtures = await prisma.merchant.findMany({ where: { name: 'manual stall' }, select: { id: true, ownerId: true } });
     const ids = fixtures.map((m) => m.id);
+    await prisma.deliveryTask.deleteMany({ where: { order: { merchantId: { in: ids } } } });
     await prisma.order.deleteMany({ where: { merchantId: { in: ids } } });
     await prisma.merchantOperatingStatusAudit.deleteMany({ where: { merchantId: { in: ids } } });
     await prisma.productSaleStatusAudit.deleteMany({ where: { merchantId: { in: ids } } });
     await prisma.merchant.deleteMany({ where: { id: { in: ids } } });
     await prisma.user.deleteMany({ where: { id: { in: fixtures.map((m) => m.ownerId) } } });
+    const riders = await prisma.rider.findMany({ where: { user: { displayName: 'manual lifecycle rider' } }, select: { id: true, userId: true } });
+    await prisma.riderCapacityEvent.deleteMany({ where: { riderId: { in: riders.map((r) => r.id) } } });
+    await prisma.rider.deleteMany({ where: { id: { in: riders.map((r) => r.id) } } });
+    await prisma.user.deleteMany({ where: { id: { in: riders.map((r) => r.userId) } } });
     await prisma.user.deleteMany({ where: { role: 'MERCHANT', displayName: 'unattached', merchant: null } });
   }
 
@@ -211,6 +220,24 @@ describe('owner manual operations preserve catalog and existing contracts', () =
     expect((await order()).statusCode).toBe(400);
   });
 
+  it('holds product protection during preview and invalidates that quote after a waiting sold-out change', async () => {
+    const held = barrier();
+    const release = barrier();
+    const previewing = prisma.$transaction(async (tx) => {
+      const facts = await readCheckoutFacts(tx, input(), checkoutQuantities(input()));
+      held.release();
+      await release.promise;
+      return facts.products[0]!.saleStatus;
+    });
+    const token = (await preview()).json().quoteToken;
+    await held.promise;
+    const stopping = sale('SOLD_OUT', 1);
+    try { await waitForDatabaseLock('Product'); } finally { release.release(); }
+    expect(await previewing).toBe('ON_SALE');
+    expect((await stopping).statusCode).toBe(200);
+    expect((await order({ expectedQuoteToken: token })).statusCode).toBe(400);
+  });
+
   it('restricts reads and changes to the authenticated owner and rejects injected resource fields', async () => {
     expect((await read()).json()).toMatchObject({ id: merchantId, isOpen: true, operatingVersion: 0 });
     for (const user of [seedIds.customer, seedIds.riderAUser, seedIds.admin]) {
@@ -349,5 +376,74 @@ describe('owner manual operations preserve catalog and existing contracts', () =
     expect(await previewing).toBe(true);
     expect((await closing).statusCode).toBe(200);
     expect((await preview()).statusCode).toBe(409);
+  });
+
+  it('rechecks OWNER in services even when supplied a forged merchant binding', async () => {
+    const actor = { id: ownerId, role: 'MERCHANT' as const, merchantId: seedIds.merchant };
+    await expect(updateOperatingStatus(prisma, actor, { isOpen: false, expectedVersion: 0, reason: 'forged owner' })).rejects.toMatchObject({ statusCode: 404 });
+    await expect(updateProductSaleStatus(prisma, actor, seedIds.productRice, { saleStatus: 'SOLD_OUT', expectedVersion: 1, reason: 'forged owner' })).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('keeps legacy ORM boolean writes consistent and never exposes a hidden product', async () => {
+    await prisma.product.update({ where: { id: productId }, data: { isAvailable: false } });
+    expect((await ownCatalog()).json()[0].products[0]).toMatchObject({ isAvailable: false, saleStatus: 'OFF_SHELF' });
+    expect((await menu()).json().categories[0].products).toEqual([]);
+    expect((await order()).statusCode).toBe(400);
+    await prisma.product.update({ where: { id: productId }, data: { isAvailable: true } });
+    expect((await menu()).json().categories[0].products[0]).toMatchObject({ isAvailable: true, saleStatus: 'ON_SALE', purchasable: true });
+    await sale('SOLD_OUT', 1);
+    await prisma.product.update({ where: { id: productId }, data: { isAvailable: false, name: 'legacy display edit' } });
+    expect((await menu()).json().categories[0].products[0]).toMatchObject({ saleStatus: 'SOLD_OUT', purchasable: false });
+  });
+
+  it('preserves confirmed, claimed and finalized facts and completes mandatory photo fulfillment while closed/off-shelf', async () => {
+    const rider = await prisma.rider.create({ data: { status: 'AVAILABLE', capacityOverride: 10,
+      firstNormalDeliveredAt: new Date('2026-09-20T04:00:00Z'), user: { create: { role: 'RIDER', displayName: 'manual lifecycle rider' } } } });
+    const created = await order();
+    expect(created.statusCode, created.body).toBe(201);
+    const orderId = created.json().id as string;
+    expect((await change(false, 0)).statusCode).toBe(200);
+    expect((await sale('SOLD_OUT', 1)).statusCode).toBe(200);
+    await prisma.order.update({ where: { id: orderId }, data: { coolingOffEndsAt: new Date(Date.now() - 1000) } });
+    await releaseExpiredCoolingOrders(prisma);
+    const confirmed = await app.inject({ method: 'POST', url: `/merchant/orders/${orderId}/confirm`, headers: headers(ownerId) });
+    expect(confirmed.statusCode, confirmed.body).toBe(200);
+    const taskId = confirmed.json().deliveryTask.id as string;
+    const full = () => prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: { items: true, pricing: true,
+      events: { orderBy: { id: 'asc' } }, deliveryTask: true, assignments: true, settlement: true, riderSettlement: true } });
+    const confirmedBefore = await full();
+    expect((await sale('OFF_SHELF', 2)).statusCode).toBe(200);
+    expect((await change(true, 1)).statusCode).toBe(200);
+    expect(await full()).toEqual(confirmedBefore);
+    const claimed = await app.inject({ method: 'POST', url: `/delivery-tasks/${taskId}/claim`, headers: headers(rider.userId) });
+    expect(claimed.statusCode, claimed.body).toBe(200);
+    const claimedBefore = await full();
+    expect((await change(false, 2)).statusCode).toBe(200);
+    expect((await sale('SOLD_OUT', 3)).statusCode).toBe(200);
+    expect(await full()).toEqual(claimedBefore);
+    const assignment = claimedBefore.assignments.find((a) => a.status === 'ACTIVE')!;
+    const pickup = (photoEvidenceId?: string) => app.inject({ method: 'POST', url: `/merchant/orders/${orderId}/confirm-rider-pickup`,
+      headers: headers(ownerId), payload: { assignmentId: assignment.id, expectedRevision: claimedBefore.pickupHandoffRevision,
+        requestKey: randomUUID(), ...(photoEvidenceId ? { photoEvidenceId } : {}) } });
+    expect((await pickup()).statusCode).toBe(409);
+    const photo = await app.inject({ method: 'POST', url: `/orders/${orderId}/evidence`, headers: headers(rider.userId),
+      payload: { evidenceType: 'RIDER_PICKUP_PHOTO', media: { fileName: 'pickup.jpg', contentType: 'image/jpeg', source: 'CAMERA' } } });
+    expect(photo.statusCode, photo.body).toBe(201);
+    expect((await pickup(photo.json().id)).statusCode).toBe(200);
+    const delivered = await app.inject({ method: 'POST', url: `/delivery-tasks/${taskId}/deliver`, headers: headers(rider.userId), payload: {} });
+    expect(delivered.statusCode, delivered.body).toBe(200);
+    const finalizedBefore = await full();
+    expect(finalizedBefore).toMatchObject({ status: 'DELIVERED', settlement: { status: 'FINALIZED' }, riderSettlement: { amountMinor: 200 } });
+    expect((await sale('OFF_SHELF', 4)).statusCode).toBe(200);
+    expect((await change(true, 3)).statusCode).toBe(200);
+    expect(await full()).toEqual(finalizedBefore);
+    for (const user of [seedIds.customer, ownerId, rider.userId]) {
+      const view = await app.inject({ method: 'GET', url: `/orders/${orderId}`, headers: headers(user) });
+      expect(view.statusCode).toBe(200);
+      expect(view.body).not.toContain('saleStatus');
+      expect(view.body).not.toContain('operatingVersion');
+      for (const field of ['ownerId', 'platformSubsidyMinor', 'deliveryPricingPolicySnapshot']) expect(view.body).not.toContain(field);
+      if (user !== ownerId) expect(view.body).not.toContain('merchantRescueContributionMinor');
+    }
   });
 });

@@ -5,7 +5,7 @@ import { seedDatabase, seedIds } from '../prisma/seed.js';
 
 // Intentionally limited to disposable validation databases: repeat Seed updates demo profiles.
 const databaseUrl = process.env.DATABASE_URL!;
-assert.match(new URL(databaseUrl).pathname, /^\/campus_round7_(old|empty)$/);
+assert.match(new URL(databaseUrl).pathname, /^\/campus_round7_(old|empty|final_empty)$/);
 const prisma = new PrismaClient();
 const app = await buildApp({ databaseUrl, host: '127.0.0.1', port: 3000, enableDevAuth: true,
   enableBackgroundJobs: false, backgroundSweepIntervalMs: 5000, campusTimeZone: 'Asia/Shanghai', logLevel: 'silent' }, prisma);
