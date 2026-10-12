@@ -11,8 +11,10 @@ import { CategoryBody, ProductBody, productSelect, deliveryCategorySelect, saveC
 import { correctCatalogRisk, getCatalogRiskForMerchant, republishCorrectedOrder } from './risk-correction.js';
 import { isMerchantVisibleToCustomer } from './visibility.js';
 import { getOperatingStatus, OperatingStatusBody, operatingStatusFields, updateOperatingStatus, type OperatingStatusInput } from './operating-status.js';
+import { productSaleFields, SaleStatusBody, updateProductSaleStatus, type SaleStatusInput } from './product-status.js';
 
 const IdParams = Type.Object({ merchantId: Type.String({ format: 'uuid' }) });
+const ProductUpdateBody = Type.Object({ ...ProductBody.properties, expectedVersion: Type.Integer({ minimum: 1 }) }, { additionalProperties: false });
 
 export async function registerCatalogRoutes(app: FastifyInstance, prisma: PrismaClient, config: AppConfig) {
   const authenticate = authGuard(prisma, config);
@@ -46,16 +48,30 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
     preHandler: merchantOnly, schema: { tags: ['catalog'], params: Type.Object({ id: Type.String({ format: 'uuid' }) }), body: CategoryBody },
   }, async (request) => saveCategory(prisma, actorOf(request), request.body, request.params.id));
   app.post<{ Body: ProductInput }>('/merchant/catalog/products', {
-    preHandler: merchantOnly, schema: { tags: ['catalog'], body: ProductBody },
+    preHandler: merchantOnly,
+    preValidation: async (request) => {
+      if (!Value.Check(ProductBody, request.body)) throw badRequest('INVALID_PRODUCT', 'Invalid product fields');
+    },
+    schema: { tags: ['catalog'], body: ProductBody },
   }, async (request, reply) => reply.status(201).send(await saveProduct(prisma, actorOf(request), request.body)));
   app.put<{ Params: { id: string }; Body: ProductInput & { expectedVersion: number } }>('/merchant/catalog/products/:id', {
     preHandler: merchantOnly,
+    preValidation: async (request) => {
+      if (!Value.Check(ProductUpdateBody, request.body)) throw badRequest('INVALID_PRODUCT', 'Invalid product fields');
+    },
     schema: { tags: ['catalog'], params: Type.Object({ id: Type.String({ format: 'uuid' }) }),
-      body: Type.Object({ ...ProductBody.properties, expectedVersion: Type.Integer({ minimum: 1 }) }, { additionalProperties: false }) },
+      body: ProductUpdateBody },
   }, async (request) => {
     const { expectedVersion, ...input } = request.body;
     return saveProduct(prisma, actorOf(request), input, request.params.id, expectedVersion);
   });
+  app.put<{ Params: { id: string }; Body: SaleStatusInput }>('/merchant/catalog/products/:id/sale-status', {
+    preHandler: merchantOnly,
+    preValidation: async (request) => {
+      if (!Value.Check(SaleStatusBody, request.body)) throw badRequest('INVALID_SALE_STATUS', 'Invalid sale status fields');
+    },
+    schema: { tags: ['catalog'], params: Type.Object({ id: Type.String({ format: 'uuid' }) }), body: SaleStatusBody },
+  }, async (request) => updateProductSaleStatus(prisma, actorOf(request), request.params.id, request.body));
 
   const OrderParams = Type.Object({ orderId: Type.String({ format: 'uuid' }) });
   const ReportRevision = { reportId: Type.String({ format: 'uuid' }), expectedRevision: Type.Integer({ minimum: 0 }) };
@@ -149,7 +165,7 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
             name: true,
             sortOrder: true,
             products: {
-              where: { isAvailable: true },
+              where: { saleStatus: { not: 'OFF_SHELF' } },
               orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
               select: productSelect,
             },
@@ -175,7 +191,14 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
       ...operatingStatusFields(merchant),
       supportedDeliveryMethods: merchant.supportedDeliveryMethods,
       campusLocation: merchant.campusLocation,
-      categories: merchant.categories,
+      categories: merchant.categories.map((category) => ({ id: category.id, name: category.name, sortOrder: category.sortOrder,
+        products: category.products.map((product) => ({
+          id: product.id, categoryId: product.categoryId, name: product.name, description: product.description,
+          imageUrl: product.imageUrl, marketingTags: product.marketingTags, sortOrder: product.sortOrder,
+          priceMinor: product.priceMinor, isAvailable: product.isAvailable, saleStatus: product.saleStatus, version: product.version,
+          deliveryCategory: product.deliveryCategory, ...productSaleFields(product.saleStatus, operatingStatusFields(merchant).acceptingOrders),
+        })),
+      })),
       risk: {
         timeRisk: risk.timeRisk,
         completionRisk: risk.completionRisk,

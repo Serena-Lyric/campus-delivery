@@ -3,6 +3,8 @@ import { Type, type Static } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import type { Actor } from '../auth/auth.js';
 import { badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
+import { lockOwnMerchant } from './operating-status.js';
+import { recordSaleStatusChange } from './product-status.js';
 
 const Name = Type.String({ minLength: 1, maxLength: 100, pattern: '\\S' });
 export const CategoryBody = Type.Object({
@@ -25,7 +27,7 @@ export type CategoryInput = Static<typeof CategoryBody>;
 export const deliveryCategorySelect = { code: true, name: true, version: true, riskTags: true, coreFragile: true, selectable: true } as const;
 export const productSelect = {
   id: true, categoryId: true, name: true, description: true, imageUrl: true,
-  marketingTags: true, sortOrder: true, priceMinor: true, isAvailable: true, version: true,
+  marketingTags: true, sortOrder: true, priceMinor: true, isAvailable: true, saleStatus: true, version: true,
   deliveryCategory: { select: deliveryCategorySelect },
 } satisfies Prisma.ProductSelect;
 
@@ -39,6 +41,7 @@ export async function saveCategory(prisma: PrismaClient, actor: Actor, input: Ca
   if (!Value.Check(CategoryBody, input)) throw badRequest('INVALID_CATEGORY', 'Invalid display category');
   try {
     return await prisma.$transaction(async (tx) => {
+      await lockOwnMerchant(tx, actor, false);
       if (id) {
         const changed = await tx.productCategory.updateMany({ where: { id, merchantId }, data: input });
         if (!changed.count) throw notFound('Own category');
@@ -56,18 +59,25 @@ export async function saveProduct(prisma: PrismaClient, actor: Actor, input: Pro
   const merchantId = merchantIdOf(actor);
   if (!Value.Check(ProductBody, input)) throw badRequest('INVALID_PRODUCT', 'Invalid product fields');
   return prisma.$transaction(async (tx) => {
+    await lockOwnMerchant(tx, actor, false);
     const category = await tx.productCategory.findFirst({ where: { id: input.categoryId, merchantId } });
     if (!category) throw notFound('Own category');
     const deliveryCategory = await tx.deliveryCategory.findUnique({ where: { code: input.deliveryCategoryCode } });
     if (!deliveryCategory?.selectable) throw badRequest('INVALID_DELIVERY_CATEGORY', 'Select an approved platform delivery category');
     if (id) {
       if (!Number.isSafeInteger(expectedVersion) || expectedVersion! < 1) throw badRequest('VERSION_REQUIRED', 'Expected product version is required');
+      await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id" = ${id}::uuid FOR UPDATE`;
+      const before = await tx.product.findFirst({ where: { id, merchantId, version: expectedVersion! },
+        select: { id: true, merchantId: true, saleStatus: true } });
+      if (!before) throw conflict('PRODUCT_UPDATE_CONFLICT', 'Own product is missing or its version changed');
       const changed = await tx.product.updateMany({
         where: { id, merchantId, version: expectedVersion! },
         data: { ...input, description: input.description ?? null, imageUrl: input.imageUrl ?? null, version: { increment: 1 } },
       });
       if (!changed.count) throw conflict('PRODUCT_UPDATE_CONFLICT', 'Own product is missing or its version changed');
-      return tx.product.findUniqueOrThrow({ where: { id }, select: productSelect });
+      const after = await tx.product.findUniqueOrThrow({ where: { id }, select: productSelect });
+      await recordSaleStatusChange(tx, actor, before, after, 'Boolean availability changed in full product edit', 'LEGACY_EDIT');
+      return after;
     }
     return tx.product.create({ data: { ...input, merchantId }, select: productSelect });
   });

@@ -14,6 +14,12 @@ enum UserRole {
   ADMIN
 }
 
+enum ProductSaleStatus {
+  ON_SALE
+  SOLD_OUT
+  OFF_SHELF
+}
+
 enum AdminLevel {
   OPERATOR
   SUPER_ADMIN
@@ -340,6 +346,7 @@ model User {
   rescueContributionChanges MerchantRescueContributionEvent[]
   baseDeliveryQuoteChanges  MerchantBaseDeliveryQuoteAudit[]
   operatingStatusChanges    MerchantOperatingStatusAudit[]
+  productSaleStatusChanges  ProductSaleStatusAudit[]
   academicTerms             AcademicTerm[]
   eligibilityReviews        RiderEligibilityReview[]
   createdAt                 DateTime                          @default(now())
@@ -370,6 +377,7 @@ model Merchant {
   isOpen                    Boolean                    @default(true)
   operatingVersion          Int                        @default(0)
   operatingStatusAudits     MerchantOperatingStatusAudit[]
+  productSaleStatusAudits   ProductSaleStatusAudit[]
   exposureState             MerchantExposureState      @default(TRIAL)
   trialExposureOverrideBps  Int?
   maxConcurrentOrders       Int                        @default(0)
@@ -457,6 +465,8 @@ model Product {
   description String?
   priceMinor  Int
   isAvailable Boolean         @default(true)
+  saleStatus  ProductSaleStatus @default(ON_SALE)
+  saleStatusAudits ProductSaleStatusAudit[]
   imageUrl    String?
   marketingTags String[] @default([])
   sortOrder   Int @default(0)
@@ -468,7 +478,27 @@ model Product {
   updatedAt   DateTime        @updatedAt
 
   @@index([merchantId, isAvailable])
+  @@index([merchantId, saleStatus])
   @@index([categoryId])
+}
+
+model ProductSaleStatusAudit {
+  id             String   @id @default(uuid()) @db.Uuid
+  productId      String   @db.Uuid
+  product        Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  merchantId     String   @db.Uuid
+  merchant       Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  version        Int
+  previousStatus ProductSaleStatus
+  newStatus      ProductSaleStatus
+  actorId        String   @db.Uuid
+  actor          User     @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  reason         String
+  source         String
+  createdAt      DateTime @default(now())
+
+  @@unique([productId, version])
+  @@index([merchantId, createdAt])
 }
 
 model Rider {

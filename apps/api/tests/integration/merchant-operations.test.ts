@@ -42,6 +42,7 @@ describe('owner manual operations preserve catalog and existing contracts', () =
     const ids = fixtures.map((m) => m.id);
     await prisma.order.deleteMany({ where: { merchantId: { in: ids } } });
     await prisma.merchantOperatingStatusAudit.deleteMany({ where: { merchantId: { in: ids } } });
+    await prisma.productSaleStatusAudit.deleteMany({ where: { merchantId: { in: ids } } });
     await prisma.merchant.deleteMany({ where: { id: { in: ids } } });
     await prisma.user.deleteMany({ where: { id: { in: fixtures.map((m) => m.ownerId) } } });
     await prisma.user.deleteMany({ where: { role: 'MERCHANT', displayName: 'unattached', merchant: null } });
@@ -75,6 +76,140 @@ describe('owner manual operations preserve catalog and existing contracts', () =
     deliveryMethod: DeliveryMethod.DESIGNATED_POINT, items: [{ productId, quantity: 1 }] });
   const preview = () => app.inject({ method: 'POST', url: '/orders/price-preview', headers: headers(seedIds.customer), payload: input() });
   const order = (extra = {}) => app.inject({ method: 'POST', url: '/orders', headers: headers(seedIds.customer), payload: { ...input(), ...extra } });
+  const sale = (saleStatus: string, expectedVersion: number, user = ownerId, id = productId, extra = {}) => app.inject({
+    method: 'PUT', url: `/merchant/catalog/products/${id}/sale-status`, headers: headers(user),
+    payload: { saleStatus, expectedVersion, reason: 'manual sales', ...extra },
+  });
+  const menu = () => app.inject({ method: 'GET', url: `/merchants/${merchantId}/products`, headers: headers(seedIds.customer) });
+  const ownCatalog = () => app.inject({ method: 'GET', url: '/merchant/catalog', headers: headers(ownerId) });
+
+  it('displays sold-out items without selling them, hides off-shelf items, and restores on-sale explicitly', async () => {
+    const before = await preview();
+    expect(before.statusCode).toBe(200);
+    expect((await menu()).json().categories[0].products[0]).toMatchObject({ saleStatus: 'ON_SALE', purchasable: true });
+    expect((await sale('SOLD_OUT', 1)).statusCode).toBe(200);
+    expect((await menu()).json().categories[0].products[0]).toMatchObject({ id: productId, isAvailable: false, saleStatus: 'SOLD_OUT', saleStatusLabel: '已售罄', purchasable: false });
+    expect((await preview()).statusCode).toBe(400);
+    expect((await order({ expectedQuoteToken: before.json().quoteToken })).statusCode).toBe(400);
+    expect((await change(false, 0)).statusCode).toBe(200);
+    expect((await menu()).json().categories[0].products[0]).toMatchObject({ saleStatus: 'SOLD_OUT', purchasable: false });
+    expect((await sale('ON_SALE', 2)).statusCode).toBe(200);
+    expect((await menu()).json().categories[0].products[0]).toMatchObject({ saleStatus: 'ON_SALE', purchasable: false });
+    expect((await change(true, 1)).statusCode).toBe(200);
+    expect((await menu()).json().categories[0].products[0]).toMatchObject({ saleStatus: 'ON_SALE', purchasable: true });
+    expect((await order({ expectedQuoteToken: before.json().quoteToken })).statusCode).toBe(409);
+    expect((await order()).statusCode).toBe(201);
+    expect((await sale('OFF_SHELF', 3)).statusCode).toBe(200);
+    expect((await menu()).json().categories[0].products).toEqual([]);
+    expect((await ownCatalog()).json()[0].products[0]).toMatchObject({ saleStatus: 'OFF_SHELF', isAvailable: false });
+    expect((await preview()).statusCode).toBe(400);
+    expect((await order()).statusCode).toBe(400);
+  });
+
+  it('isolates quick sales changes, audits once and preserves every product fact except sale/version/time', async () => {
+    const before = await prisma.product.findUniqueOrThrow({ where: { id: productId } });
+    for (const user of [seedIds.customer, seedIds.riderAUser, seedIds.admin]) expect((await sale('SOLD_OUT', 1, user)).statusCode).toBe(403);
+    expect((await sale('SOLD_OUT', 1, seedIds.merchantUser)).statusCode).toBe(409);
+    for (const extra of [{ merchantId: seedIds.merchant }, { isAvailable: true }, { priceMinor: 1 }, { deliveryCategoryCode: 'ORDINARY_MEAL' }, { inventory: 9 }]) {
+      expect((await sale('SOLD_OUT', 1, ownerId, productId, extra)).statusCode).toBe(400);
+    }
+    const results = await Promise.all([sale('SOLD_OUT', 1), sale('OFF_SHELF', 1)]);
+    expect(results.map((r) => r.statusCode).sort()).toEqual([200, 409]);
+    const current = (await ownCatalog()).json()[0].products[0];
+    expect((await sale(current.saleStatus, 2)).json()).toMatchObject({ changed: false, version: 2 });
+    expect((await sale('ON_SALE', 1)).statusCode).toBe(409);
+    const after = await prisma.product.findUniqueOrThrow({ where: { id: productId } });
+    const withoutSales = (p: object) => Object.fromEntries(Object.entries(p).filter(([key]) => !['saleStatus', 'isAvailable', 'version', 'updatedAt'].includes(key)));
+    expect(withoutSales(after)).toEqual(withoutSales(before));
+    const history = await prisma.$queryRaw<Array<{ actorId: string; previousStatus: string; newStatus: string; reason: string; version: number }>>`
+      SELECT "actorId", "previousStatus", "newStatus", "reason", "version" FROM "ProductSaleStatusAudit" WHERE "productId"=${productId}::uuid`;
+    expect(history).toEqual([{ actorId: ownerId, previousStatus: 'ON_SALE', newStatus: current.saleStatus, reason: 'manual sales', version: 2 }]);
+  });
+
+  it('retains legacy boolean create/edit behavior without restoring an unchanged sold-out flag', async () => {
+    const product = await prisma.product.findUniqueOrThrow({ where: { id: productId } });
+    const body = { categoryId: product.categoryId, name: product.name, priceMinor: 6000,
+      isAvailable: false, deliveryCategoryCode: 'CAKE', sortOrder: 0, marketingTags: [] };
+    const hidden = await app.inject({ method: 'POST', url: '/merchant/catalog/products', headers: headers(ownerId), payload: body });
+    expect(hidden.statusCode).toBe(201);
+    expect(hidden.json()).toMatchObject({ saleStatus: 'OFF_SHELF', isAvailable: false });
+    expect((await menu()).json().categories[0].products.map((p: { id: string }) => p.id)).not.toContain(hidden.json().id);
+    expect((await sale('SOLD_OUT', 1)).statusCode).toBe(200);
+    const edited = await app.inject({ method: 'PUT', url: `/merchant/catalog/products/${productId}`, headers: headers(ownerId), payload: { ...body, name: 'new display name', expectedVersion: 2 } });
+    expect(edited.statusCode, edited.body).toBe(200);
+    expect(edited.json()).toMatchObject({ saleStatus: 'SOLD_OUT', isAvailable: false, version: 3 });
+    const restored = await app.inject({ method: 'PUT', url: `/merchant/catalog/products/${productId}`, headers: headers(ownerId), payload: { ...body, isAvailable: true, expectedVersion: 3 } });
+    expect(restored.json()).toMatchObject({ saleStatus: 'ON_SALE', isAvailable: true, version: 4 });
+    const off = await app.inject({ method: 'PUT', url: `/merchant/catalog/products/${productId}`, headers: headers(ownerId), payload: { ...body, expectedVersion: 4 } });
+    expect(off.json()).toMatchObject({ saleStatus: 'OFF_SHELF', isAvailable: false, version: 5 });
+  });
+
+  it('rejects extra full-editor fields before validation can silently strip them', async () => {
+    const product = await prisma.product.findUniqueOrThrow({ where: { id: productId } });
+    const body = { categoryId: product.categoryId, name: product.name, priceMinor: 6000,
+      isAvailable: true, deliveryCategoryCode: 'CAKE', sortOrder: 0, marketingTags: [] };
+    for (const extra of [{ merchantId: seedIds.merchant }, { coreFragile: false }, { saleStatus: 'SOLD_OUT' }]) {
+      expect((await app.inject({ method: 'POST', url: '/merchant/catalog/products', headers: headers(ownerId), payload: { ...body, ...extra } })).statusCode).toBe(400);
+      expect((await app.inject({ method: 'PUT', url: `/merchant/catalog/products/${productId}`, headers: headers(ownerId), payload: { ...body, expectedVersion: 1, ...extra } })).statusCode).toBe(400);
+    }
+    expect(await prisma.product.findUniqueOrThrow({ where: { id: productId } })).toEqual(product);
+  });
+
+  it('does not restore seeded sold-out or off-shelf products on repeated seed', async () => {
+    const catalog = await app.inject({ method: 'GET', url: '/merchant/catalog', headers: headers(seedIds.merchantUser) });
+    const products = catalog.json().flatMap((c: { products: Array<{ id: string; version: number }> }) => c.products);
+    const rice = products.find((p: { id: string }) => p.id === seedIds.productRice);
+    const tea = products.find((p: { id: string }) => p.id === seedIds.productTea);
+    expect((await sale('SOLD_OUT', rice.version, seedIds.merchantUser, rice.id)).statusCode).toBe(200);
+    expect((await sale('OFF_SHELF', tea.version, seedIds.merchantUser, tea.id)).statusCode).toBe(200);
+    const before = await app.inject({ method: 'GET', url: '/merchant/catalog', headers: headers(seedIds.merchantUser) });
+    await seedDatabase(prisma);
+    await seedDatabase(prisma);
+    expect((await app.inject({ method: 'GET', url: '/merchant/catalog', headers: headers(seedIds.merchantUser) })).json()).toEqual(before.json());
+    await sale('ON_SALE', rice.version + 1, seedIds.merchantUser, rice.id);
+    await sale('ON_SALE', tea.version + 1, seedIds.merchantUser, tea.id);
+  });
+
+  it('serializes sold-out-before-checkout against preview and creation on the product row', async () => {
+    const held = barrier();
+    const release = barrier();
+    const stopping = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id"=${productId}::uuid FOR UPDATE`;
+      await tx.product.update({ where: { id: productId }, data: { saleStatus: 'SOLD_OUT', version: { increment: 1 } } });
+      held.release();
+      await release.promise;
+    });
+    await held.promise;
+    const quoting = preview();
+    const creating = order();
+    try { await waitForDatabaseLock('Product'); } finally { release.release(); }
+    await stopping;
+    expect((await quoting).statusCode).toBe(400);
+    expect((await creating).statusCode).toBe(400);
+    expect(await prisma.order.count({ where: { merchantId } })).toBe(0);
+  });
+
+  it('serializes checkout-before-sold-out and preserves the created price and mandatory core risk', async () => {
+    const inserted = barrier();
+    const release = barrier();
+    const gated = prisma.$extends({ query: { order: { async create({ args, query }) {
+      const result = await query(args);
+      inserted.release();
+      await release.promise;
+      return result;
+    } } } });
+    const creating = createOrder(gated as unknown as PrismaClient, { id: seedIds.customer, role: 'CUSTOMER' }, input(), config.campusTimeZone);
+    await inserted.promise;
+    const stopping = sale('SOLD_OUT', 1);
+    try { await waitForDatabaseLock('Product'); } finally { release.release(); }
+    const created = await creating;
+    expect((await stopping).statusCode).toBe(200);
+    const persisted = await prisma.order.findUniqueOrThrow({ where: { id: created.id }, include: { pricing: true, items: true } });
+    expect(persisted).toMatchObject({ status: 'CREATED', coreFragileValueMinor: 6000, pickupEvidenceLevel: 'REQUIRED' });
+    expect(persisted.items[0]).toMatchObject({ productNameSnapshot: 'cake', unitPriceMinor: 6000, coreFragileSnapshot: true, deliveryCategoryCodeSnapshot: 'CAKE' });
+    expect(persisted.pricing).toEqual(created.pricing);
+    expect((await order()).statusCode).toBe(400);
+  });
 
   it('restricts reads and changes to the authenticated owner and rejects injected resource fields', async () => {
     expect((await read()).json()).toMatchObject({ id: merchantId, isOpen: true, operatingVersion: 0 });

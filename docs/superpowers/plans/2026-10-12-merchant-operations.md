@@ -42,10 +42,10 @@
 
 **Interfaces:** PUT /merchant/catalog/products/:id/sale-status {saleStatus,expectedVersion,reason}；ON_SALE/SOLD_OUT/OFF_SHELF；public 显式 DTO 返回 status/label/purchasable（营业状态与商品状态合成）；商家目录三态。
 
-- [ ] 写售罄可见不可买/下架隐藏/越权/快捷操作保留风险价格/旧编辑兼容/锁竞态/Seed 的失败测试并运行。
-- [ ] 增量迁移历史 true→ON_SALE、false→OFF_SHELF；数据库兼容触发器维护 bool 投影，约束矛盾；状态专用 CAS 审计，不改风险/营销/价格；旧完整编辑相同 bool 保持 SOLD_OUT。
-- [ ] checkout 拒绝非 ON_SALE，公共菜单只隐藏 OFF_SHELF；db:generate/typecheck/test/test:integration/build；三个库迁移、旧库可见性/空库/重复 Seed 验证。
-- [ ] 审查 diff，提交并普通推送 main，记录 SHA。
+- [x] 写售罄可见不可买/下架隐藏/越权/快捷操作保留风险价格/旧编辑兼容/锁竞态/Seed 的失败测试并运行。
+- [x] 增量迁移历史 true→ON_SALE、false→OFF_SHELF；数据库兼容触发器维护 bool 投影，约束矛盾；状态专用 CAS 审计，不改风险/营销/价格；旧完整编辑相同 bool 保持 SOLD_OUT。
+- [x] checkout 拒绝非 ON_SALE，公共菜单只隐藏 OFF_SHELF；db:generate/typecheck/test/test:integration/build；三个库迁移、旧库可见性/空库/重复 Seed 验证。
+- [x] 审查 diff，提交并普通推送 main，SHA 由 Git 本阶段提交确定。
 
 ## C：兼容验收与报告
 
@@ -62,3 +62,5 @@
 - 已有 checkout Merchant/Product FOR SHARE 与预分类版本核验；旧商品公共过滤 isAvailable=true。复用而非另建营业真相。
 - 用户已授权顺序开发/验证/提交/push，本计划直接执行，不增加审批步骤。
 - A：7 条新 API 测试先因路由缺失失败，随后通过；补充真实 PG 锁等待三个方向，共10项。完整 unit 55 / PG 167 通过，generate/typecheck/build通过。早期 PG 两轮各有旧目录计数1项失败，因新夹具泄漏；补清理后全绿。review 无严重问题，Minor 指纹范围已补全。旧副本与空库各连续 Seed 两次通过；应用库未执行可重写演示资料的 Seed，Seed行为在副本/空库和隔离集成测试验证。
+- A 已普通推送 bb7b15d。
+- B：4项三态失败测试红→绿；补实际 Product 锁等待竞态与完整编辑额外字段201→400红→绿（首轮全套也记录该1项失败）。最终 unit55 / PG174全绿，generate/typecheck/build通过；应用/旧副本/空库无drift，既有表指纹保持。旧副本历史false样本升级仍OFF_SHELF、version1、公共API隐藏；旧副本/空库各重复Seed两次保留三态、营业、18类历史/审计表摘要。review 最新快照无问题。

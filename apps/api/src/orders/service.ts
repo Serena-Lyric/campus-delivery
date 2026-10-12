@@ -155,7 +155,7 @@ export async function createOrder(
   });
   if (
     productsToClassify.length !== quantities.size
-    || productsToClassify.some((product) => product.merchantId !== input.merchantId || !product.isAvailable)
+    || productsToClassify.some((product) => product.merchantId !== input.merchantId || product.saleStatus !== 'ON_SALE')
   ) {
     throw badRequest('INVALID_PRODUCTS', 'Every product must be available from the selected merchant');
   }
@@ -169,6 +169,7 @@ export async function createOrder(
         categoryName: product.category.name,
         priceMinor: product.priceMinor,
         isAvailable: product.isAvailable,
+        saleStatus: product.saleStatus,
         version: product.version,
         deliveryCategory: JSON.stringify(product.deliveryCategory),
       },
@@ -196,6 +197,7 @@ export async function createOrder(
             || before.categoryName !== product.category.name
             || before.priceMinor !== product.priceMinor
             || before.isAvailable !== product.isAvailable
+            || before.saleStatus !== product.saleStatus
             || before.version !== product.version
             || before.deliveryCategory !== JSON.stringify(product.deliveryCategory);
         })) {

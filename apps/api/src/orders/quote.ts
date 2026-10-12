@@ -40,7 +40,7 @@ export async function readCheckoutFacts(tx: Prisma.TransactionClient, input: Che
   const productIds = [...quantities.keys()].sort();
   await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id" IN (${Prisma.join(productIds.map((id) => Prisma.sql`${id}::uuid`))}) ORDER BY "id" FOR SHARE`;
   const rawProducts = await tx.product.findMany({ where: { id: { in: productIds } } });
-  if (rawProducts.length !== quantities.size || rawProducts.some((product) => product.merchantId !== input.merchantId || !product.isAvailable)) {
+  if (rawProducts.length !== quantities.size || rawProducts.some((product) => product.merchantId !== input.merchantId || product.saleStatus !== 'ON_SALE')) {
     throw badRequest('INVALID_PRODUCTS', 'Every product must be available from the selected merchant');
   }
   const categoryCodes = [...new Set(rawProducts.map((product) => product.deliveryCategoryCode))].sort();
