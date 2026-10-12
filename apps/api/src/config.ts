@@ -45,7 +45,7 @@ export function loadConfig(): AppConfig {
     host: process.env.HOST ?? '0.0.0.0',
     port,
     enableDevAuth,
-    enableBackgroundJobs: booleanEnv('ENABLE_BACKGROUND_JOBS', true),
+    enableBackgroundJobs: booleanEnv('ENABLE_BACKGROUND_JOBS', false),
     backgroundSweepIntervalMs: positiveIntegerEnv('BACKGROUND_SWEEP_INTERVAL_MS', 5000),
     campusTimeZone: process.env.CAMPUS_TIME_ZONE ?? 'Asia/Shanghai',
     logLevel: process.env.LOG_LEVEL ?? 'info',

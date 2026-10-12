@@ -3,6 +3,26 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import { seedDatabase, seedIds } from '../../prisma/seed.js';
 import * as background from '../../src/background.js';
+import { getDailyRestorePreference, updateDailyRestorePreference } from '../../src/catalog/daily-restore-preference.js';
+import { updateBusinessConfig } from '../../src/admin/config-service.js';
+import { createOrder } from '../../src/orders/service.js';
+import { checkoutQuantities, readCheckoutFacts } from '../../src/orders/quote.js';
+
+function barrier() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+async function waitForLock(pattern: string) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const [row] = await prisma.$queryRaw<Array<{ waiting: boolean }>>`SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+      WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE ${`%${pattern}%`}) AS waiting`;
+    if (row?.waiting) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`No observed PostgreSQL lock wait: ${pattern}`);
+}
 
 const prisma = new PrismaClient();
 const config = { databaseUrl: process.env.DATABASE_URL!, host: '127.0.0.1', port: 3000,
@@ -57,6 +77,9 @@ describe('daily restore opt-in and schedule', () => {
     return background.restoreDailyProducts(prisma, { ...config, enableBackgroundJobs: enabled, campusTimeZone: timeZone }, () => new Date(instant));
   };
   const product = () => prisma.product.findUniqueOrThrow({ where: { id: soldId } });
+  const input = (productId = onSaleId) => ({ merchantId, destinationLocationId: seedIds.dormLocation,
+    deliveryMethod: DeliveryMethod.DESIGNATED_POINT, items: [{ productId, quantity: 1 }] });
+  const preview = (productId = onSaleId) => app.inject({ method: 'POST', url: '/orders/price-preview', headers: headers(seedIds.customer), payload: input(productId) });
   const sale = (saleStatus: string, expectedVersion: number) => app.inject({ method: 'PUT', url: `/merchant/catalog/products/${soldId}/sale-status`,
     headers: headers(ownerId), payload: { saleStatus, expectedVersion, reason: 'manual after sweep' } });
 
@@ -78,9 +101,15 @@ describe('daily restore opt-in and schedule', () => {
     for (const id of [seedIds.customer, seedIds.riderAUser, seedIds.admin]) expect((await toggle(true, 0, id)).statusCode).toBe(403);
     for (const extra of [{ merchantId: seedIds.merchant }, { ownerId }, { isOpen: true }, { inventory: 2 }]) expect((await toggle(true, 0, ownerId, extra)).statusCode).toBe(400);
     const other = await prisma.user.create({ data: { role: 'MERCHANT', displayName: 'daily owner' } });
-    await prisma.merchant.create({ data: { ownerId: other.id, name: 'daily stall', campusLocationId: seedIds.merchantLocation } });
+    const foreign = await prisma.merchant.create({ data: { ownerId: other.id, name: 'daily stall', campusLocationId: seedIds.merchantLocation,
+      categories: { create: { name: 'menu' } } }, include: { categories: true } });
+    const foreignProduct = await prisma.product.create({ data: { merchantId: foreign.id, categoryId: foreign.categories[0]!.id,
+      name: 'foreign sold out', saleStatus: 'SOLD_OUT', priceMinor: 100, deliveryCategoryCode: 'ORDINARY_MEAL' } });
     expect((await toggle(true, 0, other.id)).statusCode).toBe(200);
     expect((await read()).json()).toMatchObject({ enabled: false, version: 0 });
+    expect(await sweep('2026-10-11T20:00:00Z')).toBe(1);
+    expect(await prisma.product.findUniqueOrThrow({ where: { id: foreignProduct.id } })).toMatchObject({ saleStatus: 'ON_SALE', version: 2 });
+    expect(await product()).toMatchObject({ saleStatus: 'SOLD_OUT', version: 1 });
   });
   it('validates and serializes versioned ordinary admin schedule changes', async () => {
     expect((await schedule({ time: '06:15' }, 0, { expectedVersion: undefined })).statusCode).toBe(400);
@@ -159,15 +188,15 @@ describe('daily restore opt-in and schedule', () => {
     expect(await prisma.merchantDailyRestoreRun.count({ where: { merchantId } })).toBe(2);
   });
 
-  it('honors disabled background jobs and a different local date without restoring hidden visibility', async () => {
-    await toggle(true); await prisma.merchant.update({ where: { id: merchantId }, data: { exposureState: 'HIDDEN' } });
+  it.each(['HIDDEN', 'SUSPENDED'] as const)('honors disabled jobs and a different local date without restoring %s visibility', async (exposureState) => {
+    await toggle(true); await prisma.merchant.update({ where: { id: merchantId }, data: { exposureState } });
     await sweep('2026-10-12T20:00:00Z', false); expect((await product()).saleStatus).toBe('SOLD_OUT');
     await read(); expect((await product()).saleStatus).toBe('SOLD_OUT');
     await sweep('2026-10-12T03:59:59Z', true, 'UTC'); expect((await product()).saleStatus).toBe('SOLD_OUT');
     await sweep('2026-10-12T04:00:00Z', true, 'UTC'); expect((await product()).saleStatus).toBe('ON_SALE');
     const menu = await app.inject({ method: 'GET', url: `/merchants/${merchantId}/products`, headers: headers(seedIds.customer) });
     expect(menu.statusCode).toBe(404);
-    expect(await prisma.merchant.findUniqueOrThrow({ where: { id: merchantId } })).toMatchObject({ exposureState: 'HIDDEN' });
+    expect(await prisma.merchant.findUniqueOrThrow({ where: { id: merchantId } })).toMatchObject({ exposureState });
   });
 
   it('rolls back the whole batch on an audit failure and safely retries after recovery', async () => {
@@ -201,5 +230,188 @@ describe('daily restore opt-in and schedule', () => {
       expect((await product()).saleStatus).toBe('ON_SALE');
       expect(logs).toEqual([]);
     } finally { stop(); }
+  });
+
+  it('rechecks forged owner bindings and omits all scheduling internals from public role responses', async () => {
+    const actor = { id: ownerId, role: 'MERCHANT' as const, merchantId: seedIds.merchant };
+    await expect(getDailyRestorePreference(prisma, actor, config.campusTimeZone)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(updateDailyRestorePreference(prisma, actor, { enabled: true, expectedVersion: 0, reason: 'forged' }, config.campusTimeZone)).rejects.toMatchObject({ statusCode: 404 });
+    await toggle(true);
+    for (const id of [seedIds.customer, seedIds.riderAUser, seedIds.admin]) expect((await read(id)).statusCode).toBe(403);
+    for (const id of [seedIds.customer, seedIds.riderAUser]) {
+      for (const url of ['/merchants', `/merchants/${merchantId}/products`]) {
+        const response = await app.inject({ method: 'GET', url, headers: headers(id) });
+        expect(response.statusCode).toBe(200);
+        for (const field of ['dailyProductRestore', 'dailyRestore', 'preferenceVersion', 'configVersion', 'ownerId', 'exposureState', 'trialExposureOverrideBps', 'subsidy', 'actorId']) expect(response.body).not.toContain(field);
+      }
+    }
+  });
+
+  it('persists one run across independent clients and a restarted worker', async () => {
+    await toggle(true);
+    const other = new PrismaClient();
+    try {
+      const clock = () => new Date('2026-10-11T20:00:00Z');
+      const counts = await Promise.all([background.restoreDailyProducts(prisma, { ...config, enableBackgroundJobs: true }, clock),
+        background.restoreDailyProducts(other, { ...config, enableBackgroundJobs: true }, clock)]);
+      expect(counts.sort()).toEqual([0, 1]);
+    } finally { await other.$disconnect(); }
+    await sale('SOLD_OUT', 2);
+    const restarted = new PrismaClient();
+    try {
+      expect(await background.restoreDailyProducts(restarted, { ...config, enableBackgroundJobs: true }, () => new Date('2026-10-11T23:00:00Z'))).toBe(0);
+    } finally { await restarted.$disconnect(); }
+    expect(await product()).toMatchObject({ saleStatus: 'SOLD_OUT', version: 3 });
+    expect(await prisma.merchantDailyRestoreRun.count({ where: { merchantId } })).toBe(1);
+  });
+
+  it('rechecks disabling opt-in after waiting for the owner preference transaction', async () => {
+    await toggle(true);
+    const held = barrier(), release = barrier();
+    const gated = prisma.$extends({ query: { merchant: { async updateMany({ args, query }) {
+      const result = await query(args); held.release(); await release.promise; return result;
+    } } } });
+    const disabling = updateDailyRestorePreference(gated as unknown as PrismaClient, { id: ownerId, role: 'MERCHANT', merchantId },
+      { enabled: false, expectedVersion: 1, reason: 'disable before execution' }, config.campusTimeZone);
+    await held.promise;
+    const restoring = sweep('2026-10-11T20:00:00Z');
+    try { await waitForLock('"Merchant"'); } finally { release.release(); }
+    await disabling; expect(await restoring).toBe(0);
+    expect((await product()).saleStatus).toBe('SOLD_OUT');
+    expect(await prisma.merchantDailyRestoreRun.count({ where: { merchantId } })).toBe(0);
+  });
+
+  it('reads the committed schedule after waiting for a concurrent admin config writer', async () => {
+    await toggle(true);
+    const held = barrier(), release = barrier();
+    const gated = prisma.$extends({ query: { businessConfig: { async create({ args, query }) {
+      const result = await query(args); held.release(); await release.promise; return result;
+    } } } });
+    const changing = updateBusinessConfig(gated as unknown as PrismaClient, { id: seedIds.admin, role: 'ADMIN', adminLevel: 'SUPER_ADMIN' }, key, { time: '08:00' }, 'defer schedule', 0);
+    await held.promise;
+    const restoring = sweep('2026-10-11T20:00:00Z');
+    try { await waitForLock('pg_advisory_xact_lock_shared'); } finally { release.release(); }
+    await changing; expect(await restoring).toBe(0);
+    expect((await product()).saleStatus).toBe('SOLD_OUT');
+    expect(await prisma.merchantDailyRestoreRun.count({ where: { merchantId } })).toBe(0);
+  });
+
+  it('respects an off-shelf manual transaction that precedes the worker', async () => {
+    await toggle(true);
+    const held = barrier(), release = barrier();
+    const editing = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Merchant" WHERE "id"=${merchantId}::uuid FOR SHARE`;
+      await tx.product.update({ where: { id: soldId }, data: { saleStatus: 'OFF_SHELF', version: { increment: 1 } } });
+      held.release(); await release.promise;
+    });
+    await held.promise;
+    const restoring = sweep('2026-10-11T20:00:00Z');
+    try { await waitForLock('"Merchant"'); } finally { release.release(); }
+    await editing; expect(await restoring).toBe(0);
+    expect(await product()).toMatchObject({ saleStatus: 'OFF_SHELF', version: 2 });
+  });
+
+  it('holds readers and manual CAS behind an automatic batch then preserves new manual sold-out status', async () => {
+    await toggle(true);
+    const held = barrier(), release = barrier();
+    const gated = prisma.$extends({ query: { merchantDailyRestoreRun: { async create({ args, query }) {
+      const result = await query(args); held.release(); await release.promise; return result;
+    } } } });
+    const restoring = background.restoreDailyProducts(gated as unknown as PrismaClient, { ...config, enableBackgroundJobs: true }, () => new Date('2026-10-11T20:00:00Z'));
+    await held.promise;
+    const editing = sale('SOLD_OUT', 1), quoting = preview(soldId);
+    const creating = app.inject({ method: 'POST', url: '/orders', headers: headers(seedIds.customer), payload: input() });
+    try { await waitForLock('"Merchant"'); } finally { release.release(); }
+    expect(await restoring).toBe(1);
+    expect((await editing).statusCode).toBe(409);
+    expect((await quoting).statusCode).toBe(200);
+    expect((await creating).statusCode).toBe(201);
+    expect((await sale('SOLD_OUT', 2)).statusCode).toBe(200);
+    expect(await sweep('2026-10-11T21:00:00Z')).toBe(0);
+    expect(await product()).toMatchObject({ saleStatus: 'SOLD_OUT', version: 3 });
+  });
+
+  it('waits for an earlier order creation and preserves its snapshot and required fragile evidence', async () => {
+    await toggle(true);
+    const held = barrier(), release = barrier();
+    const gated = prisma.$extends({ query: { order: { async create({ args, query }) {
+      const result = await query(args); held.release(); await release.promise; return result;
+    } } } });
+    const creating = createOrder(gated as unknown as PrismaClient, { id: seedIds.customer, role: 'CUSTOMER' }, input(), config.campusTimeZone);
+    await held.promise;
+    const restoring = sweep('2026-10-11T20:00:00Z');
+    try { await waitForLock('"Merchant"'); } finally { release.release(); }
+    const created = await creating;
+    const snapshot = await prisma.order.findUniqueOrThrow({ where: { id: created.id }, include: { items: true, pricing: true, events: true } });
+    expect(await restoring).toBe(1);
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: created.id }, include: { items: true, pricing: true, events: true } })).toEqual(snapshot);
+    expect(snapshot).toMatchObject({ status: 'CREATED', pickupEvidenceLevel: 'REQUIRED', coreFragileValueMinor: 6000 });
+  });
+
+  it('waits for a protected price reader and invalidates a pre-recovery quote token', async () => {
+    await toggle(true);
+    const quote = await preview(); expect(quote.statusCode).toBe(200);
+    const held = barrier(), release = barrier();
+    const reading = prisma.$transaction(async (tx) => {
+      const facts = await readCheckoutFacts(tx, input(), checkoutQuantities(input()));
+      held.release(); await release.promise; return facts.products[0]!.version;
+    });
+    await held.promise;
+    const restoring = sweep('2026-10-11T20:00:00Z');
+    try { await waitForLock('"Merchant"'); } finally { release.release(); }
+    expect(await reading).toBe(1); expect(await restoring).toBe(1);
+    await sale('ON_SALE', 2);
+    // A token for the same product must be stale even when the recovered sale status is again ON_SALE.
+    await prisma.product.update({ where: { id: onSaleId }, data: { saleStatus: 'SOLD_OUT', version: { increment: 1 } } });
+    await sweep('2026-10-12T20:00:00Z');
+    const order = await app.inject({ method: 'POST', url: '/orders', headers: headers(seedIds.customer), payload: { ...input(), expectedQuoteToken: quote.json().quoteToken } });
+    expect(order.statusCode).toBe(409);
+    expect(await prisma.order.count({ where: { merchantId } })).toBe(0);
+  });
+
+  it('serializes legacy boolean writers and keeps historical false hidden after recovery', async () => {
+    await toggle(true);
+    const held = barrier(), release = barrier();
+    const editing = prisma.$transaction(async (tx) => {
+      await tx.product.update({ where: { id: onSaleId }, data: { isAvailable: false } });
+      held.release(); await release.promise;
+    });
+    await held.promise;
+    const restoring = sweep('2026-10-11T20:00:00Z');
+    try { await waitForLock('"Product"'); } finally { release.release(); }
+    await editing; expect(await restoring).toBe(1);
+    expect(await prisma.product.findUniqueOrThrow({ where: { id: onSaleId } })).toMatchObject({ saleStatus: 'OFF_SHELF', isAvailable: false, version: 1 });
+    await prisma.product.update({ where: { id: soldId }, data: { isAvailable: false } });
+    expect(await sweep('2026-10-11T21:00:00Z')).toBe(0);
+    expect(await product()).toMatchObject({ saleStatus: 'OFF_SHELF', isAvailable: false, version: 2 });
+    const menu = await app.inject({ method: 'GET', url: `/merchants/${merchantId}/products`, headers: headers(seedIds.customer) });
+    expect(menu.json().categories[0].products).toEqual([]);
+  });
+
+  it('uses live time after merchant waits and drops a batch crossing midnight during product waits', async () => {
+    await toggle(true);
+    let instant = new Date('2026-10-11T19:59:59Z');
+    const held = barrier(), release = barrier();
+    const blocker = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Merchant" WHERE "id"=${merchantId}::uuid FOR UPDATE`;
+      held.release(); await release.promise;
+    });
+    await held.promise;
+    const restoring = background.restoreDailyProducts(prisma, { ...config, enableBackgroundJobs: true }, () => instant);
+    try { await waitForLock('"Merchant"'); instant = new Date('2026-10-11T20:00:00Z'); } finally { release.release(); }
+    await blocker; expect(await restoring).toBe(1);
+    await sale('SOLD_OUT', 2);
+    instant = new Date('2026-10-13T15:59:59Z');
+    const heldProduct = barrier(), releaseProduct = barrier();
+    const productBlocker = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id"=${soldId}::uuid FOR UPDATE`;
+      heldProduct.release(); await releaseProduct.promise;
+    });
+    await heldProduct.promise;
+    const crossing = background.restoreDailyProducts(prisma, { ...config, enableBackgroundJobs: true }, () => instant);
+    try { await waitForLock('"Product"'); instant = new Date('2026-10-13T16:00:00Z'); } finally { releaseProduct.release(); }
+    await productBlocker; expect(await crossing).toBe(0);
+    expect(await product()).toMatchObject({ saleStatus: 'SOLD_OUT', version: 3 });
+    expect(await prisma.merchantDailyRestoreRun.count({ where: { merchantId } })).toBe(1);
   });
 });

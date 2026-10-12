@@ -24,9 +24,9 @@ OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日
 
 旧 `isAvailable` 保留为可售投影：仅在售为 true；旧 false 迁移为下架。旧布尔创建/完整编辑端点仍可用，SOLD_OUT 的相同 false 完整编辑保留售罄；需要明确区分售罄/下架时用状态接口。数据库 trigger 与约束维护一致性，重复 Seed 不重开商家、不恢复商品状态。迁移含 PostgreSQL 原生触发器，升级应使用 `prisma migrate deploy`；只做 `db push` 不足以安装兼容逻辑。
 
-当前交付是 API 与测试，没有完整小程序或商家前端标签。每日营业确认、定时关店、数量库存、次日恢复、真实支付均未实现；没有预留或开放不安全库存开关。详见 [经营专题](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) 和本轮 [CODEX_REPORT.md](CODEX_REPORT.md)。
+当前交付是 API、后台执行与测试，没有完整小程序或商家前端标签。每日营业确认、定时关店、数量库存、真实支付均未实现；没有预留或开放不安全库存开关。详见 [经营专题](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) 和本轮 [CODEX_REPORT.md](CODEX_REPORT.md)。
 
-每日自动恢复已确认新增方向：商家自愿开启，默认关闭，每天按校园当地时间初始04:00执行（管理配置可调整）；不依赖重新开店，不恢复下架、不增加库存或改变历史订单。第八轮后端实现中/待验收，不能把文档规则当成已上线自动任务。数量库存和支付预留另行开发，详见产品第1D节及经营专题第6节。
+每日自动恢复已由第八轮实现后端运行路径，应用迁移保留原营业/商品/订单事实且所有旧商家默认未启用；后台开关也默认关闭，API 能力不等于部署时已运行或完整 UI 上线。数量库存和支付预留另行开发，详见产品第1D节及经营专题第6/7节。
 
 ## 2026-10-10 履约与管理员能力边界
 
@@ -85,7 +85,7 @@ OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日
 
 技术配置位于 apps/api/.env：
 
-- ENABLE_BACKGROUND_JOBS：是否运行冷静期和结算扫描。
+- ENABLE_BACKGROUND_JOBS：是否运行冷静期、接单池到期、结算和商品每日恢复扫描；省略/示例默认为 false，开发演示需要扫描时显式设为 true。已有部署的显式 true 不会被默认值修改覆盖。
 - BACKGROUND_SWEEP_INTERVAL_MS：扫描频率。
 - CAMPUS_TIME_ZONE：短订单码日期分区时区，国内校园默认 Asia/Shanghai。
 

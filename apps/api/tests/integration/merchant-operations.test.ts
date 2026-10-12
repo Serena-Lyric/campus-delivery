@@ -9,6 +9,8 @@ import { checkoutQuantities, readCheckoutFacts } from '../../src/orders/quote.js
 import { releaseExpiredCoolingOrders } from '../../src/orders/lifecycle.js';
 import { updateOperatingStatus } from '../../src/catalog/operating-status.js';
 import { updateProductSaleStatus } from '../../src/catalog/product-status.js';
+import { updateDailyRestorePreference } from '../../src/catalog/daily-restore-preference.js';
+import { restoreDailyProducts } from '../../src/catalog/daily-restore.js';
 
 function barrier() {
   let release!: () => void;
@@ -48,6 +50,9 @@ describe('owner manual operations preserve catalog and existing contracts', () =
     await prisma.order.deleteMany({ where: { merchantId: { in: ids } } });
     await prisma.merchantOperatingStatusAudit.deleteMany({ where: { merchantId: { in: ids } } });
     await prisma.productSaleStatusAudit.deleteMany({ where: { merchantId: { in: ids } } });
+    await prisma.productDailyRestoreAudit.deleteMany({ where: { run: { merchantId: { in: ids } } } });
+    await prisma.merchantDailyRestoreRun.deleteMany({ where: { merchantId: { in: ids } } });
+    await prisma.merchantDailyRestorePreferenceAudit.deleteMany({ where: { merchantId: { in: ids } } });
     await prisma.merchant.deleteMany({ where: { id: { in: ids } } });
     await prisma.user.deleteMany({ where: { id: { in: fixtures.map((m) => m.ownerId) } } });
     const riders = await prisma.rider.findMany({ where: { user: { displayName: 'manual lifecycle rider' } }, select: { id: true, userId: true } });
@@ -396,7 +401,7 @@ describe('owner manual operations preserve catalog and existing contracts', () =
     expect((await menu()).json().categories[0].products[0]).toMatchObject({ saleStatus: 'SOLD_OUT', purchasable: false });
   });
 
-  it('preserves confirmed, claimed and finalized facts and completes mandatory photo fulfillment while closed/off-shelf', async () => {
+  it('preserves confirmed, claimed and finalized facts across daily recovery and completes mandatory photo fulfillment while closed/off-shelf', async () => {
     const rider = await prisma.rider.create({ data: { status: 'AVAILABLE', capacityOverride: 10,
       firstNormalDeliveredAt: new Date('2026-09-20T04:00:00Z'), user: { create: { role: 'RIDER', displayName: 'manual lifecycle rider' } } } });
     const created = await order();
@@ -412,14 +417,20 @@ describe('owner manual operations preserve catalog and existing contracts', () =
     const full = () => prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: { items: true, pricing: true,
       events: { orderBy: { id: 'asc' } }, deliveryTask: true, assignments: true, settlement: true, riderSettlement: true } });
     const confirmedBefore = await full();
-    expect((await sale('OFF_SHELF', 2)).statusCode).toBe(200);
+    await updateDailyRestorePreference(prisma, { id: ownerId, role: 'MERCHANT', merchantId },
+      { enabled: true, expectedVersion: 0, reason: 'opt into daily recovery' }, config.campusTimeZone);
+    const auto = (instant: string) => restoreDailyProducts(prisma, { ...config, enableBackgroundJobs: true }, () => new Date(instant));
+    expect(await auto('2026-10-11T20:00:00Z')).toBe(1);
+    expect(await full()).toEqual(confirmedBefore);
+    expect((await sale('OFF_SHELF', 3)).statusCode).toBe(200);
     expect((await change(true, 1)).statusCode).toBe(200);
     expect(await full()).toEqual(confirmedBefore);
     const claimed = await app.inject({ method: 'POST', url: `/delivery-tasks/${taskId}/claim`, headers: headers(rider.userId) });
     expect(claimed.statusCode, claimed.body).toBe(200);
     const claimedBefore = await full();
     expect((await change(false, 2)).statusCode).toBe(200);
-    expect((await sale('SOLD_OUT', 3)).statusCode).toBe(200);
+    expect((await sale('SOLD_OUT', 4)).statusCode).toBe(200);
+    expect(await auto('2026-10-12T20:00:00Z')).toBe(1);
     expect(await full()).toEqual(claimedBefore);
     const assignment = claimedBefore.assignments.find((a) => a.status === 'ACTIVE')!;
     const pickup = (photoEvidenceId?: string) => app.inject({ method: 'POST', url: `/merchant/orders/${orderId}/confirm-rider-pickup`,
@@ -434,14 +445,18 @@ describe('owner manual operations preserve catalog and existing contracts', () =
     expect(delivered.statusCode, delivered.body).toBe(200);
     const finalizedBefore = await full();
     expect(finalizedBefore).toMatchObject({ status: 'DELIVERED', settlement: { status: 'FINALIZED' }, riderSettlement: { amountMinor: 200 } });
-    expect((await sale('OFF_SHELF', 4)).statusCode).toBe(200);
+    expect((await sale('OFF_SHELF', 6)).statusCode).toBe(200);
     expect((await change(true, 3)).statusCode).toBe(200);
+    expect(await full()).toEqual(finalizedBefore);
+    expect((await sale('SOLD_OUT', 7)).statusCode).toBe(200);
+    expect(await auto('2026-10-13T20:00:00Z')).toBe(1);
     expect(await full()).toEqual(finalizedBefore);
     for (const user of [seedIds.customer, ownerId, rider.userId]) {
       const view = await app.inject({ method: 'GET', url: `/orders/${orderId}`, headers: headers(user) });
       expect(view.statusCode).toBe(200);
       expect(view.body).not.toContain('saleStatus');
       expect(view.body).not.toContain('operatingVersion');
+      for (const field of ['dailyProductRestore', 'dailyRestore', 'preferenceVersion', 'configVersion', 'AUTO_DAILY']) expect(view.body).not.toContain(field);
       for (const field of ['ownerId', 'platformSubsidyMinor', 'deliveryPricingPolicySnapshot']) expect(view.body).not.toContain(field);
       if (user !== ownerId) expect(view.body).not.toContain('merchantRescueContributionMinor');
     }
