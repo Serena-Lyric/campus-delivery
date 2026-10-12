@@ -302,6 +302,11 @@ enum RemakeProposalStatus {
   REJECTED
 }
 
+enum MerchantBusinessConfirmationSource {
+  EXPLICIT_CONFIRM
+  MANUAL_OPEN
+}
+
 enum CompensationStatus {
   OPEN
   FUNDED
@@ -348,6 +353,7 @@ model User {
   operatingStatusChanges    MerchantOperatingStatusAudit[]
   dailyRestorePreferenceChanges MerchantDailyRestorePreferenceAudit[]
   dailyConfirmationPreferenceChanges MerchantDailyConfirmationPreferenceAudit[]
+  businessDayConfirmations MerchantBusinessDayConfirmation[]
   productSaleStatusChanges  ProductSaleStatusAudit[]
   academicTerms             AcademicTerm[]
   eligibilityReviews        RiderEligibilityReview[]
@@ -386,6 +392,7 @@ model Merchant {
   dailyConfirmationVersion Int @default(0)
   dailyConfirmationEffectiveAt DateTime?
   dailyConfirmationPreferenceAudits MerchantDailyConfirmationPreferenceAudit[]
+  businessDayConfirmations MerchantBusinessDayConfirmation[]
   operatingStatusAudits     MerchantOperatingStatusAudit[]
   productSaleStatusAudits   ProductSaleStatusAudit[]
   exposureState             MerchantExposureState      @default(TRIAL)
@@ -406,6 +413,25 @@ model Merchant {
   exposureDecisions         MerchantExposureDecision[]
   createdAt                 DateTime                   @default(now())
   updatedAt                 DateTime                   @updatedAt
+}
+
+model MerchantBusinessDayConfirmation {
+  id String @id @default(uuid()) @db.Uuid
+  merchantId String @db.Uuid
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  businessDayStartsAt DateTime
+  businessDay DateTime @db.Date
+  timeZone String
+  switchingTime String
+  policyVersion Int
+  source MerchantBusinessConfirmationSource
+  actorId String @db.Uuid
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  operatingVersion Int
+  reason String
+  confirmedAt DateTime @default(now())
+  @@unique([merchantId, businessDayStartsAt], map: "MerchantBusinessDayConfirmation_merchant_start_key")
+  @@index([merchantId, confirmedAt], map: "MerchantBusinessDayConfirmation_merchant_confirmed_idx")
 }
 
 model MerchantDailyConfirmationPreferenceAudit {

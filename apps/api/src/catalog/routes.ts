@@ -10,13 +10,25 @@ import { getMerchantRiskSummary } from '../merchant-risk/service.js';
 import { CategoryBody, ProductBody, productSelect, deliveryCategorySelect, saveCategory, saveProduct, type CategoryInput, type ProductInput } from './service.js';
 import { correctCatalogRisk, getCatalogRiskForMerchant, republishCorrectedOrder } from './risk-correction.js';
 import { isMerchantVisibleToCustomer } from './visibility.js';
-import { getOperatingStatus, OperatingStatusBody, operatingStatusFields, updateOperatingStatus, type OperatingStatusInput } from './operating-status.js';
+import { getOperatingStatus, OperatingStatusBody, operatingStatusFields, updateOperatingStatus, ConfirmBusinessDayBody, confirmBusinessDay, type ConfirmBusinessDayInput, type OperatingStatusInput } from './operating-status.js';
 import { productSaleFields, SaleStatusBody, updateProductSaleStatus, type SaleStatusInput } from './product-status.js';
 import { DailyRestorePreferenceBody, DailyRestorePreferenceView, DailyRestorePreferenceUpdateView, getDailyRestorePreference, updateDailyRestorePreference, type DailyRestorePreferenceInput } from './daily-restore-preference.js';
-import { DailyConfirmationPreferenceBody, DailyConfirmationPreferenceView, DailyConfirmationPreferenceUpdateView, getDailyConfirmationPreference, updateDailyConfirmationPreference, type DailyConfirmationPreferenceInput } from './daily-confirmation-preference.js';
+import { DailyConfirmationPreferenceBody, DailyConfirmationPreferenceView, DailyConfirmationPreferenceUpdateView, confirmationViewFields, getDailyConfirmationPreference, updateDailyConfirmationPreference, type DailyConfirmationPreferenceInput } from './daily-confirmation-preference.js';
+import { dailyConfirmationConfigLock } from './daily-confirmation-config.js';
+import { confirmationPreferenceSelect, readConfirmationState, readConfirmationBatch } from './daily-confirmation-state.js';
 
 const IdParams = Type.Object({ merchantId: Type.String({ format: 'uuid' }) });
 const ProductUpdateBody = Type.Object({ ...ProductBody.properties, expectedVersion: Type.Integer({ minimum: 1 }) }, { additionalProperties: false });
+const OperatingAuditView = Type.Object({ version: Type.Integer(), previousIsOpen: Type.Boolean(), newIsOpen: Type.Boolean(),
+  actorId: Type.String({ format: 'uuid' }), reason: Type.String(), createdAt: Type.String({ format: 'date-time' }) }, { additionalProperties: false });
+const ConfirmationFactView = Type.Object({ businessDay: Type.String(), businessDayStartsAt: Type.String({ format: 'date-time' }),
+  timeZone: Type.String(), switchingTime: Type.String(), policyVersion: Type.Integer(), source: Type.Union([Type.Literal('EXPLICIT_CONFIRM'), Type.Literal('MANUAL_OPEN')]),
+  actorId: Type.String({ format: 'uuid' }), operatingVersion: Type.Integer(), reason: Type.String(), confirmedAt: Type.String({ format: 'date-time' }) }, { additionalProperties: false });
+const ownOperatingFields = { id: Type.String({ format: 'uuid' }), isOpen: Type.Boolean(), operatingVersion: Type.Integer(), acceptingOrders: Type.Boolean(),
+  operatingStatusLabel: Type.String(), businessDay: Type.String(), confirmedToday: Type.Boolean(), confirmationRequired: Type.Boolean(),
+  dailyConfirmation: Type.Object(confirmationViewFields, { additionalProperties: false }), confirmation: Type.Union([ConfirmationFactView, Type.Null()]) };
+const OperatingStatusView = Type.Object({ ...ownOperatingFields, history: Type.Array(OperatingAuditView) }, { additionalProperties: false });
+const OperatingStatusUpdateView = Type.Object({ ...ownOperatingFields, changed: Type.Boolean(), audit: Type.Optional(OperatingAuditView) }, { additionalProperties: false });
 
 export async function registerCatalogRoutes(app: FastifyInstance, prisma: PrismaClient, config: AppConfig) {
   const authenticate = authGuard(prisma, config);
@@ -36,16 +48,21 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
       if (!Value.Check(DailyRestorePreferenceBody, request.body)) throw badRequest('INVALID_DAILY_RESTORE_PREFERENCE', 'Invalid daily restore preference fields');
     }, schema: { tags: ['catalog'], body: DailyRestorePreferenceBody, response: { 200: DailyRestorePreferenceUpdateView } },
   }, async (request) => updateDailyRestorePreference(prisma, actorOf(request), request.body, config.campusTimeZone));
-  app.get('/merchant/operating-status', { preHandler: merchantOnly, schema: { tags: ['catalog'] } },
-    async (request) => getOperatingStatus(prisma, actorOf(request)));
+  app.get('/merchant/operating-status', { preHandler: merchantOnly, schema: { tags: ['catalog'], response: { 200: OperatingStatusView } } },
+    async (request) => getOperatingStatus(prisma, actorOf(request), config.campusTimeZone));
+  app.post<{ Body: ConfirmBusinessDayInput }>('/merchant/confirm-business-day', {
+    preHandler: merchantOnly, preValidation: async (request) => {
+      if (!Value.Check(ConfirmBusinessDayBody, request.body)) throw badRequest('INVALID_BUSINESS_DAY_CONFIRMATION', 'Invalid confirmation fields');
+    }, schema: { tags: ['catalog'], description: 'Owner confirms the current business day and opens manual isOpen in one audited CAS transaction. Same-day retries still require the current operating version.', body: ConfirmBusinessDayBody, response: { 200: OperatingStatusUpdateView } },
+  }, async (request) => confirmBusinessDay(prisma, actorOf(request), request.body, config.campusTimeZone));
   app.put<{ Body: OperatingStatusInput }>('/merchant/operating-status', {
     preHandler: merchantOnly,
     // Reject unknown properties before Fastify's default validator can strip them.
     preValidation: async (request) => {
       if (!Value.Check(OperatingStatusBody, request.body)) throw badRequest('INVALID_OPERATING_STATUS', 'Invalid operating status fields');
     },
-    schema: { tags: ['catalog'], body: OperatingStatusBody },
-  }, async (request) => updateOperatingStatus(prisma, actorOf(request), request.body));
+    schema: { tags: ['catalog'], description: 'Opted-in manual opening also confirms today, including same-value isOpen=true requests after confirmation expires.', body: OperatingStatusBody, response: { 200: OperatingStatusUpdateView } },
+  }, async (request) => updateOperatingStatus(prisma, actorOf(request), request.body, config.campusTimeZone));
   app.get('/catalog/delivery-categories', { preHandler: authenticate, schema: { tags: ['catalog'] } }, async () =>
     prisma.deliveryCategory.findMany({ select: deliveryCategorySelect, orderBy: { code: 'asc' } }));
   app.get('/merchant/catalog', { preHandler: merchantOnly, schema: { tags: ['catalog'] } }, async (request) => {
@@ -118,19 +135,25 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
   app.get('/merchants', { preHandler: authenticate, schema: { tags: ['catalog'] } }, async (request) => {
     const actor = actorOf(request);
     const { config: policy } = await loadPolicyConfig(prisma);
-    const merchants = await prisma.merchant.findMany({
+    const { merchants, states } = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(${dailyConfirmationConfigLock})`;
+      await tx.$queryRaw`SELECT "id" FROM "Merchant" WHERE "exposureState" NOT IN ('HIDDEN', 'SUSPENDED') ORDER BY "id" FOR SHARE`;
+      const merchants = await tx.merchant.findMany({
       where: { exposureState: { notIn: [MerchantExposureState.HIDDEN, MerchantExposureState.SUSPENDED] } },
       select: {
         id: true,
         name: true,
         description: true,
         isOpen: true,
+        ...confirmationPreferenceSelect,
         exposureState: true,
         trialExposureOverrideBps: true,
         supportedDeliveryMethods: true,
         campusLocation: { select: { id: true, name: true, type: true } },
       },
       orderBy: { createdAt: 'asc' },
+      });
+      return { merchants, states: await readConfirmationBatch(tx, merchants, config.campusTimeZone) };
     });
     const visible = merchants.filter((merchant) => actor.role !== 'CUSTOMER' || isMerchantVisibleToCustomer({
       merchantId: merchant.id,
@@ -146,7 +169,7 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
         name: merchant.name,
         description: merchant.description,
         isOpen: merchant.isOpen,
-        ...operatingStatusFields(merchant),
+        ...operatingStatusFields(merchant, states.get(merchant.id)!),
         supportedDeliveryMethods: merchant.supportedDeliveryMethods,
         campusLocation: merchant.campusLocation,
         risk: {
@@ -164,13 +187,17 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
   }, async (request) => {
     const actor = actorOf(request);
     const { config: policy } = await loadPolicyConfig(prisma);
-    const merchant = await prisma.merchant.findUnique({
+    const { merchant, state } = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(${dailyConfirmationConfigLock})`;
+      await tx.$queryRaw`SELECT "id" FROM "Merchant" WHERE "id"=${request.params.merchantId}::uuid FOR SHARE`;
+      const merchant = await tx.merchant.findUnique({
       where: { id: request.params.merchantId },
       select: {
         id: true,
         name: true,
         description: true,
         isOpen: true,
+        ...confirmationPreferenceSelect,
         exposureState: true,
         trialExposureOverrideBps: true,
         supportedDeliveryMethods: true,
@@ -189,8 +216,10 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
           orderBy: { sortOrder: 'asc' },
         },
       },
+      });
+      if (!merchant) throw notFound('Merchant');
+      return { merchant, state: await readConfirmationState(tx, merchant, config.campusTimeZone) };
     });
-    if (!merchant) throw notFound('Merchant');
     if (merchant.exposureState === 'HIDDEN' || merchant.exposureState === 'SUSPENDED' || (actor.role === 'CUSTOMER' && !isMerchantVisibleToCustomer({
       merchantId: merchant.id,
       customerId: actor.id,
@@ -199,12 +228,13 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
       configuredTrialExposureBps: policy.merchantTrialExposureBps,
     }))) throw notFound('Merchant');
     const risk = await getMerchantRiskSummary(prisma, merchant.id);
+    const status = operatingStatusFields(merchant, state.fields);
     return {
       id: merchant.id,
       name: merchant.name,
       description: merchant.description,
       isOpen: merchant.isOpen,
-      ...operatingStatusFields(merchant),
+      ...status,
       supportedDeliveryMethods: merchant.supportedDeliveryMethods,
       campusLocation: merchant.campusLocation,
       categories: merchant.categories.map((category) => ({ id: category.id, name: category.name, sortOrder: category.sortOrder,
@@ -212,7 +242,7 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
           id: product.id, categoryId: product.categoryId, name: product.name, description: product.description,
           imageUrl: product.imageUrl, marketingTags: product.marketingTags, sortOrder: product.sortOrder,
           priceMinor: product.priceMinor, isAvailable: product.isAvailable, saleStatus: product.saleStatus, version: product.version,
-          deliveryCategory: product.deliveryCategory, ...productSaleFields(product.saleStatus, operatingStatusFields(merchant).acceptingOrders),
+          deliveryCategory: product.deliveryCategory, ...productSaleFields(product.saleStatus, status.acceptingOrders),
         })),
       })),
       risk: {

@@ -40,7 +40,7 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   app.post<{ Body: CheckoutInput }>('/orders/price-preview', {
     preHandler: customer,
     schema: { tags: ['pricing'], description: 'Read-only customer checkout preview; no order or payment is created.', body: CheckoutBody },
-  }, async (request) => previewOrderQuote(prisma, actorOf(request), request.body));
+  }, async (request) => previewOrderQuote(prisma, actorOf(request), request.body, config.campusTimeZone));
 
   app.post<{ Body: CheckoutInput }>('/orders', {
     preHandler: customer,

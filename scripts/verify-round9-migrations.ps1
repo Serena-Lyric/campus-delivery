@@ -20,6 +20,9 @@ DO $$ DECLARE r record; projection text; BEGIN
 END $$;
 SELECT name || '|' || rows || '|' || fingerprint FROM round9_snapshot ORDER BY name;
 '@
+if ($Stage -ne 'A') {
+  $snapshotSql = $snapshotSql.Replace(" - ''dailyConfirmationEnabled'' - ''dailyConfirmationVersion'' - ''dailyConfirmationEffectiveAt''", '')
+}
 function Read-HistorySnapshot([string]$Database) {
   $result = $snapshotSql | docker exec -i campus-round9-postgres psql -X -q -A -t -U campus -d $Database -v ON_ERROR_STOP=1
   if ($LASTEXITCODE -ne 0) { throw "Snapshot failed: $Database" }

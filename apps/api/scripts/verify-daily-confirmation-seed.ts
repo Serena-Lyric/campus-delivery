@@ -5,6 +5,7 @@ import { seedDatabase, seedIds } from '../prisma/seed.js';
 import { updateDailyRestorePreference } from '../src/catalog/daily-restore-preference.js';
 import { restoreDailyProducts } from '../src/catalog/daily-restore.js';
 import { updateDailyConfirmationPreference } from '../src/catalog/daily-confirmation-preference.js';
+import { confirmBusinessDay } from '../src/catalog/operating-status.js';
 import { updateProductSaleStatus } from '../src/catalog/product-status.js';
 
 // Intentionally limited to disposable validation databases: repeat Seed updates demo profiles.
@@ -15,7 +16,7 @@ const app = await buildApp({ databaseUrl, host: '127.0.0.1', port: 3000, enableD
   enableBackgroundJobs: false, backgroundSweepIntervalMs: 5000, campusTimeZone: 'Asia/Shanghai', logLevel: 'silent' }, prisma);
 const financialTables = ['Order', 'OrderItem', 'OrderPricing', 'OrderEvent', 'DeliveryTask', 'DeliveryAssignment',
   'Settlement', 'RiderSettlement', 'CompensationObligation', 'CompensationAllocation', 'ExceptionCase', 'ExceptionCaseAction',
-  'ExceptionEvent', 'Evidence', 'BusinessConfig', 'BusinessConfigAudit', 'MerchantOperatingStatusAudit', 'ProductSaleStatusAudit', 'MerchantDailyRestorePreferenceAudit', 'MerchantDailyRestoreRun', 'ProductDailyRestoreAudit', 'MerchantDailyConfirmationPreferenceAudit'];
+  'ExceptionEvent', 'Evidence', 'BusinessConfig', 'BusinessConfigAudit', 'MerchantOperatingStatusAudit', 'ProductSaleStatusAudit', 'MerchantDailyRestorePreferenceAudit', 'MerchantDailyRestoreRun', 'ProductDailyRestoreAudit', 'MerchantDailyConfirmationPreferenceAudit', 'MerchantBusinessDayConfirmation'];
 async function snapshot() {
   const values = await Promise.all(financialTables.map(async (table) => {
     const [value] = await prisma.$queryRawUnsafe<Array<{ rows: bigint; fingerprint: string }>>(
@@ -46,6 +47,7 @@ try {
   }
   const confirmation = await prisma.merchant.findUniqueOrThrow({ where: { id: seedIds.merchant } });
   await updateDailyConfirmationPreference(prisma, actor, { enabled: true, expectedVersion: confirmation.dailyConfirmationVersion, reason: 'Isolated confirmation preference fixture' }, 'Asia/Shanghai');
+  await confirmBusinessDay(prisma, actor, { expectedVersion: confirmation.operatingVersion, reason: 'Isolated confirmation fact fixture' }, 'Asia/Shanghai');
   const before = await snapshot();
   await seedDatabase(prisma);
   assert.deepEqual(await snapshot(), before);

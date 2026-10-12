@@ -1,4 +1,4 @@
-import { DeliveryMethod, MerchantExposureState, Prisma, type PrismaClient } from '@prisma/client';
+import { DeliveryMethod, Prisma, type PrismaClient } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import type { Actor } from '../auth/auth.js';
 import { loadPolicyConfig } from '../merchant-policy/policies.js';
@@ -7,6 +7,9 @@ import { defaultDeliveryPricingPolicy, type DeliveryPricingPolicy } from '../pri
 import { badRequest, conflict, forbidden, notFound } from '../shared/errors.js';
 import { multiplyMinor } from '../shared/money.js';
 import { loadPaymentCostPolicy } from '../finance/costs.js';
+import { dailyConfirmationConfigLock } from '../catalog/daily-confirmation-config.js';
+import { readConfirmationState } from '../catalog/daily-confirmation-state.js';
+import { operatingStatusFields } from '../catalog/operating-status.js';
 
 export type CheckoutInput = {
   merchantId: string;
@@ -30,9 +33,10 @@ export function checkoutQuantities(input: CheckoutInput) {
   return quantities;
 }
 
-export async function readCheckoutFacts(tx: Prisma.TransactionClient, input: CheckoutInput, quantities: Map<string, number>) {
+export async function readCheckoutFacts(tx: Prisma.TransactionClient, input: CheckoutInput, quantities: Map<string, number>, timeZone = 'Asia/Shanghai') {
   // All checkout readers share this lock order: config -> merchant -> catalog -> locations.
   await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(${pricingConfigLock})`;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(${dailyConfirmationConfigLock})`;
   const policy = await loadPolicyConfig(tx);
   const pricingConfig = await loadDeliveryPricingConfig(tx);
   const paymentCostPolicy = await loadPaymentCostPolicy(tx);
@@ -57,13 +61,14 @@ export async function readCheckoutFacts(tx: Prisma.TransactionClient, input: Che
     tx.product.findMany({ where: { id: { in: productIds } }, include: { category: { select: { name: true } }, deliveryCategory: true }, orderBy: { id: 'asc' } }),
   ]);
   if (!location) throw notFound('Campus location');
-  if (!merchant.isOpen || merchant.exposureState === MerchantExposureState.HIDDEN || merchant.exposureState === MerchantExposureState.SUSPENDED) {
+  const confirmationState = await readConfirmationState(tx, merchant, timeZone);
+  if (!operatingStatusFields(merchant, confirmationState.fields).acceptingOrders) {
     throw conflict('MERCHANT_UNAVAILABLE', 'Merchant is not currently accepting visible orders');
   }
   if (!merchant.supportedDeliveryMethods.includes(input.deliveryMethod) || !location.supportedDeliveryMethods.includes(input.deliveryMethod)) {
     throw badRequest('DELIVERY_METHOD_UNAVAILABLE', 'Selected delivery method is not available for this merchant and location');
   }
-  return { ...policy, pricingConfig, paymentCostPolicy, merchant, location, products };
+  return { ...policy, pricingConfig, paymentCostPolicy, merchant, location, products, confirmationState };
 }
 
 export function calculateCheckoutQuote(
@@ -97,11 +102,11 @@ export function calculateCheckoutQuote(
   return { items, itemSubtotalMinor, orderTotalMinor, deliveryPricing, quoteToken };
 }
 
-export async function previewOrderQuote(prisma: PrismaClient, actor: Actor, input: CheckoutInput) {
+export async function previewOrderQuote(prisma: PrismaClient, actor: Actor, input: CheckoutInput, timeZone = 'Asia/Shanghai') {
   if (actor.role !== 'CUSTOMER') throw forbidden();
   const quantities = checkoutQuantities(input);
   return prisma.$transaction(async (tx) => {
-    const facts = await readCheckoutFacts(tx, input, quantities);
+    const facts = await readCheckoutFacts(tx, input, quantities, timeZone);
     const quote = calculateCheckoutQuote(facts, input, quantities);
     return {
       merchantId: input.merchantId, destinationLocationId: input.destinationLocationId, deliveryMethod: input.deliveryMethod,

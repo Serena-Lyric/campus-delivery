@@ -28,6 +28,8 @@ import { defaultDeliveryPricingPolicy, type DeliveryPricingPolicy } from '../pri
 import { estimatePaymentCost } from '../finance/costs.js';
 import { unverifiedRiderBalanceView } from '../finance/permissions.js';
 import { calculateCheckoutQuote, checkoutQuantities, readCheckoutFacts, type CheckoutInput } from './quote.js';
+import { readConfirmationState } from '../catalog/daily-confirmation-state.js';
+import { operatingStatusFields } from '../catalog/operating-status.js';
 
 export type CreateOrderInput = CheckoutInput;
 
@@ -184,7 +186,7 @@ export async function createOrder(
     const shortCode = generateShortCode();
     try {
       return await prisma.$transaction(async (tx) => {
-        const facts = await readCheckoutFacts(tx, input, quantities);
+        const facts = await readCheckoutFacts(tx, input, quantities, campusTimeZone);
         const { version: policyVersion, config, merchant, location, products } = facts;
         const coolingOffEndsAt = new Date(now.getTime() + config.coolingOffSeconds * 1000);
         const tipDeadline = new Date(now.getTime() + config.riderTipWindowSeconds * 1000);
@@ -257,6 +259,10 @@ export async function createOrder(
           throw conflict('CHECKOUT_QUOTE_CHANGED', 'Checkout quote changed; preview again and ask the customer to confirm');
         }
         const platformCommissionMinor = basisPoints(itemSubtotalMinor, config.platformCommissionBps);
+
+        // Capacity checks/classification may take time; admit at live time just before the contract write.
+        const admission = await readConfirmationState(tx, merchant, campusTimeZone);
+        if (!operatingStatusFields(merchant, admission.fields).acceptingOrders) throw conflict('MERCHANT_UNAVAILABLE', 'Merchant is not currently accepting visible orders');
 
         return tx.order.create({
           data: {
