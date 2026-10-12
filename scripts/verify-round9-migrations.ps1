@@ -1,6 +1,7 @@
 param(
   [ValidateSet('A', 'B', 'C')][string]$Stage,
   [switch]$SnapshotOnly,
+  [switch]$FromRound8,
   [string[]]$Databases = @('campus-delivery', 'campus_round9_old', 'campus_round9_empty'),
   [string]$EvidenceDirectory = (Join-Path $env:LOCALAPPDATA 'Codex/backups/campus-delivery-round9-20261012')
 )
@@ -13,14 +14,14 @@ DO $$ DECLARE r record; projection text; BEGIN
   FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public'
     AND tablename <> '_prisma_migrations' ORDER BY tablename LOOP
     projection := CASE r.tablename
-      WHEN 'Merchant' THEN 'to_jsonb(t) - ''dailyConfirmationEnabled'' - ''dailyConfirmationVersion'' - ''dailyConfirmationEffectiveAt''' 
+      WHEN 'Merchant' THEN 'to_jsonb(t) - ''dailyConfirmationEnabled'' - ''dailyConfirmationVersion'' - ''dailyConfirmationEffectiveAt'''
       ELSE 'to_jsonb(t)' END;
     EXECUTE format('INSERT INTO round9_snapshot SELECT %L, count(*), md5(COALESCE(string_agg((%s)::text, E''\n'' ORDER BY (%s)::text), '''')) FROM %I t', r.tablename, projection, projection, r.tablename);
   END LOOP;
 END $$;
 SELECT name || '|' || rows || '|' || fingerprint FROM round9_snapshot ORDER BY name;
 '@
-if ($Stage -ne 'A') {
+if ($Stage -ne 'A' -and !$FromRound8) {
   $snapshotSql = $snapshotSql.Replace(" - ''dailyConfirmationEnabled'' - ''dailyConfirmationVersion'' - ''dailyConfirmationEffectiveAt''", '')
 }
 function Read-HistorySnapshot([string]$Database) {
@@ -60,4 +61,3 @@ try {
   $env:DATABASE_URL = $savedDatabaseUrl
   Pop-Location
 }
-

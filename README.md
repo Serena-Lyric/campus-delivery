@@ -24,13 +24,19 @@ OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日
 
 旧 `isAvailable` 保留为可售投影：仅在售为 true；旧 false 迁移为下架。旧布尔创建/完整编辑端点仍可用，SOLD_OUT 的相同 false 完整编辑保留售罄；需要明确区分售罄/下架时用状态接口。数据库 trigger 与约束维护一致性，重复 Seed 不重开商家、不恢复商品状态。迁移含 PostgreSQL 原生触发器，升级应使用 `prisma migrate deploy`；只做 `db push` 不足以安装兼容逻辑。
 
-当前交付是 API、后台执行与测试，没有完整小程序或商家前端标签。第九轮每日营业确认任务已编排、尚未实现；定时关店、数量库存、真实支付均未实现；没有预留或开放不安全库存开关。详见 [经营专题](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) 和本轮 [CODEX_REPORT.md](CODEX_REPORT.md)。
+当前交付是 API、后台执行与测试，没有完整小程序或商家前端标签。第九轮每日营业确认已实现后端；定时关店、数量库存、真实支付均未实现；没有预留或开放不安全库存开关。详见 [经营专题](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) 和本轮 [CODEX_REPORT.md](CODEX_REPORT.md)。
 
 每日自动恢复已由第八轮实现后端运行路径，应用迁移保留原营业/商品/订单事实且所有旧商家默认未启用；后台开关也默认关闭，API 能力不等于部署时已运行或完整 UI 上线。数量库存和支付预留另行开发，详见产品第1D节及经营专题第6/7节。
 
-## 第九轮计划：每日营业确认（产品确认，未开发）
+## 第九轮：每日营业确认（后端/API 已实现，无完整 UI）
 
-商家可选“每日营业确认”，默认关闭，启用从下一营业日生效、关闭立即生效。平台统一营业日切换时刻初始校园当地04:00，管理配置与商品每日恢复的04:00独立；未来预留商家自定义切换点。确认今日营业、手动开始营业都完成当日确认并打开接单；不确认则**只暂停新单**，不修改人工`isOpen`、不影响已有订单。门禁必须在客户目录和服务端结账事务即时校验，不能依赖后台调度。详见 [主产品第1E节](PRODUCT_DECISIONS.md) / [经营专题第8节](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) / [CODEX_TASK.md](CODEX_TASK.md)。
+商家可选“每日营业确认”，默认关闭，启用从下一营业日生效、关闭立即生效；两者都不修改手动 `isOpen`。平台统一默认校园当地04:00：03:59/00:00仍属上一营业日，04:00起新营业日。`GET/PUT /merchant/daily-confirmation` 读取/设置本人偏好，PUT 为 `enabled / expectedVersion / reason`；视图区分 enabled、active、pendingActivation、effectiveAt、businessDay、confirmedToday 和平台有效/待生效配置。effectiveAt 保存启用的最早切换资格；若平台随后延长过渡营业日，实际启用以视图的 nextBusinessDayStartsAt 及 active 为准。
+
+`POST /merchant/confirm-business-day` 接收 `expectedVersion / reason`，确认当前营业日并同时开店；旧 `PUT /merchant/operating-status` 主动传 `isOpen:true` 在启用模式下共享这条事务路径，原本已经true也能补确认。手动未启用模式的旧无变化行为保持；显式确认入口仍是主动真人操作。确认和营业更新/CAS/审计同事务，一店一个实际营业日开始时刻只保留一次事实，来源 EXPLICIT_CONFIRM 或 MANUAL_OPEN；重复同日不新增事实，但陈旧营业版本仍409。当天关店保留确认，再次开店无需重复确认。
+
+旧 SUPER_ADMIN 用独立 `PUT /admin/business-configs/MERCHANT_DAILY_CONFIRMATION` 配置 `{payload:{time:"HH:mm"},expectedVersion,reason}`；不改 PRODUCT_DAILY_RESTORE、不获得 Root 或资金权限。服务器保存版本化时区、过渡营业日起点和 effectiveAt。修改时延长当前营业日至“当前已公布的下一切换点”和“新时刻下一切换点”中较晚者；替换待生效配置也不提前已公布边界。生效首日从实际生效时刻开始，之后按新 HH:mm 切换，旧确认不在修改瞬间失效。DST 重复分钟取首次出现，缺失分钟取其后的首个有效分钟；部署实例须使用一致校园时区，已有配置时区不匹配则拒绝请求，需另行审查迁移。
+
+有效接单 = 手动营业 + 当前日确认资格（或无需确认）+ 现有曝光限制。目录提供一致的 acceptingOrders、businessDay、confirmedToday；未确认在顾客侧显示「休息中」，本人侧显示「待今日确认」，菜单保留且商品 purchasable=false。价格预览和创建在配置→商家→商品/位置锁内读取服务器实时状态，创建前再核验；旧 quoteToken 跨切换点不能绕过未确认门禁。**ENABLE_BACKGROUND_JOBS=false 仍执行门禁**，确认过期不更新 isOpen、不处分旧订单。确认不是商品每日恢复、订单确认或付款成功；单店自定时刻仅保留计算函数参数扩展点，未开放设置。详见 [主产品第1E节](PRODUCT_DECISIONS.md) / [经营专题第8/9节](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) / [CODEX_REPORT.md](CODEX_REPORT.md)。
 
 ## 2026-10-10 履约与管理员能力边界
 
@@ -91,7 +97,7 @@ OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日
 
 - ENABLE_BACKGROUND_JOBS：是否运行冷静期、接单池到期、结算和商品每日恢复扫描；省略/示例默认为 false，开发演示需要扫描时显式设为 true。已有部署的显式 true 不会被默认值修改覆盖。
 - BACKGROUND_SWEEP_INTERVAL_MS：扫描频率。
-- CAMPUS_TIME_ZONE：短订单码日期分区时区，国内校园默认 Asia/Shanghai。
+- CAMPUS_TIME_ZONE：短订单码自然日、商品每日恢复自然日及独立营业日计算时区，国内校园默认 Asia/Shanghai；营业确认不由后台开关控制。
 
 版本化 BusinessConfig 保存演示业务参数：
 

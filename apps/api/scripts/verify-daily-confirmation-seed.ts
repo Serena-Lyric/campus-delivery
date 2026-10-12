@@ -10,7 +10,7 @@ import { updateProductSaleStatus } from '../src/catalog/product-status.js';
 
 // Intentionally limited to disposable validation databases: repeat Seed updates demo profiles.
 const databaseUrl = process.env.DATABASE_URL!;
-assert.match(new URL(databaseUrl).pathname, /^\/campus_round9_(old|empty|final_empty)$/);
+assert.match(new URL(databaseUrl).pathname, /^\/campus_round9_(old|empty|final_old|final_empty)$/);
 const prisma = new PrismaClient();
 const app = await buildApp({ databaseUrl, host: '127.0.0.1', port: 3000, enableDevAuth: true,
   enableBackgroundJobs: false, backgroundSweepIntervalMs: 5000, campusTimeZone: 'Asia/Shanghai', logLevel: 'silent' }, prisma);
@@ -55,4 +55,3 @@ try {
   assert.deepEqual(await snapshot(), before);
   console.log(JSON.stringify({ database: new URL(databaseUrl).pathname, repeatedSeed: 2, preserved: before, historicalFalseStillHidden: tea.saleStatus === 'OFF_SHELF' }));
 } finally { await app.close(); await prisma.$disconnect(); }
-
