@@ -1,103 +1,101 @@
-# CODEX_REPORT — 第八轮：商家自选每日商品恢复
+# CODEX_REPORT — 第九轮：商家每日营业确认与有效新单门禁
 
-日期：2026-10-12（Asia/Singapore）。仅执行 CODEX_TASK.md 第八轮 A → B → C，各阶段验证、普通提交及推送后才进入下一阶段。交付后端 API、后台运行路径和测试，无完整 UI 或生产部署声明。
+日期：2026-10-12（Asia/Singapore）。仅执行 CODEX_TASK.md 第九轮 A → B → C，每阶段实际验证、独立提交和普通 push 后才继续。交付后端/API、OpenAPI、迁移及测试，无完整客户端或生产部署声明。
 
-## 1. 结果与提交
+## 1. 结果与实际提交
 
-OWNER 可主动启用本店临时售罄商品每日恢复，默认关闭。平台有效默认为校园当地04:00，旧 SUPER_ADMIN 可版本化调整 HH:mm；后台也默认关闭。同一商家、同一本地日历日期最多成功执行一次，仅 SOLD_OUT→ON_SALE；不恢复 OFF_SHELF、不自动开店、不增加库存、不改价格/履约分类、已成立订单及财务。
+每日营业确认与手动 `Merchant.isOpen` 独立。默认不启用，启用从下一实际营业日要求确认；关闭立即解除该门禁，两者都不改 isOpen。默认校园当地04:00切换，03:59和午夜仍属前一营业日。未确认者保留菜单及原手动状态，但商品不可买、预览/新单拒绝；**ENABLE_BACKGROUND_JOBS=false仍执行**。显式确认和已启用模式下的主动手动true同事务确认+开店，已有true也能补确认；重复同日幂等、陈旧版本409、关店保留当天确认。
 
-| 阶段 | 实际完整 SHA | 结果 |
+| 阶段 | 实际完整 SHA | 状态 |
 | --- | --- | --- |
-| 同步前 | 0dfe2578c8ca5c5346b1c7704ab888b66e1b5468 | main干净，无未提交/未跟踪文件 |
-| 开发起点 | dc43fb8a5645eddb59d0ef00fb815b21c8615b49 | fetch + merge --ff-only，同步第八轮任务 |
-| A | 55fa60a0b813371269f9baac84c4b317841cad86 | OWNER偏好、有效默认、管理员时刻/CAS/审计、OpenAPI；普通push成功 |
-| B | afa9cf6cd453a292c30c5443345162f6a35bcfa1 | 持久化日执行、整批事务/CAS、独立系统事件、后台循环及日期单调保护；普通push成功 |
-| C / 实现验收终点 | b3c804d8122728e077e5e6f5c8e97fd0c93a25b8 | 完整兼容/并发验收，修正配置加载器及环境示例后台默认false，角色/专题文档；普通push成功 |
+| 同步前 | cbb34fe55d186f356ffc1f01e7e038ec4d714db1 | main干净，无未提交/未跟踪源文件 |
+| 开发起点 | 1d48e1f98c996c8427b8f09cb729a0376295e42c | fetch + merge --ff-only同步main和第九轮任务 |
+| A | 8947ac5489989c59c23db7fa76473d17a15c6d2c | 独立配置、营业日计算、OWNER偏好/CAS/审计/读接口；全套绿色后普通push |
+| B | b71dcc0c9530eca61c979784748c0b1ac9773289 | 真人日确认、手动开启共享事务、目录/checkout同步门禁；全套绿色后普通push |
+| C / 实现验收终点 | 2512206a3f34ce5810dcdefd896dfe8845bcab13 | 并发/边界/旧单兼容、数据库验证及角色/专题/README；全套绿色后普通push |
 
-本报告在C成功推送后单独普通提交推送；报告提交由 `git log -1 -- CODEX_REPORT.md` 查询，避免自引用SHA。替换前确认第七轮报告与 `CODEX_REPORT_2026-10-12_MERCHANT_OPERATIONS.md` 正文一致（仅换行编码不同），归档正文未改。全程无force push、reset、丢弃工作或修改旧迁移，未创建PR。
+报告与任务完成标记在C成功推送后单独作普通文档提交；其SHA由 `git log -1 -- CODEX_REPORT.md` 查询，避免自引用。没有force-push、reset、丢弃工作、PR或修改旧迁移。第七/八轮未被当作未执行重做，第八轮既有任务/报告归档正文未改。
 
 ## 2. 决策对照与四档状态
 
-已读取主产品1C/1D、经营专题第6节、受影响角色职责、管理员旧权限边界及第七轮归档报告；按影响范围核对 IMPLEMENTATION_PLAN/AUDIT_FOLLOWUP 和 catalog、checkout、配置、Seed、后台代码。第1C/经营专题原“恢复触发待定/未实现”属于第七轮语境，已由主产品1D确认取代；历史正文和归档报告保留，追加第八轮实现状态。
+读取并核对主产品1C/1D/1E、商家经营专题8及必要历史5/7、受影响角色、管理员旧权限边界、IMPLEMENTATION_PLAN/AUDIT_FOLLOWUP相关范围和现有catalog/checkout/配置/Seed/后台。1E补足1C营业日待定部分；1D及第八轮恢复自然日规则独立保持。当前派生角色文档纠正“每日确认未开发”，历史专题/报告保留；主产品只更新报告引用与实现状态，没有新增商业规则。
 
-- **enforced**：OWNER显式偏好/CAS/真人审计；平台HH:mm严格验证、配置CAS/审计；配置锁→商家锁→有序商品锁、逐商品version/status条件；商家×日期持久化唯一事实及单调游标；整批失败回滚/重试；SYSTEM/AUTO_DAILY系统事实；旧bool兼容、角色隔离、quoteToken和下单保护。
-- **model/API支持、无完整UI**：偏好GET/PUT的请求/响应OpenAPI、有效默认来源/时区/版本和普通管理员时刻接口。系统事件已持久化可在数据库核验，无新增审计管理页面。
-- **hook/placeholder**：未新增库存、每日开店确认、定时关店或支付hook/开关；没有把未来数量库存策略输入标成已执行。
-- **not implemented**：真实支付/微信/商品款与配送费拆分实付、数量库存预留/扣减/付款失败释放/退款后恢复、库存耗尽自动售罄/补货、每日开店确认、定时或跨午夜关店、自动重开、真实商家48小时提现、工资提现及正式Root权限。
+- **enforced behavior**：OWNER隔离、strict输入、偏好/营业CAS、平台时刻版本/审计、次日生效/立即停用、确认与开店原子提交、同日幂等/陈旧拒绝、目录/商品可买性、锁后实时预览及创建前准入、跨日旧报价拒绝、旧单继续履约。
+- **data/API available**：enabled/active/pendingActivation、最早生效阈值、营业日起点/下次切换、当前确认、有效/待生效平台配置；真人来源、日期/时区/时刻/有效策略版本/营业版本/确认时间/原因持久化。新增接口与本人营业视图有响应OpenAPI，无完整商家/管理小程序或审计页面。
+- **hook/placeholder**：未来单店时刻仅保留计算函数的时区/HH:mm参数扩展点，没有单店配置入口或未使用的策略字段；没有库存/支付/自动关店开关。
+- **not implemented**：定时自动关店/自动重开/固定排班、每店自定时刻、数量库存/原料/预留/扣减/释放/退款后恢复、微信/可信真实付款/拆分实付/分账/提现、真实商家48小时控制、正式Root和完整客户端。
 
-POST /orders仍仅创建CREATED开发合同/内账快照，不表示付款成功；佣金默认0和商家报价纯参考不变。当前商品没有真实数量库存，本轮没有添加数量或模拟补货；未来库存0保护仍是后续开发要求。旧异常/资金审计缺口不能由本轮回归推定全部闭合。
+`POST /orders`仍是CREATED开发合同及内账快照，不证明付款。佣金默认0、商家基础报价纯参考不等于商家出资、开发结算不等于外部现金。历史异常资金审计未闭合事项不能因本轮回归被宣称全部完成。
 
-## 3. 要求到运行时与测试
+## 3. 编号要求到运行时与验证
 
-| 要求 | 执行点 | 实际验证 |
+| 要求 | 运行时执行点 | 实际验证 |
 | --- | --- | --- |
-| A：主动开启、本店owner | Merchant独立偏好默认false/version0；锁内ownerId校验、expectedVersion CAS、无变化不加版/审计 | 默认、重复/无变化、并发200/409、陈旧重放、跨店、伪造绑定及角色负向测试 |
-| A：平台时刻、默认态、权限 | PRODUCT_DAILY_RESTORE `{time:"HH:mm"}`；未配置04:00/version0/SYSTEM_DEFAULT，已有配置ADMIN_CONFIG；旧SUPER_ADMIN普通配置权限 | 无效时刻、额外字段、缺version、OPERATOR/非管理员拒绝；首次配置竞争、同值不重复审计；GET有效来源/时区和Swagger响应 |
-| A：无自动副作用 | A只保存偏好/配置，未接入worker | A全套181项；营业事实及旧字段保持 |
-| B：持久化同日多实例防重 | 商家排他锁、unique(merchantId,day)、最新成功日期单调保护；零变更也记录 | 双worker、独立PrismaClient、断开后新建客户端、同日轮询、关再开、改时刻、恢复后新人工售罄、日期回退 |
-| B：系统来源、事务失败重试 | MerchantDailyRestoreRun存SYSTEM/AUTO_DAILY、配置/偏好版本、日期/时区/计划时刻/triggeredAt；ProductDailyRestoreAudit存旧新状态/商品新version，无User actor | 精确执行/事件断言；故意让第二条审计失败，第一商品/事件/执行行全部回滚，恢复后2商品成功重试 |
-| B：销售三态、历史兼容 | SOLD_OUT行锁后逐商品version/status更新；旧trigger同步isAvailable | 下架/在售不变，其他商品全部字段不变；旧false、旧ORM写入前后竞态；HIDDEN/SUSPENDED曝光不恢复 |
-| B：调度、后台门禁 | loop及worker均检查enableBackgroundJobs；校园本地日期/分钟；锁等待后live time及跨日复核 | 启用loop实际恢复；禁用loop和API无补执行；00:00/04:00边界、UTC不同日期、07:30配置、延迟/晚开启、等待跨日；真实loadConfig默认/显式true/false |
-| C：人工/配置/报价/创建并发 | config→merchant→products，相容checkout config→merchant→catalog→locations | PG实际锁等待：偏好关闭先、配置写先、人工下架先、自动先→人工CAS/预览/创建、创建/价格读取先→自动、旧bool写先→自动 |
-| C：原合同、资金、风险证据 | 自动仅更新销售状态/version/time及独立系统事实 | CREATED及确认/承接/FINALIZED快照、200分骑手内账收入保持；恢复后旧quoteToken409；6000分CAKE仍REQUIRED，缺照片取餐409，Mock照片后可送达 |
-| C：迁移、Seed、全套回归 | 2条增量迁移、隔离验证脚本、原备份基准 | 下表完整命令；原49表完整字段指纹；旧false仍隐藏；启用偏好/执行/系统事件经重复Seed保持 |
+| A1：独立配置/默认/权限 | MERCHANT_DAILY_CONFIRMATION，未配置04:00/version0/SYSTEM_DEFAULT；time-only输入、expectedVersion/reason/审计、独立配置锁 | 非法HH:mm、额外字段/缺版本、OPERATOR拒绝、首次竞争200/409、同值不重复审计；PRODUCT_DAILY_RESTORE完整字段不变 |
+| A1：本地营业日 | businessDayInterval按IANA本地切换，不按UTC04:00/自然日 | 03:59.999/04:00、00:00、不同UTC日期、年末、洛杉矶、纽约DST缺口/重复分钟 |
+| A2：偏好/生效/所有权 | 3字段默认false/0/null；配置锁→本店锁，启用保存下一边界阈值，active按实际日起点，停用立即解除且不改isOpen | 启用/次日/再启用、关闭时原店仍关、并发CAS/同值/陈旧、他角色/字段注入/服务伪造绑定；升级和重复Seed保留旧事实 |
+| A3：视图/契约 | GET/PUT /merchant/daily-confirmation显式DTO区分意愿、生效、等待、当前日/确认及平台有效/待生效配置 | 请求/响应和Swagger字段、默认/管理员版本与时区；未虚构UI |
+| B1：真人事实/同事务开店 | MerchantBusinessDayConfirmation唯一(merchantId,businessDayStartsAt)，EXPLICIT_CONFIRM/MANUAL_OPEN、真实owner actor，共用commitOperatingStatus | 显式/同值true、两独立PrismaClient竞争、重复/陈旧、关再开、次日新事实；强制确认或营业审计写失败均回滚后可重试 |
+| B2：同步目录/checkout | 列表批量读确认；详情/本人状态；readCheckoutFacts锁后实时读、createOrder写合同前再次校验 | 顾客休息/菜单保留、本人待确认、purchasable一致；HIDDEN/SUSPENDED不能解除；旧quote跨日拒绝；config/merchant/product等待各覆盖preview/create共6组 |
+| B3：无后台依赖 | 通过服务器实时日资格计算，未加入background任务、不定时改isOpen | jobs=false的真实buildApp在04:00拒绝；两店启用/未启用；停用后开店可买/原关闭店仍不可买；商品恢复实际执行仍不确认且拒单 |
+| B4：旧CAS/审计/订单兼容 | 默认未启用的旧手动no-op保持，补确认可有true→true审计并增加营业版本；订单确认不是营业确认 | OWNER/版本/无变化/重复事实；真实PG确认先/停用先→checkout，已准入创建先→关店；旧单确认/照片/配送/FINALIZED继续 |
+| C：全套/升级/报告 | 原198集成保留，新增18日确认；原56单测加3营业日 | 下表全部命令、升级/Seed、原52表指纹；独立只读审查及实际CI查询 |
 
-新增daily-restore.test.ts最终20项；原178项全部回归，原商家21项中的生命周期用例增加确认、承接与FINALIZED时的实际系统恢复及完整角色响应核验。配置加载新增1项单元测试。没有把枚举/模型存在当成运行时证明。
+第九轮PG18项全部通过，原198项均回归，其中保留原第七轮178项、40分钟订单池、学生资格、商品三态/旧false trigger、易损证据和交接争议、冷静期、骑手冻结/异常资金、业务配置、报价/佣金0/费用及储备模拟。确认新增批量读取没有增加每店确认N+1，原风险摘要读取方式保持。
 
-## 4. 单次执行与工程边界
+## 4. 时刻过渡、准入与幂等边界
 
-- 本功能“营业日”是校园时区的本地日历日期，不定义开店续签/强制关店。数据库day是DATE，04:00不是UTC04:00；校园时区默认Asia/Shanghai，与报告日期的Asia/Singapore分开。
-- 未配置时有效默认04:00/version0，不插入虚构管理员版本。显式设置同样04:00仍可创建真实version1/审计；已有同值请求不新建版本，陈旧version仍409。
-- 到点后首次成功sweep执行；BACKGROUND_SWEEP_INTERVAL_MS默认5000ms，可配置。不是毫秒精度cron，启动/锁等待会延后，实际triggeredAt留存。
-- 只补当前日期：当天晚启用且已到点允许下次sweep执行；遗漏日期不逐日回补。首次成功前最近人工售罄可被恢复，首次成功后再次人工售罄保留；同日改时刻、关再开、重启不重跑。零变更也占用当日成功执行事实。
-- 管理员配置写与worker用同一advisory lock；运行中批次采用锁定配置，后续配置只影响未执行日期。锁内重查偏好，关闭先提交则不执行；新启用未进入候选快照者等下次轮询。
-- 每店整批事务；失败无部分商品变更/假完成，下一轮重试。此前成功的店保持已提交事实。单店失败结束当次sweep并记原后台错误日志，后续候选等待之后成功轮询；持续故障需修复，未承诺无条件漏跑完成。
-- 手工API的商家/商品锁与CAS串行化，旧bool trigger继续生效。绕过现有商家锁的旧写入并发新增商品若不属于已锁定返回批次，不参加该次恢复；不凭新商品或未来库存增加数量。
-- 商家锁等待后读实际时间；商品等待跨午夜或时刻回退则不创建记录/修改商品，等待后续合法轮询。最新成功日期阻止时钟/时区回退补历史日，各部署实例须采用一致campusTimeZone；无任意人工重跑或清除历史入口。
-- C将真实配置加载器和.env.example默认改false；已有部署显式ENABLE_BACKGROUND_JOBS=true仍为true，运行原冷静期、到期池、结算扫描和恢复。未覆盖部署环境文件，未启动/重启生产服务。
+1. 营业日04:00前属前日，04:00起新日。身份用实际UTC起点，日期标签为起点的校园本地日期；第八轮恢复继续按校园自然日期。确认事实不因关店/停用而删除或改写。
+2. 平台只接受HH:mm，服务器生成timeZone/effectiveAt/transitionDayStart和前一有效策略快照。改时延长当前日到“当前公布下一边界”与“新时刻下一边界”较晚者，修改瞬间不撤销旧确认；pending替换不提前已公布边界。版本/审计保留，configuredVersion不冒充当前有效version。
+3. 生效首个区间从实际effectiveAt开始，随后按新时刻；首个过渡区间可能长于或短于24小时，同一本地日期标签也可能对应不同实际起点，故唯一键用实际起点。已验证04→08、08→02、反复pending替换及跨午夜/跨日；这是任务授权的安全工程策略，不是固定排班规则。
+4. 例如已确认10月13日04:00起的店在中午改08:00：当前确认延续至10月14日08:00（UTC10月14日00:00），不会10月14日04:00先撤销。08→02在中午设置时，首日从已公布的次日08:00起，之后按02:00；视图显示实际起点与下次切换。既有订单始终不受回写。
+5. 商家effectiveAt是启用时最早下一切换资格，后续改时不回写偏好历史。active要求当前实际日起点达到阈值；平台延长当前日时不会在原阈值到达而中途停单。pendingActivation/nextBusinessDayStartsAt识别实际等待。停用立即解除门禁，两者都不自动开店。
+6. 显式确认即主动开店；已启用（含待生效）模式的人工true记录今日确认，未启用模式旧同值请求仍无副作用。同日保留首次真实actor/来源/原因，不覆盖来源；关/开可有新营业审计，无重复日事实。重复操作也先检查当前营业expectedVersion。
+7. checkout锁顺序：定价配置→确认配置→商家→有序商品/类别/位置；确认/偏好：确认配置→商家。共享配置锁与管理员独占锁串行，商家锁与人工经营/第八轮恢复相容。等待后重新取服务器时间；确认跨日写入则事务409回滚。读确认过程中跨界会重读，连续变化最多3次后409刷新。
+8. 创建准入点是取得所需锁、写合同前的最后一次实时校验；已准入事务可之后提交，后排关店不能撤销旧合同。真实Order表锁等待与排队关店证明这一顺序。未把订单成立改为提交瞬间重新定义，也未改变付款时机。
+9. DST重复时刻取首次，缺失时刻取其后首个有效分钟。实例须统一校园时区和同步可信时钟；已有配置timeZone不匹配拒绝请求，不开放普通时区迁移。反复管理员改时可延长过渡日，产品无时长/次数上限，本轮不自行添加。
 
-## 5. 实际验证、失败与独立CI
+## 5. 实际验证、失败、审查与CI
 
-全部集成测试指向campus_round8_test，未对应用库执行全局清理。
+破坏性测试只用campus_round9_test，没有应用库全局清理或Seed。
 
-| 命令/验证 | A | B | C最终 |
+| 命令/检查 | A | B | C最终 |
 | --- | --- | --- | --- |
-| pnpm db:generate | 通过，Prisma6.19.3 | 通过 | 通过 |
+| pnpm db:generate（Prisma6.19.3） | 通过 | 通过 | 通过 |
 | pnpm typecheck | 通过 | 通过 | 通过 |
-| pnpm test | 18文件/55项通过 | 18文件/55项通过 | 19文件/56项通过 |
-| pnpm test:integration | 8文件/181项通过 | 8文件/187项通过 | 8文件/198项通过 |
+| pnpm test | 20文件/59项通过 | 20文件/59项通过 | 20文件/59项通过 |
+| pnpm test:integration | 9文件/201项通过 | 9文件/204项通过 | 9文件/216项通过 |
 | pnpm build | 通过 | 通过 | 通过 |
-| migrate deploy/status/diff --exit-code | 应用/旧副本/空库27迁移，无drift | 三库28迁移，无drift；既有字段指纹不变 | 应用/旧副本/全新空库28迁移，无drift；原备份49表一致 |
-| Seed | 副本/空库首轮+连续2次，经营/财务/审计摘要保持 | 副本/空库各2次，主动启用偏好和实际执行/事件保持 | 旧副本再首轮+2次；全新空库首轮+2次，偏好/状态/version/执行/事件/财务摘要保持 |
+| migrate deploy/status/diff --exit-code | 应用/旧副本/空库29条，无drift、旧字段指纹保持 | 三库30条，无drift、包括A字段/事实保持 | 三库30条；原28条新副本+全新空库升级30条，无drift、原表指纹保持 |
+| Seed | 副本/空库首轮+2次，偏好/销售/审计/财务保持 | 两库各2次，新日确认事实保持 | 原备份新副本/新空库首轮+2次，旧false隐藏、新确认/恢复事实保持 |
+| diff/范围/引用 | A检查 | B检查 | 整轮1d48e1f..C及staged diff-check通过，旧迁移/第八轮恢复模块/后台/第八轮归档无差异 |
 
-实际回归40分钟池、短码/交接争议、易损证据、资格gate、容量/屏蔽、冷静期、退款冻结/赔偿、双侧报价/佣金0、费用/储备模拟。照片为现有Mock存储，200分收入为开发内账，都不是外部实付。
+失败均留日志，未算作成功：
 
-失败记录：A首次3项因接口/验证缺失失败；错误管理员ID夹具、窄字面量类型分别修正。A首次全套180通过/1失败，为定向运行残留种子偏好，改独立夹具；审查发现Swagger响应缺口，先RED后补schema，全套181通过。B首次4项因worker缺失失败，订单清理FK错误补齐；两项测试将关店409误预期为400、前一日期23:59合法补执行误预期为不执行，修正测试。一回定向与全套误并行同一隔离库，Seed和全套清理互撞，全套185通过/2失败；保留失败日志后串行重跑。日期回退发现真实缺口，RED→单调游标→GREEN，B最终187通过。C初轮197通过；最终审查发现既有loadConfig/示例后台默认true，真实加载测试先RED后改false；补跨店及SUSPENDED后最终198项全绿。上述不是Docker故障，没有隐瞒失败。
+- A先红：3项单测缺营业日函数、3项PG缺偏好/严格新配置。实现后缺版本夹具误让undefined走默认0，修为真正省略请求字段；TypeBox未注册date-time导致存储校验拒绝，改严格ISO/有限日期校验；pending替换预期改为不提前已公布边界，定向6项绿色。
+- A首次migration diff失败：PostgreSQL截断长索引名；Prisma map对准实际名称，**未编辑已应用迁移**，后续三库及fresh验证无drift。
+- A两次全套各198通过/3失败，资格定向13通过/3失败：既有并发事务P2028，源于临时容器仅绑IPv4却用localhost。最小两个并发事务也复现，127.0.0.1后同时成功，全套201通过。未改资格业务或放宽超时。一次generate与测试并行遇Windows引擎DLL EPERM，停止测试后顺序生成通过，后续按顺序执行。
+- B先红3项：过期仍可预览、同值true跳过确认、显式接口404；实现后定向6/全套204绿色。
+- C初期17通过/1失败：履约夹具硬编码handoff revision改为读取实际版本；再次失败显示照片被INVALID_PICKUP_PHOTO正确拒绝，因为注入次日服务器时钟与PG DEFAULT now()不一致。在隔离夹具中把照片时间对齐注入承接时间，未改生产取证。另有辅助payload exactOptionalPropertyTypes错误，改省略undefined。最终定向18/全套216绿色。时间边界用注入Date和真实PG锁，照片仍为现有Mock，200分收益仍为开发内账。
 
-A/B/最终独立代码审查中的响应契约、日期回退、启动默认值问题均已验证修正并复核，无未处理的确认问题。审查不代替CI；对A/B/C实际完整SHA执行 `gh run list --commit ...` 均返回 `[]`，**独立CI验证不可用**。
+独立只读审查覆盖起点至B及C工作差异，未发现确认成立的Critical/Important缺陷；三处脚本空白使整轮diff-check失败，C清理后通过，无未处理/延后问题。审查未编辑代码/数据库，不代替执行或CI。
 
-## 6. 迁移、备份与原库事实
+对A/B/C完整SHA实际执行 `gh run list --repo Serena-Lyric/campus-delivery --commit ... --json databaseId,headSha,status,conclusion,url`，均为 `[]`。**独立CI验证不可用**，本地验证和代码审查不是CI。GitHub读取用agent-reach的GitHub/gh路径，没有发送消息或发布PR。
 
-仅新增20261012000300_daily_restore_preference（默认关闭偏好/version/真人审计）和20261012000400_daily_restore_runs（日期执行/系统事件）。原26迁移未编辑；原bool trigger/CHECK保持并经真实写入验证，升级须migrate deploy。最终应用28条完成，无新失败/回滚；既有历史rolled_back记录未清除。
+审查保留的工程判断：过渡日延长/反复改时不增加产品未确认的上限；时区迁移/时钟同步为部署前提；准入按最终锁内校验而非提交瞬间；支付/库存/自动关店/客户端/Root/历史资金缺口不扩做；执行和CI需另取证。若以后改变这些边界，需新的规则/版本策略，不改历史事实。
 
-应用库只备份、增量迁移和只读核验，**未执行应用库Seed**。原两店保持营业/曝光/version，恢复偏好均false，234商品完整原字段不变，订单/账务/配置无修改。原库无false，故仅在旧副本升级前把茶bool改false：OFF_SHELF/version1，公共隐藏且Seed后仍保留；未写回应用库。
+## 6. 迁移、备份和原应用事实
 
-本机备份/日志：`C:\Users\Serena Lyric\AppData\Local\Codex\backups\campus-delivery-round8-20261012\`。
+仅新增 `20261012000500_daily_confirmation_preference`（3个默认关闭字段/真人偏好审计）和 `20261012000600_business_day_confirmation`（真人来源枚举/实际营业日事实/唯一键和索引）。原28迁移未改，没有db push、清迁移历史或重复迁移；应用30条完成，旧rolled_back记录保留，status/diff干净。
 
-| 文件 | 字节 | 用途 |
+应用只备份、增量迁移及只读核验，**未执行应用Seed**。原两店isOpen=true/operatingVersion0、商品恢复偏好false/version0；新增确认偏好false/version0/null。234商品和既有订单/配置/履约/金额保持。
+
+原备份恢复campus_round9_baseline对照最终应用：**52张全部既有业务表**行数及完整排序JSON MD5一致。Merchant只排除新增3字段，包含第八轮全部旧字段；Product含全部状态/版本/时间。迁移表单独status核验。
+
+| 原事实 | 行数 | 原备份/最终一致指纹 |
 | --- | --- | --- |
-| round8-before.dump | 196060 | A前原应用库，恢复old及baseline成功 |
-| round8-before-B.dump | 199829 | B前应用库 |
-| round8-after.dump | 205904 | C验收后的28迁移应用库 |
-
-初始备份SHA256：`5EA13C1CB2F33EF8384C6F355411E8613279B3FE88E203FA9BA763FFB90B171F`，容器/tmp副本保留。
-
-原备份恢复campus_round8_baseline与最终应用库**49张全部既有业务表**对照：行数和完整JSON排序MD5一致。Merchant只排除本轮新增两个偏好字段，Product包含saleStatus、version、时间等全部原字段；迁移表独立检查。
-
-| 原事实 | 行数 | 原备份/最终一致摘要 |
-| --- | --- | --- |
-| Merchant原字段 | 2 | 4973980091de8b41daff1fb8bfa61836 |
-| Product完整字段 | 234 | 13eef5f7627560ff4194c16d0c8fef66 |
+| Merchant原字段 | 2 | cc833a54d4e073ba56bd7c7114c49140 |
+| Product全字段 | 234 | 13eef5f7627560ff4194c16d0c8fef66 |
 | Order | 2 | 9b6935a8651548297c673b7d1a2f7ce0 |
 | OrderItem | 4 | 2dd0fb12e79585b5760a067936b9ec32 |
 | OrderPricing | 2 | 102cbb332a80bb3abcaf68b9f3062c58 |
@@ -106,10 +104,22 @@ A/B/最终独立代码审查中的响应契约、日期回退、启动默认值�
 | RiderSettlement | 0 | d41d8cd98f00b204e9800998ecf8427e |
 | BusinessConfig | 2 | 1d4e463c53f7a4f38a5eb73cff0ea9b3 |
 
-原库骑手收入为空，不能凭空表证明该路径；C实际履约生成FINALIZED及已得收入后核验自动恢复不漂移。test/old/empty/final_empty/baseline隔离库保留。Docker CLI健康，无重启、purge、删卷或重建应用库。
+原收入空表不证明收益安全；C在隔离库实际完成易损配送/FINALIZED/200分内账后，确认、关店、偏好切换和次日确认均不改完整订单/资金/履约快照。原库无false，故仅在副本构造：A副本迁移后旧bool写false；C重还原28条备份、升级前写false，升级/重复Seed后OFF_SHELF及隐藏保持，未写回应用。
 
-复核脚本：scripts/verify-round8-migrations.ps1（迁移/status/diff/全字段指纹）、apps/api/scripts/verify-daily-restore-seed.ts（只允许round8验证库；旧false API隐藏、真实恢复后重复Seed）。备份、环境文件及日志未提交。
+备份/日志：`C:\Users\Serena Lyric\AppData\Local\Codex\backups\campus-delivery-round9-20261012\`。
 
-## 7. 停止线
+| 文件 | 字节 | 用途 |
+| --- | --- | --- |
+| round9-before.dump | 205904 | A前28条原应用，恢复baseline/旧副本成功 |
+| round9-before-B.dump | 209976 | B前29条应用 |
+| round9-after.dump | 214037 | C后30条应用 |
 
-仅完成本轮A/B/C及报告。认证仍为既有开发x-user-id，未声称客户端/生产上线；数量库存、支付、每日确认/定时关店等保持未实现。报告与任务完成标记普通推送后停止，不自动续做后续开发。
+初始SHA256：`AAA6037E2E2158D6110435FAEEB98A64DFD94E507C52BE101435CE088CE495D8`；最终：`36E009B646C113E4EAA7B2E4137982A5D8A1AA58B1A6E3D719D19F966DE5EF44`。阶段history JSON/original-comparison保存，执行日志/审查账本归档到execution；环境、备份、日志未提交。
+
+复核脚本：`scripts/verify-round9-migrations.ps1`（deploy/status/diff/逐表指纹，FromRound8支持旧备份新副本）及 `apps/api/scripts/verify-daily-confirmation-seed.ts`（限命名隔离库，旧false隐藏、真实夹具恢复/确认和重复Seed）。test/old/empty/final_old/final_empty/baseline隔离库保留。
+
+## 7. 基础设施与停止线
+
+起初docker info无法连接、Desktop未运行；仅一次安全Desktop启动后CLI健康（29.8.0）。原PG容器已停止，Windows保留5358..5457端口包括5432，启动绑定失败。确认原容器一直exited后，临时campus-round9-postgres独占挂载原campus-delivery_postgres-data卷，以127.0.0.1:55439运行PostgreSQL16.15，验证客户端明确IPv4。没有purge/reset、删数据目录/卷或重建应用库；最后备份/验证后停止临时容器，原容器保持初始停止状态。5432限制仍需本机环境处理，未改应用.env或生产配置。
+
+仅完成A/B/C及报告；认证仍为开发x-user-id，未重启/部署生产API、未替所有商家启用模式。报告/完成标记普通推送后停止，不自动续做库存、支付或自动关店。

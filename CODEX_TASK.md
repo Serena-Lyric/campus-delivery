@@ -1,6 +1,8 @@
 # CODEX_TASK — 第九轮：商家每日营业确认与有效新单门禁（2026-10-12）
 
-> **待执行新任务**。第八轮已完成（main结尾`cbb34fe5`），其原任务/报告分别已归档到`CODEX_TASK_2026-10-12_DAILY_PRODUCT_RESTORE.md`及`CODEX_REPORT_2026-10-12_DAILY_PRODUCT_RESTORE.md`，**不可当成仍未执行**。先检查git status/diff、最新main、当前数据库/迁移/Seed、既有第七/第八轮商家与商品调度代码；按AGENTS.md读取 PRODUCT_DECISIONS.md第1C/1D/1E、MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md第8节、ROLE_RESPONSIBILITIES.md对应身份、涉及的catalog/checkout/admin配置及已知审核边界。旧归档仅在必要时定位实现事实。
+> **本轮已完成（2026-10-12）**：A/B/C均已独立全套验证、普通提交与推送；实际SHA、59项单测/216项PG集成、迁移/备份、非回溯切换策略和未实现范围见 [CODEX_REPORT.md](CODEX_REPORT.md)。下文保留任务编制时要求，不授权自动续做支付、库存或定时关店。
+>
+> 第八轮已完成（main结尾`cbb34fe5`），其原任务/报告分别已归档到`CODEX_TASK_2026-10-12_DAILY_PRODUCT_RESTORE.md`及`CODEX_REPORT_2026-10-12_DAILY_PRODUCT_RESTORE.md`，**不可当成仍未执行**。任务编制时要求先检查git status/diff、最新main、当前数据库/迁移/Seed、既有第七/第八轮商家与商品调度代码；按AGENTS.md读取 PRODUCT_DECISIONS.md第1C/1D/1E、MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md第8节、ROLE_RESPONSIBILITIES.md对应身份、涉及的catalog/checkout/admin配置及已知审核边界。旧归档仅在必要时定位实现事实。
 
 ## 0. 确认规则与禁止跨界
 
