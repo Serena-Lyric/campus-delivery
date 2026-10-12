@@ -8,7 +8,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 首期商品款直付商家、配送费独立支付为**暂定且尚未实现**的设计；平台统一商品款收取及商家48小时冷却保留为未来目标。现有后端仍为开发内账模拟，无真实支付/提现，不能把商家直收商品款显示为平台可冻结资金。当前产品依据见 [PRODUCT_DECISIONS.md](PRODUCT_DECISIONS.md) 第1B节与状态导航，财务边界见 [FINANCE_OPERATIONS_DECISIONS.md](FINANCE_OPERATIONS_DECISIONS.md)。
 
-文档维护按 [AGENTS.md](AGENTS.md) 的任务索引读取相关章节；旧计划/已完成任务不自动启动下一轮。报价实现与验证见 [第四轮报告](CODEX_REPORT_2026-10-11_DUAL_SIDE_PRICING.md)，财务实现与验证见 [第五轮报告](CODEX_REPORT_2026-10-11_FINANCE_SAFEGUARDS.md)。第六轮为文档精简（`d450d6d`）；第七轮手动营业与商品三态报告见 [第七轮归档报告](CODEX_REPORT_2026-10-12_MERCHANT_OPERATIONS.md)；当前第八轮任务见 [CODEX_TASK.md](CODEX_TASK.md)。
+文档维护按 [AGENTS.md](AGENTS.md) 的任务索引读取相关章节；旧计划/已完成任务不自动启动下一轮。报价实现与验证见 [第四轮报告](CODEX_REPORT_2026-10-11_DUAL_SIDE_PRICING.md)，财务实现与验证见 [第五轮报告](CODEX_REPORT_2026-10-11_FINANCE_SAFEGUARDS.md)。第六轮为文档精简（`d450d6d`）；第七轮手动营业与商品三态报告见 [第七轮归档报告](CODEX_REPORT_2026-10-12_MERCHANT_OPERATIONS.md)；第八轮商品每日恢复的测试报告见 [第八轮归档报告](CODEX_REPORT_2026-10-12_DAILY_PRODUCT_RESTORE.md)；当前第九轮任务见 [CODEX_TASK.md](CODEX_TASK.md)。
 
 ## 商家营业与商品菜单（2026-10-12 手动 API 已实现）
 
@@ -24,9 +24,13 @@ OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日
 
 旧 `isAvailable` 保留为可售投影：仅在售为 true；旧 false 迁移为下架。旧布尔创建/完整编辑端点仍可用，SOLD_OUT 的相同 false 完整编辑保留售罄；需要明确区分售罄/下架时用状态接口。数据库 trigger 与约束维护一致性，重复 Seed 不重开商家、不恢复商品状态。迁移含 PostgreSQL 原生触发器，升级应使用 `prisma migrate deploy`；只做 `db push` 不足以安装兼容逻辑。
 
-当前交付是 API、后台执行与测试，没有完整小程序或商家前端标签。每日营业确认、定时关店、数量库存、真实支付均未实现；没有预留或开放不安全库存开关。详见 [经营专题](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) 和本轮 [CODEX_REPORT.md](CODEX_REPORT.md)。
+当前交付是 API、后台执行与测试，没有完整小程序或商家前端标签。第九轮每日营业确认任务已编排、尚未实现；定时关店、数量库存、真实支付均未实现；没有预留或开放不安全库存开关。详见 [经营专题](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) 和本轮 [CODEX_REPORT.md](CODEX_REPORT.md)。
 
 每日自动恢复已由第八轮实现后端运行路径，应用迁移保留原营业/商品/订单事实且所有旧商家默认未启用；后台开关也默认关闭，API 能力不等于部署时已运行或完整 UI 上线。数量库存和支付预留另行开发，详见产品第1D节及经营专题第6/7节。
+
+## 第九轮计划：每日营业确认（产品确认，未开发）
+
+商家可选“每日营业确认”，默认关闭，启用从下一营业日生效、关闭立即生效。平台统一营业日切换时刻初始校园当地04:00，管理配置与商品每日恢复的04:00独立；未来预留商家自定义切换点。确认今日营业、手动开始营业都完成当日确认并打开接单；不确认则**只暂停新单**，不修改人工`isOpen`、不影响已有订单。门禁必须在客户目录和服务端结账事务即时校验，不能依赖后台调度。详见 [主产品第1E节](PRODUCT_DECISIONS.md) / [经营专题第8节](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) / [CODEX_TASK.md](CODEX_TASK.md)。
 
 ## 2026-10-10 履约与管理员能力边界
 
