@@ -1,6 +1,8 @@
 # CODEX_TASK — 第八轮：商家自选每日商品恢复、04:00可配置调度（2026-10-12）
 
-> 当前待执行。第七轮手动营业和商品在售/售罄/下架三态已完成，报告已归档：`CODEX_REPORT_2026-10-12_MERCHANT_OPERATIONS.md`，任务归档：`CODEX_TASK_2026-10-12_MERCHANT_OPERATIONS.md`。先fast-forward最新main并查status/diff、当前迁移/Seed、背景任务代码和已有自动调度；遵照`AGENTS.md`按任务读取`PRODUCT_DECISIONS.md`第1C/1D节、`MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md`第6节、角色相关章节及受影响的后台任务/业务配置代码。只执行本任务A/B/C，无需重读所有历史项目文档。
+> **本轮已完成（2026-10-12）**：A/B/C 分阶段验证、普通提交推送，实际SHA、验证、工程边界与未实现范围见 [CODEX_REPORT.md](CODEX_REPORT.md)。下文保留任务编制时要求，不授权自动续做库存、支付或营业调度。
+>
+> 第七轮手动营业和商品在售/售罄/下架三态已完成，报告已归档：`CODEX_REPORT_2026-10-12_MERCHANT_OPERATIONS.md`，任务归档：`CODEX_TASK_2026-10-12_MERCHANT_OPERATIONS.md`。先fast-forward最新main并查status/diff、当前迁移/Seed、背景任务代码和已有自动调度；遵照`AGENTS.md`按任务读取`PRODUCT_DECISIONS.md`第1C/1D节、`MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md`第6节、角色相关章节及受影响的后台任务/业务配置代码。只执行本任务A/B/C，无需重读所有历史项目文档。
 
 ## 一、业务规则与停工线
 
