@@ -8,7 +8,11 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 首期商品款直付商家、配送费独立支付为**暂定且尚未实现**的设计；平台统一商品款收取及商家48小时冷却保留为未来目标。现有后端仍为开发内账模拟，无真实支付/提现，不能把商家直收商品款显示为平台可冻结资金。当前产品依据见 [PRODUCT_DECISIONS.md](PRODUCT_DECISIONS.md) 第1B节与状态导航，财务边界见 [FINANCE_OPERATIONS_DECISIONS.md](FINANCE_OPERATIONS_DECISIONS.md)。
 
-文档维护按 [AGENTS.md](AGENTS.md) 的任务索引读取相关章节；旧计划/已完成任务不自动启动下一轮。报价实现与验证见 [第四轮报告](CODEX_REPORT_2026-10-11_DUAL_SIDE_PRICING.md)，财务实现与验证见 [第五轮报告](CODEX_REPORT.md)。
+文档维护按 [AGENTS.md](AGENTS.md) 的任务索引读取相关章节；旧计划/已完成任务不自动启动下一轮。报价实现与验证见 [第四轮报告](CODEX_REPORT_2026-10-11_DUAL_SIDE_PRICING.md)，财务实现与验证见 [第五轮报告](CODEX_REPORT_2026-10-11_FINANCE_SAFEGUARDS.md)。第六轮为文档精简（`d450d6d`）；当前第七轮任务见 [CODEX_TASK.md](CODEX_TASK.md)。
+
+## 商家营业与商品菜单（2026-10-12 产品已确认，逐步开发）
+
+商家手动开关接单为基础，休息时继续展示菜单并标「休息中」、禁止新下单；商品在售/已售罄/已下架分离，售罄展示不可买、下架隐藏。每日营业确认、定时关店、可选数量库存、次日自动恢复属于后续阶段，不能默认声称已执行。当前第七轮仅开发安全手动开关店与售罄三态，具体状态以代码及后续报告为准；详见 [MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md)。
 
 ## 2026-10-10 履约与管理员能力边界
 
