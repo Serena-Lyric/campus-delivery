@@ -1,14 +1,16 @@
 import { MerchantExposureState, type PrismaClient } from '@prisma/client';
 import { Type } from '@sinclair/typebox';
+import { Value } from '@sinclair/typebox/value';
 import type { FastifyInstance } from 'fastify';
 import type { AppConfig } from '../config.js';
 import { actorOf, authGuard } from '../auth/auth.js';
 import { loadPolicyConfig } from '../merchant-policy/policies.js';
-import { forbidden, notFound } from '../shared/errors.js';
+import { badRequest, forbidden, notFound } from '../shared/errors.js';
 import { getMerchantRiskSummary } from '../merchant-risk/service.js';
 import { CategoryBody, ProductBody, productSelect, deliveryCategorySelect, saveCategory, saveProduct, type CategoryInput, type ProductInput } from './service.js';
 import { correctCatalogRisk, getCatalogRiskForMerchant, republishCorrectedOrder } from './risk-correction.js';
 import { isMerchantVisibleToCustomer } from './visibility.js';
+import { getOperatingStatus, OperatingStatusBody, operatingStatusFields, updateOperatingStatus, type OperatingStatusInput } from './operating-status.js';
 
 const IdParams = Type.Object({ merchantId: Type.String({ format: 'uuid' }) });
 
@@ -16,6 +18,16 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
   const authenticate = authGuard(prisma, config);
 
   const merchantOnly = authGuard(prisma, config, ['MERCHANT']);
+  app.get('/merchant/operating-status', { preHandler: merchantOnly, schema: { tags: ['catalog'] } },
+    async (request) => getOperatingStatus(prisma, actorOf(request)));
+  app.put<{ Body: OperatingStatusInput }>('/merchant/operating-status', {
+    preHandler: merchantOnly,
+    // Reject unknown properties before Fastify's default validator can strip them.
+    preValidation: async (request) => {
+      if (!Value.Check(OperatingStatusBody, request.body)) throw badRequest('INVALID_OPERATING_STATUS', 'Invalid operating status fields');
+    },
+    schema: { tags: ['catalog'], body: OperatingStatusBody },
+  }, async (request) => updateOperatingStatus(prisma, actorOf(request), request.body));
   app.get('/catalog/delivery-categories', { preHandler: authenticate, schema: { tags: ['catalog'] } }, async () =>
     prisma.deliveryCategory.findMany({ select: deliveryCategorySelect, orderBy: { code: 'asc' } }));
   app.get('/merchant/catalog', { preHandler: merchantOnly, schema: { tags: ['catalog'] } }, async (request) => {
@@ -102,6 +114,7 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
         name: merchant.name,
         description: merchant.description,
         isOpen: merchant.isOpen,
+        ...operatingStatusFields(merchant),
         supportedDeliveryMethods: merchant.supportedDeliveryMethods,
         campusLocation: merchant.campusLocation,
         risk: {
@@ -146,19 +159,20 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
       },
     });
     if (!merchant) throw notFound('Merchant');
-    if (actor.role === 'CUSTOMER' && !isMerchantVisibleToCustomer({
+    if (merchant.exposureState === 'HIDDEN' || merchant.exposureState === 'SUSPENDED' || (actor.role === 'CUSTOMER' && !isMerchantVisibleToCustomer({
       merchantId: merchant.id,
       customerId: actor.id,
       exposureState: merchant.exposureState,
       trialExposureOverrideBps: merchant.trialExposureOverrideBps,
       configuredTrialExposureBps: policy.merchantTrialExposureBps,
-    })) throw notFound('Merchant');
+    }))) throw notFound('Merchant');
     const risk = await getMerchantRiskSummary(prisma, merchant.id);
     return {
       id: merchant.id,
       name: merchant.name,
       description: merchant.description,
       isOpen: merchant.isOpen,
+      ...operatingStatusFields(merchant),
       supportedDeliveryMethods: merchant.supportedDeliveryMethods,
       campusLocation: merchant.campusLocation,
       categories: merchant.categories,

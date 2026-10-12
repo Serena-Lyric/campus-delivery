@@ -339,6 +339,7 @@ model User {
   capacityEvents            RiderCapacityEvent[]              @relation("RiderCapacityEventActor")
   rescueContributionChanges MerchantRescueContributionEvent[]
   baseDeliveryQuoteChanges  MerchantBaseDeliveryQuoteAudit[]
+  operatingStatusChanges    MerchantOperatingStatusAudit[]
   academicTerms             AcademicTerm[]
   eligibilityReviews        RiderEligibilityReview[]
   createdAt                 DateTime                          @default(now())
@@ -367,6 +368,8 @@ model Merchant {
   campusLocationId          String                     @db.Uuid
   campusLocation            CampusLocation             @relation(fields: [campusLocationId], references: [id])
   isOpen                    Boolean                    @default(true)
+  operatingVersion          Int                        @default(0)
+  operatingStatusAudits     MerchantOperatingStatusAudit[]
   exposureState             MerchantExposureState      @default(TRIAL)
   trialExposureOverrideBps  Int?
   maxConcurrentOrders       Int                        @default(0)
@@ -385,6 +388,22 @@ model Merchant {
   exposureDecisions         MerchantExposureDecision[]
   createdAt                 DateTime                   @default(now())
   updatedAt                 DateTime                   @updatedAt
+}
+
+model MerchantOperatingStatusAudit {
+  id             String   @id @default(uuid()) @db.Uuid
+  merchantId     String   @db.Uuid
+  merchant       Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  version        Int
+  previousIsOpen Boolean
+  newIsOpen      Boolean
+  actorId        String   @db.Uuid
+  actor          User     @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  reason         String
+  createdAt      DateTime @default(now())
+
+  @@unique([merchantId, version])
+  @@index([merchantId, createdAt])
 }
 
 model MerchantBaseDeliveryQuoteAudit {

@@ -495,7 +495,6 @@ export async function seedDatabase(client: PrismaClient) {
       name: '校园饭堂演示店',
       ownerId: seedIds.merchantUser,
       campusLocationId: seedIds.merchantLocation,
-      isOpen: true,
       exposureState: MerchantExposureState.NORMAL,
       trialExposureOverrideBps: 10_000,
       maxConcurrentOrders: 20,
