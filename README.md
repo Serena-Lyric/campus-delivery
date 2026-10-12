@@ -14,7 +14,11 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 本店 OWNER 使用 `GET/PUT /merchant/operating-status` 手动开关接单，PUT 提交 `isOpen / expectedVersion / reason`。公共目录返回 `acceptingOrders / operatingStatusLabel`，休息时继续展示菜单并标「休息中」，预览与创建在数据库锁内拒单；平台 HIDDEN/SUSPENDED 仍不可见。关店不取消旧单、不改资金或履约事实。
 
-第八轮 A：OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日商品恢复偏好，PUT 为 `enabled / expectedVersion / reason`，默认关闭。GET 提供平台有效时刻、校园时区、配置版本和来源：未配置时 `04:00 / version:0 / SYSTEM_DEFAULT`。旧 SUPER_ADMIN 可通过 `PUT /admin/business-configs/PRODUCT_DAILY_RESTORE` 设置 `{payload:{time:"HH:mm"},expectedVersion,reason}`，版本化并审计；不授予 Root 或资金权限。接口纳入运行时 OpenAPI；无完整商家/管理 UI。A 阶段仅保存配置，不执行商品恢复。
+OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日商品恢复偏好，PUT 为 `enabled / expectedVersion / reason`，默认关闭。GET 提供平台有效时刻、校园时区、配置版本和来源：未配置时 `04:00 / version:0 / SYSTEM_DEFAULT`。旧 SUPER_ADMIN 可通过 `PUT /admin/business-configs/PRODUCT_DAILY_RESTORE` 设置 `{payload:{time:"HH:mm"},expectedVersion,reason}`，版本化并审计；不授予 Root 或资金权限。接口纳入运行时 OpenAPI；无完整商家/管理 UI。
+
+`ENABLE_BACKGROUND_JOBS=true` 时现有后台循环按 `campusTimeZone`（默认 Asia/Shanghai）执行每日恢复；默认关闭时 API 请求也不补执行。按校园本地日历日期、当日配置时刻到点后首次成功 sweep 执行，一店一天最多一次；晚开启允许当日补执行，遗漏的历史日期不回补。已执行后改时刻或关闭再开启都不重复执行，时钟/时区回退也不处理早于最近成功日的日期。配置锁→商家锁→商品有序行锁、逐商品版本/status 条件和整批事务保证多实例、失败回滚及人工操作安全；完成记录也覆盖零商品变更的日期。
+
+`MerchantDailyRestoreRun` 记录配置/偏好版本、日期、时区、计划时刻、实际触发时间及 SYSTEM/AUTO_DAILY 来源；`ProductDailyRestoreAudit` 记录自动状态和商品新版本，不伪造 User，也不修改既有人工作业审计。仅 SOLD_OUT→ON_SALE；OFF_SHELF/已在售不变，不开店、不加库存、不改订单/定价/履约/财务。首次执行前人工售罄可能被本次恢复覆盖；首次执行后的人工售罄保留到下次日期或手动恢复。
 
 `PUT /merchant/catalog/products/:id/sale-status` 接收 `saleStatus / expectedVersion / reason`：`ON_SALE` 展示可买，`SOLD_OUT` 展示「已售罄」不可买，`OFF_SHELF` 隐藏不可买。公共商品 `purchasable` 还依赖商家营业。状态修改不改价格/风险类别；当前版本无变化返回 `changed:false`，陈旧版本409，非法/额外字段400；实际变更与审计同事务提交。商家自己的 catalog 管理三态。
 

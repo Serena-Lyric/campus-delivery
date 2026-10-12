@@ -2,6 +2,9 @@ import { PrismaClient } from '@prisma/client';
 import assert from 'node:assert/strict';
 import { buildApp } from '../src/app.js';
 import { seedDatabase, seedIds } from '../prisma/seed.js';
+import { updateDailyRestorePreference } from '../src/catalog/daily-restore-preference.js';
+import { restoreDailyProducts } from '../src/catalog/daily-restore.js';
+import { updateProductSaleStatus } from '../src/catalog/product-status.js';
 
 // Intentionally limited to disposable validation databases: repeat Seed updates demo profiles.
 const databaseUrl = process.env.DATABASE_URL!;
@@ -11,7 +14,7 @@ const app = await buildApp({ databaseUrl, host: '127.0.0.1', port: 3000, enableD
   enableBackgroundJobs: false, backgroundSweepIntervalMs: 5000, campusTimeZone: 'Asia/Shanghai', logLevel: 'silent' }, prisma);
 const financialTables = ['Order', 'OrderItem', 'OrderPricing', 'OrderEvent', 'DeliveryTask', 'DeliveryAssignment',
   'Settlement', 'RiderSettlement', 'CompensationObligation', 'CompensationAllocation', 'ExceptionCase', 'ExceptionCaseAction',
-  'ExceptionEvent', 'Evidence', 'BusinessConfig', 'BusinessConfigAudit', 'MerchantOperatingStatusAudit', 'ProductSaleStatusAudit', 'MerchantDailyRestorePreferenceAudit'];
+  'ExceptionEvent', 'Evidence', 'BusinessConfig', 'BusinessConfigAudit', 'MerchantOperatingStatusAudit', 'ProductSaleStatusAudit', 'MerchantDailyRestorePreferenceAudit', 'MerchantDailyRestoreRun', 'ProductDailyRestoreAudit'];
 async function snapshot() {
   const values = await Promise.all(financialTables.map(async (table) => {
     const [value] = await prisma.$queryRawUnsafe<Array<{ rows: bigint; fingerprint: string }>>(
@@ -24,6 +27,14 @@ async function snapshot() {
 }
 try {
   await app.ready();
+  const actor = { id: seedIds.merchantUser, role: 'MERCHANT' as const, merchantId: seedIds.merchant };
+  const preference = await prisma.merchant.findUniqueOrThrow({ where: { id: seedIds.merchant } });
+  await updateDailyRestorePreference(prisma, actor, { enabled: true, expectedVersion: preference.dailyProductRestoreVersion, reason: 'Isolated seed preservation fixture' }, 'Asia/Shanghai');
+  if (!await prisma.merchantDailyRestoreRun.findFirst({ where: { merchantId: seedIds.merchant } })) {
+    const rice = await prisma.product.findUniqueOrThrow({ where: { id: seedIds.productRice } });
+    await updateProductSaleStatus(prisma, actor, rice.id, { saleStatus: 'SOLD_OUT', expectedVersion: rice.version, reason: 'Isolated daily restore fixture' });
+    await restoreDailyProducts(prisma, { enableBackgroundJobs: true, campusTimeZone: 'Asia/Shanghai' }, () => new Date('2026-10-12T20:00:00Z'));
+  }
   const tea = await prisma.product.findUniqueOrThrow({ where: { id: seedIds.productTea } });
   if (new URL(databaseUrl).pathname.endsWith('_old')) {
     assert.equal(tea.saleStatus, 'OFF_SHELF');

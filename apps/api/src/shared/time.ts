@@ -38,6 +38,11 @@ export function campusDay(now: Date, timeZone: string): Date {
   return new Date(Date.UTC(value.year, value.month - 1, value.day));
 }
 
+export function campusMinuteOfDay(now: Date, timeZone: string): number {
+  const value = zonedParts(now, timeZone);
+  return value.hour * 60 + value.minute;
+}
+
 export function nextCampusDayStart(now: Date, timeZone: string): Date {
   const value = zonedParts(now, timeZone);
   const localMidnightAsUtc = Date.UTC(value.year, value.month - 1, value.day + 1);
