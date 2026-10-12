@@ -14,6 +14,8 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 本店 OWNER 使用 `GET/PUT /merchant/operating-status` 手动开关接单，PUT 提交 `isOpen / expectedVersion / reason`。公共目录返回 `acceptingOrders / operatingStatusLabel`，休息时继续展示菜单并标「休息中」，预览与创建在数据库锁内拒单；平台 HIDDEN/SUSPENDED 仍不可见。关店不取消旧单、不改资金或履约事实。
 
+第八轮 A：OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日商品恢复偏好，PUT 为 `enabled / expectedVersion / reason`，默认关闭。GET 提供平台有效时刻、校园时区、配置版本和来源：未配置时 `04:00 / version:0 / SYSTEM_DEFAULT`。旧 SUPER_ADMIN 可通过 `PUT /admin/business-configs/PRODUCT_DAILY_RESTORE` 设置 `{payload:{time:"HH:mm"},expectedVersion,reason}`，版本化并审计；不授予 Root 或资金权限。接口纳入运行时 OpenAPI；无完整商家/管理 UI。A 阶段仅保存配置，不执行商品恢复。
+
 `PUT /merchant/catalog/products/:id/sale-status` 接收 `saleStatus / expectedVersion / reason`：`ON_SALE` 展示可买，`SOLD_OUT` 展示「已售罄」不可买，`OFF_SHELF` 隐藏不可买。公共商品 `purchasable` 还依赖商家营业。状态修改不改价格/风险类别；当前版本无变化返回 `changed:false`，陈旧版本409，非法/额外字段400；实际变更与审计同事务提交。商家自己的 catalog 管理三态。
 
 旧 `isAvailable` 保留为可售投影：仅在售为 true；旧 false 迁移为下架。旧布尔创建/完整编辑端点仍可用，SOLD_OUT 的相同 false 完整编辑保留售罄；需要明确区分售罄/下架时用状态接口。数据库 trigger 与约束维护一致性，重复 Seed 不重开商家、不恢复商品状态。迁移含 PostgreSQL 原生触发器，升级应使用 `prisma migrate deploy`；只做 `db push` 不足以安装兼容逻辑。

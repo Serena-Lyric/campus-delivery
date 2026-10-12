@@ -6,6 +6,7 @@ import { eligibilityPolicyKey, eligibilityPolicyLock, validateEligibilityPolicy 
 import { deliveryPricingPolicyKey, pricingConfigLock, validateDeliveryPricingConfig } from '../pricing/config.js';
 import { paymentCostPolicyKey, validatePaymentCostPolicy } from '../finance/costs.js';
 import { reservePolicyKey, validateReservePolicy } from '../finance/reserve.js';
+import { dailyRestoreKey, dailyRestoreConfigLock, validateDailyRestoreConfig } from '../catalog/daily-restore-config.js';
 
 export async function getBusinessConfig(prisma: PrismaClient, actor: Actor, key: string) {
   requireAdminLevel(actor, ['SUPER_ADMIN']);
@@ -31,18 +32,19 @@ export async function updateBusinessConfig(
   expectedVersion?: number,
 ) {
   requireAdminLevel(actor, ['SUPER_ADMIN']);
-  const validatedPayload = key === 'ORDER_POLICY'
+  const validatedPayload = key === dailyRestoreKey ? validateDailyRestoreConfig(payload as Prisma.JsonValue) : key === 'ORDER_POLICY'
     ? validatePolicyPayload(payload as Prisma.JsonValue)
     : key === eligibilityPolicyKey ? validateEligibilityPolicy(payload as Prisma.JsonValue)
       : key === deliveryPricingPolicyKey ? validateDeliveryPricingConfig(payload as Prisma.JsonValue)
         : key === paymentCostPolicyKey ? validatePaymentCostPolicy(payload as Prisma.JsonValue)
           : key === reservePolicyKey ? validateReservePolicy(payload as Prisma.JsonValue) : payload;
-  if ([eligibilityPolicyKey, deliveryPricingPolicyKey, paymentCostPolicyKey, reservePolicyKey].includes(key) && expectedVersion === undefined) {
+  if ([dailyRestoreKey, eligibilityPolicyKey, deliveryPricingPolicyKey, paymentCostPolicyKey, reservePolicyKey].includes(key) && expectedVersion === undefined) {
     throw badRequest('CONFIG_VERSION_REQUIRED', 'This policy requires the expected config version (0 when unconfigured)');
   }
   if (!reason.trim()) throw badRequest('CONFIG_REASON_REQUIRED', 'A non-blank audit reason is required');
 
   return prisma.$transaction(async (tx) => {
+    if (key === dailyRestoreKey) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${dailyRestoreConfigLock})`;
     if ([deliveryPricingPolicyKey, 'ORDER_POLICY', paymentCostPolicyKey, reservePolicyKey].includes(key)) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${pricingConfigLock})`;
     if (key === eligibilityPolicyKey) await tx.$executeRaw`SELECT pg_advisory_xact_lock(${eligibilityPolicyLock})`;
     await tx.$queryRaw`SELECT "id" FROM "BusinessConfig" WHERE "key" = ${key} FOR UPDATE`;
@@ -57,6 +59,7 @@ export async function updateBusinessConfig(
       throw badRequest('CONFIG_VERSION_REQUIRED', 'Changing merchandise commission requires the expected config version');
     }
     if (expectedVersion !== undefined && expectedVersion !== (current?.version ?? 0)) throw conflict('CONFIG_VERSION_CONFLICT', 'Refresh the business config before changing it');
+    if (key === dailyRestoreKey && current && validateDailyRestoreConfig(current.payload).time === validateDailyRestoreConfig(validatedPayload as Prisma.JsonValue).time) return current;
     if (key === eligibilityPolicyKey && validateEligibilityPolicy(validatedPayload as Prisma.JsonValue).enforced) {
       const now = new Date();
       if (!await tx.academicTerm.findFirst({ where: { startsAt: { lte: now }, endsAt: { gt: now } }, select: { id: true } })) {

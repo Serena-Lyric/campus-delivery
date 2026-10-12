@@ -12,6 +12,7 @@ import { correctCatalogRisk, getCatalogRiskForMerchant, republishCorrectedOrder 
 import { isMerchantVisibleToCustomer } from './visibility.js';
 import { getOperatingStatus, OperatingStatusBody, operatingStatusFields, updateOperatingStatus, type OperatingStatusInput } from './operating-status.js';
 import { productSaleFields, SaleStatusBody, updateProductSaleStatus, type SaleStatusInput } from './product-status.js';
+import { DailyRestorePreferenceBody, DailyRestorePreferenceView, DailyRestorePreferenceUpdateView, getDailyRestorePreference, updateDailyRestorePreference, type DailyRestorePreferenceInput } from './daily-restore-preference.js';
 
 const IdParams = Type.Object({ merchantId: Type.String({ format: 'uuid' }) });
 const ProductUpdateBody = Type.Object({ ...ProductBody.properties, expectedVersion: Type.Integer({ minimum: 1 }) }, { additionalProperties: false });
@@ -20,6 +21,13 @@ export async function registerCatalogRoutes(app: FastifyInstance, prisma: Prisma
   const authenticate = authGuard(prisma, config);
 
   const merchantOnly = authGuard(prisma, config, ['MERCHANT']);
+  app.get('/merchant/daily-product-restore', { preHandler: merchantOnly, schema: { tags: ['catalog'], response: { 200: DailyRestorePreferenceView } } },
+    async (request) => getDailyRestorePreference(prisma, actorOf(request), config.campusTimeZone));
+  app.put<{ Body: DailyRestorePreferenceInput }>('/merchant/daily-product-restore', {
+    preHandler: merchantOnly, preValidation: async (request) => {
+      if (!Value.Check(DailyRestorePreferenceBody, request.body)) throw badRequest('INVALID_DAILY_RESTORE_PREFERENCE', 'Invalid daily restore preference fields');
+    }, schema: { tags: ['catalog'], body: DailyRestorePreferenceBody, response: { 200: DailyRestorePreferenceUpdateView } },
+  }, async (request) => updateDailyRestorePreference(prisma, actorOf(request), request.body, config.campusTimeZone));
   app.get('/merchant/operating-status', { preHandler: merchantOnly, schema: { tags: ['catalog'] } },
     async (request) => getOperatingStatus(prisma, actorOf(request)));
   app.put<{ Body: OperatingStatusInput }>('/merchant/operating-status', {

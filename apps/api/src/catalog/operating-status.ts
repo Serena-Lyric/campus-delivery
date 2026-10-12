@@ -24,7 +24,8 @@ export async function lockOwnMerchant(tx: Prisma.TransactionClient, actor: Actor
   if (write) await tx.$queryRaw`SELECT "id" FROM "Merchant" WHERE "id" = ${actor.merchantId}::uuid FOR UPDATE`;
   else await tx.$queryRaw`SELECT "id" FROM "Merchant" WHERE "id" = ${actor.merchantId}::uuid FOR SHARE`;
   const merchant = await tx.merchant.findFirst({ where: { id: actor.merchantId, ownerId: actor.id },
-    select: { id: true, isOpen: true, operatingVersion: true, exposureState: true } });
+    select: { id: true, isOpen: true, operatingVersion: true, exposureState: true,
+      dailyProductRestoreEnabled: true, dailyProductRestoreVersion: true } });
   if (!merchant) throw notFound('Own merchant');
   return merchant;
 }

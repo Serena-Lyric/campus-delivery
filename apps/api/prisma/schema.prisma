@@ -346,6 +346,7 @@ model User {
   rescueContributionChanges MerchantRescueContributionEvent[]
   baseDeliveryQuoteChanges  MerchantBaseDeliveryQuoteAudit[]
   operatingStatusChanges    MerchantOperatingStatusAudit[]
+  dailyRestorePreferenceChanges MerchantDailyRestorePreferenceAudit[]
   productSaleStatusChanges  ProductSaleStatusAudit[]
   academicTerms             AcademicTerm[]
   eligibilityReviews        RiderEligibilityReview[]
@@ -376,6 +377,9 @@ model Merchant {
   campusLocation            CampusLocation             @relation(fields: [campusLocationId], references: [id])
   isOpen                    Boolean                    @default(true)
   operatingVersion          Int                        @default(0)
+  dailyProductRestoreEnabled Boolean                   @default(false)
+  dailyProductRestoreVersion Int                       @default(0)
+  dailyRestorePreferenceAudits MerchantDailyRestorePreferenceAudit[]
   operatingStatusAudits     MerchantOperatingStatusAudit[]
   productSaleStatusAudits   ProductSaleStatusAudit[]
   exposureState             MerchantExposureState      @default(TRIAL)
@@ -396,6 +400,21 @@ model Merchant {
   exposureDecisions         MerchantExposureDecision[]
   createdAt                 DateTime                   @default(now())
   updatedAt                 DateTime                   @updatedAt
+}
+
+model MerchantDailyRestorePreferenceAudit {
+  id String @id @default(uuid()) @db.Uuid
+  merchantId String @db.Uuid
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  version Int
+  previousEnabled Boolean
+  newEnabled Boolean
+  actorId String @db.Uuid
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  reason String
+  createdAt DateTime @default(now())
+  @@unique([merchantId, version])
+  @@index([merchantId, createdAt])
 }
 
 model MerchantOperatingStatusAudit {
