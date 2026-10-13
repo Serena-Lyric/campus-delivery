@@ -6,9 +6,9 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 本阶段仍是模块化单体 REST API。第四轮报价及第五轮财务安全基础已有完成记录；商家基础报价仅作定价参考、商品佣金可配置且默认0%均已确认。代码能力和当前应用配置不同，历史报告只说明其记录的提交与验证，不代表所有产品规则已上线。
 
-首期商品款直付商家、配送费独立支付为**暂定且尚未实现**的设计；平台统一商品款收取及商家48小时冷却保留为未来目标。现有后端仍为开发内账模拟，无真实支付/提现，不能把商家直收商品款显示为平台可冻结资金。当前产品依据见 [PRODUCT_DECISIONS.md](PRODUCT_DECISIONS.md) 第1B节与状态导航，财务边界见 [FINANCE_OPERATIONS_DECISIONS.md](FINANCE_OPERATIONS_DECISIONS.md)。
+**2026-10-13 已决定暂缓真实支付选型**：商品款直付+独立配送费和统一支付/合规分账均只是候选，等待合法主体及通道实际能力。现有后端仍为开发内账模拟，无真实支付/提现或实际商品款冻结。现行依据见 [PRODUCT_DECISIONS.md](PRODUCT_DECISIONS.md) 第1G节与 [财务专题](FINANCE_OPERATIONS_DECISIONS.md)。
 
-文档维护按 [AGENTS.md](AGENTS.md) 的任务索引读取相关章节；旧计划/已完成任务不自动启动下一轮。报价实现与验证见 [第四轮报告](CODEX_REPORT_2026-10-11_DUAL_SIDE_PRICING.md)，财务实现与验证见 [第五轮报告](CODEX_REPORT_2026-10-11_FINANCE_SAFEGUARDS.md)。第六轮为文档精简（`d450d6d`）；第七轮手动营业与商品三态报告见 [第七轮归档报告](CODEX_REPORT_2026-10-12_MERCHANT_OPERATIONS.md)；第八轮商品每日恢复的测试报告见 [第八轮归档报告](CODEX_REPORT_2026-10-12_DAILY_PRODUCT_RESTORE.md)；当前第九轮任务见 [CODEX_TASK.md](CODEX_TASK.md)。
+文档维护按 [AGENTS.md](AGENTS.md) 的任务索引读取相关章节；旧计划/已完成任务不自动启动下一轮。报价实现与验证见 [第四轮报告](CODEX_REPORT_2026-10-11_DUAL_SIDE_PRICING.md)，财务实现与验证见 [第五轮报告](CODEX_REPORT_2026-10-11_FINANCE_SAFEGUARDS.md)。第六轮为文档精简（`d450d6d`）；第七轮手动营业与商品三态报告见 [第七轮归档报告](CODEX_REPORT_2026-10-12_MERCHANT_OPERATIONS.md)；第八轮商品每日恢复的测试报告见 [第八轮归档报告](CODEX_REPORT_2026-10-12_DAILY_PRODUCT_RESTORE.md)；第九轮已完成后端/API（未交付完整UI），见 [任务](CODEX_TASK.md) 和 [报告](CODEX_REPORT.md)；[自动关店专题](MERCHANT_AUTO_CLOSE_DECISIONS.md) 仍未开发，下一轮前先尝试处理 [四项遗留检查](PRE_NEXT_ROUND_CHECKLIST.md)，此二者均不授权下一轮开发。
 
 ## 商家营业与商品菜单（2026-10-12 手动 API 已实现）
 
