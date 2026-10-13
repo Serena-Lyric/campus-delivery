@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import { Type } from '@sinclair/typebox';
+import { Value } from '@sinclair/typebox/value';
 import type { FastifyInstance } from 'fastify';
 import { actorOf, authGuard, adminGuard } from '../auth/auth.js';
 import { issueRiderPickupCode } from './pickup-code.js';
@@ -7,6 +8,8 @@ import { confirmRiderPickup, type MerchantPickupInput } from './merchant-pickup.
 import { disputePickup, acknowledgePickupMistake, resolvePickupDispute, type PickupDisputeInput, type ResolvePickupInput } from './pickup-dispute.js';
 import { reportCatalogRisk, type CatalogRiskInput } from '../catalog/risk-correction.js';
 import type { AppConfig } from '../config.js';
+import { ArrivalBody, ArrivalView, markRiderArrival, type ArrivalInput } from './arrival.js';
+import { badRequest } from '../shared/errors.js';
 import {
   claimTask,
   deliverTask,
@@ -34,6 +37,14 @@ export async function registerDeliveryRoutes(app: FastifyInstance, prisma: Prism
   const uuid = () => Type.String({ format: 'uuid' });
   const note = () => Type.String({ minLength: 1, maxLength: 500, pattern: '\\S' });
   const orderParams = Type.Object({ orderId: uuid() });
+
+  app.post<{ Params: { taskId: string }; Body: ArrivalInput }>('/delivery-tasks/:taskId/arrive', {
+    preHandler: rider,
+    preValidation: async (request) => {
+      if (!Value.Check(ArrivalBody, request.body)) throw badRequest('INVALID_ARRIVAL', 'Only the current assignment ID may be submitted');
+    },
+    schema: { tags: ['delivery'], description: 'Voluntary self-reported arrival before pickup. Once per active assignment; no GPS proof or compulsory arrival requirement.', params: TaskIdParams, body: ArrivalBody, response: { 200: ArrivalView } },
+  }, async (request) => markRiderArrival(prisma, actorOf(request), request.params.taskId, request.body.assignmentId));
 
   app.post<{ Params: { taskId: string }; Body: { assignmentId: string } }>('/delivery-tasks/:taskId/pickup-code', {
     preHandler: rider, schema: { tags: ['pickup-protocol'], params: TaskIdParams, body: Type.Object({ assignmentId: uuid() }, { additionalProperties: false }) },

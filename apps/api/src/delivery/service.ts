@@ -25,6 +25,7 @@ import { assertNoPickupDispute } from './custody-guard.js';
 import { assertQualificationCanClaim, eligibilityPolicyLock, loadEligibilityGate } from '../riders/eligibility-gate.js';
 import { qualificationSnapshot } from '../riders/eligibility-policy.js';
 import { preparationEstimateView } from '../orders/preparation-estimate.js';
+import { arrivalElapsedView } from './arrival.js';
 
 const taskSelect = {
   id: true,
@@ -38,7 +39,7 @@ const taskSelect = {
   deliveredAt: true,
   createdAt: true,
   updatedAt: true,
-  assignments: { where: { status: DeliveryAssignmentStatus.ACTIVE }, select: { id: true, riderId: true } },
+  assignments: { select: { id: true, riderId: true, status: true, merchantArrivedAt: true, endedAt: true } },
   order: {
     select: {
       id: true,
@@ -51,6 +52,7 @@ const taskSelect = {
       pickupRegionSnapshot: true,
       deliveryMethod: true,
       merchantPreparationStatus: true,
+      merchantPreparationUpdatedAt: true,
       merchantEstimatedReadyAt: true,
       merchantPreparationEstimateVersion: true,
       pickupRiskRevision: true,
@@ -82,9 +84,12 @@ const taskSelect = {
 type RiderTask = Prisma.DeliveryTaskGetPayload<{ select: typeof taskSelect }>;
 
 function presentRiderTask(task: RiderTask, actor?: Actor, timeZone = 'Asia/Shanghai', now = new Date()) {
-  const activeAssignmentId = task.assignments.find((assignment) => assignment.riderId === actor?.riderId)?.id;
+  const activeAssignmentId = task.assignments.find((assignment) => assignment.status === 'ACTIVE' && assignment.riderId === actor?.riderId)?.id;
   const latestHandoff = task.order.pickupHandoffs[0];
   const handoff = latestHandoff?.assignmentId === activeAssignmentId ? latestHandoff ?? null : null;
+  const arrivalAssignment = actor ? task.assignments.find((a) => a.riderId === actor.riderId && a.id === activeAssignmentId)
+    ?? (task.pickedUpAt && latestHandoff?.revision === task.order.pickupHandoffRevision ? task.assignments.find((a) => a.riderId === actor.riderId && a.id === latestHandoff.assignmentId) : undefined) : undefined;
+  const handedOffAt = arrivalAssignment?.id === latestHandoff?.assignmentId && latestHandoff?.revision === task.order.pickupHandoffRevision ? task.pickedUpAt : null;
   const totalQuantity = task.order.items.reduce((sum, item) => sum + item.quantity, 0);
   return {
     id: task.id,
@@ -132,6 +137,9 @@ function presentRiderTask(task: RiderTask, actor?: Actor, timeZone = 'Asia/Shang
       })),
     },
     preparationStatus: task.order.merchantPreparationStatus,
+    arrivalElapsed: arrivalAssignment ? arrivalElapsedView(arrivalAssignment.merchantArrivedAt,
+      task.order.merchantPreparationStatus === 'READY_FOR_PICKUP' ? task.order.merchantPreparationUpdatedAt : null,
+      handedOffAt, arrivalAssignment.endedAt, now, Boolean(handedOffAt && latestHandoff?.dispute && ['OPEN', 'INCONCLUSIVE'].includes(latestHandoff.dispute.status)), task.order.status) : undefined,
     preparationEstimate: !actor || activeAssignmentId
       ? preparationEstimateView(task.order, timeZone, now) : undefined,
     orderStatus: task.order.status,

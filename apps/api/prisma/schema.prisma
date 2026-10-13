@@ -123,6 +123,7 @@ enum OrderStatus {
 }
 
 enum OrderEventType {
+  RIDER_ARRIVED
   ORDER_CREATED
   COOLING_OFF_COMPLETED
   MERCHANT_CONFIRMED
@@ -863,6 +864,7 @@ model DeliveryTask {
 }
 
 model DeliveryAssignment {
+  merchantArrivedAt                         DateTime?
   id                                       String                   @id @default(uuid()) @db.Uuid
   taskId                                   String                   @db.Uuid
   task                                     DeliveryTask             @relation(fields: [taskId], references: [id], onDelete: Cascade)

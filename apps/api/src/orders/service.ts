@@ -31,6 +31,7 @@ import { calculateCheckoutQuote, checkoutQuantities, readCheckoutFacts, type Che
 import { readConfirmationState } from '../catalog/daily-confirmation-state.js';
 import { operatingStatusFields } from '../catalog/operating-status.js';
 import { preparationEstimateView } from './preparation-estimate.js';
+import { arrivalElapsedView } from '../delivery/arrival.js';
 
 export type CreateOrderInput = CheckoutInput;
 
@@ -51,6 +52,10 @@ type IncludedOrder = Prisma.OrderGetPayload<{ include: typeof orderInclude }>;
 
 function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown, timeZone: string, now: Date) {
   const { deliveryTask, settlement, riderSettlement } = order;
+  const handoff = order.pickupHandoffs[0];
+  const arrivalAssignment = deliveryTask?.assignments.find((a) => a.status === 'ACTIVE' && a.riderId === deliveryTask.riderId)
+    ?? (deliveryTask?.pickedUpAt && handoff?.revision === order.pickupHandoffRevision ? deliveryTask.assignments.find((a) => a.id === handoff.assignmentId) : undefined);
+  const handedOffAt = arrivalAssignment?.id === handoff?.assignmentId && handoff?.revision === order.pickupHandoffRevision ? deliveryTask?.pickedUpAt ?? null : null;
   const task = deliveryTask
     ? {
       id: deliveryTask.id,
@@ -93,6 +98,9 @@ function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown, time
     },
     merchantPreparationStatus: order.merchantPreparationStatus,
     merchantPreparationUpdatedAt: order.merchantPreparationUpdatedAt,
+    arrivalElapsed: actor.role !== 'RIDER' || arrivalAssignment?.riderId === actor.riderId
+      ? arrivalElapsedView(arrivalAssignment?.merchantArrivedAt ?? null, order.merchantPreparationStatus === 'READY_FOR_PICKUP' ? order.merchantPreparationUpdatedAt : null,
+        handedOffAt, arrivalAssignment?.endedAt ?? null, now, Boolean(handedOffAt && handoff?.dispute && ['OPEN', 'INCONCLUSIVE'].includes(handoff.dispute.status)), order.status) : undefined,
     preparationEstimate: actor.role !== 'RIDER' || deliveryTask?.assignments.some((a) => a.status === 'ACTIVE' && a.riderId === actor.riderId && deliveryTask.riderId === actor.riderId)
       ? preparationEstimateView(order, timeZone, now, actor.role === 'MERCHANT') : undefined,
     status: order.status,
@@ -423,7 +431,7 @@ export async function markOrderReady(
   prisma: PrismaClient,
   actor: Actor,
   orderId: string,
-  now = new Date(),
+  now?: Date,
 ) {
   if (!actor.merchantId) throw forbidden();
   return prisma.$transaction(async (tx) => {
@@ -434,6 +442,8 @@ export async function markOrderReady(
     if (order.status !== OrderStatus.READY_FOR_RIDER && order.status !== OrderStatus.CLAIMED) {
       throw conflict('ORDER_STATE_CONFLICT', 'Preparation status can only be updated for a published order before pickup');
     }
+    if (order.merchantPreparationStatus === 'READY_FOR_PICKUP') return order;
+    now ??= new Date();
     const updated = await tx.order.update({
       where: { id: order.id },
       data: {
