@@ -20,8 +20,8 @@
 
 | 每日营业确认 | **已确认**：第1E节 | 第九轮后端/API已实现、无完整 UI；见 [第九轮报告](CODEX_REPORT_2026-10-12_DAILY_CONFIRMATION.md) |
 | 双模式自动关店 | **已确认**：第1F节、[专题](MERCHANT_AUTO_CLOSE_DECISIONS.md) | **尚未实现** |
-| 出餐、到店、无法出餐与变更通知 | **已确认**：第1H节、[专题](ORDER_PREPARATION_AND_EXCEPTION_DECISIONS.md) | A–D已验证；E按任务E3落地协议/陈述/安全人工核查，正在验收，正式终止/真实退款受阻；见 [出餐API](docs/round10b-preparation-api.md) / [异常API](docs/round10b-exception-api.md) / [变更API](docs/round10b-change-api.md) / [协商API](docs/round10b-negotiation-api.md) / [CODEX_TASK.md](CODEX_TASK.md) |
-| 第十轮A工程清理 | **已完成并有独立CI**：[报告](CODEX_REPORT_2026-10-13_ROUND10A.md) | 历史数据及第十轮A测试/恢复副本均保留；回收待逐对象批准 |
+| 出餐、到店、无法出餐与变更通知 | **已确认**：第1H节、[专题](ORDER_PREPARATION_AND_EXCEPTION_DECISIONS.md) | A–D已验证；E按任务E3的协议/陈述/安全人工核查已验证，正式终止/真实退款受阻；六迁移、本地64/298及各实现SHA绿色CI见 [第十轮B报告](CODEX_REPORT.md)，入口见 [出餐API](docs/round10b-preparation-api.md) / [异常API](docs/round10b-exception-api.md) / [变更API](docs/round10b-change-api.md) / [协商API](docs/round10b-negotiation-api.md) |
+| 第十轮A工程清理 | **已完成并有独立CI**：[报告](CODEX_REPORT_2026-10-13_ROUND10A.md) | A报告时保留全部副本；第十轮B后按逐对象批准清理，备份与B新副本继续保留，见 [实际清理记录](docs/round10b-cleanup-plan.md) |
 
 正文中的“本轮 / 当前代码”需结合写入日期及对应报告提交读取；本次维护不改历史订单、Git记录或历史报告正文。
 

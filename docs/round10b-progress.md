@@ -9,9 +9,9 @@
 | B | 已完成并验证 | 0d68bb10c978ab3a95980969b76a67ec88e10d1d；64unit/243PG，CI38360085758完整成功；终态缺结束节点修复及只读复查完成 |
 | C | 已完成并验证 | dce1882332664dbb670203ed14ac2cc4b9146a30；64unit/263PG、typecheck/build、003/004升级/空库/双Seed通过；CI38371930121成功；双案件恢复绕过RED→GREEN，审查闭环 |
 | D | 已完成并验证 | fd172b19baa3276b413040392e57e1694dfb9b19；64unit/283PG、typecheck/build、005升级/空库/双Seed通过；CI38394905905成功；20项针对性/复审闭环 |
-| E | 本地完整验收及复审通过，待提交/CI | 64unit/298PG、typecheck/build通过；15项针对性、006升级/空库/双Seed通过；整单协议/分离退款陈述/合法handler三版本核查；formalTerminationAvailable=false，按E3保留正式终止阻断，未调用旧退款/造收入 |
-| F | 尚未完成 | 每阶段新SHA的CI、完整验收映射及最终CODEX_REPORT待完成 |
+| E | 安全降级已完成并验证，正式终止仍受阻 | 4aab935c1e3dd7335c9fe8096af4fe810bda7b66；64unit/298PG、typecheck/build、006升级/空库/双Seed通过；CI38397623421成功；15项针对性/复审闭环；formalTerminationAvailable=false，未调用旧退款/造收入 |
+| F | 实施验收与报告完成，最后文档提交/CI核对后停止 | frozen install/generate、64unit/298PG、主55表指纹、六迁移新增历史、A归档不变、完整编号映射及根CODEX_REPORT已记录；报告提交的CI在交付前核对 |
 
-恢复现场：本地/远端main均0b14d758，保留所有B未提交文件。Docker CLI/Desktop健康；已批准删除对象均不存在，不重复清理。主应用原容器、B test/restore/restore-archive及两个B卷保留。集成/Seed仅使用127.0.0.1:55442的独立测试库；升级仅55443恢复副本/新空库。原5432主库不迁移、不Seed。
+恢复现场（历史记录）：当时本地/远端main均0b14d758，保留所有B未提交文件。Docker CLI/Desktop健康；已批准删除对象均不存在，不重复清理。主应用原容器、B test/restore/restore-archive及两个B卷保留。集成/Seed仅使用127.0.0.1:55442的独立测试库；升级仅55443恢复副本/新空库。原5432主库不迁移、不Seed。
 
-恢复后首项及B提交/CI已完成。当前从C继续。2026-10-13最新用户选择三态通知风险声明，替代较早纯文本答复，另确认待审退出只释放个人容量、未正式解除仍占全局上限；主产品/专题/角色已记录，D按新确认实施。
+恢复后顺序完成B/C/D/E提交与CI。2026-10-13最新三态通知声明替代较早纯文本答复，待审退出只释放个人容量、未正式解除仍占统一上限；主产品/专题/角色已记录且按确认实施。最终完整状态与受阻事项见CODEX_REPORT.md，本轮交付后停止。

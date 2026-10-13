@@ -1,134 +1,118 @@
-# CODEX_REPORT — 第十轮 A：历史遗留工程清理
+# CODEX_REPORT — 第十轮 B：出餐、独立异常门禁与变更告知
 
-日期：2026-10-13（Asia/Singapore）。只执行用户授权及 CODEX_TASK.md 第十轮A：Docker/数据保护、独立CI、营业日过渡复核和支付文档收口。没有开发第十轮B、自动关店、数量库存、真实支付或Root/认证。
+日期：2026-10-13（Asia/Singapore）。依据用户明确授权、续接要求、最新 PRODUCT_DECISIONS 第1H节和 CODEX_TASK.md。恢复后保留全部本地工作，从B/C未验证步骤顺序继续，未重做绿色A阶段，未重新制定任务书。
 
-## 1. 结果与提交边界
+## 1. 交付结果与提交边界
 
-本机原应用库已恢复正常连接；两个campus容器共用同一PGDATA卷，另有独立的shop旧卷，全部保留。原21个数据库已逐库逻辑备份并在新PG实例恢复，所有public表行数/内容指纹一致；shop只读冷备在新卷物理恢复，再做逻辑恢复/16表对比。结束前原21库指纹仍一致。
+A–D后端实施及E安全降级流程已通过各自实现SHA独立CI。最终本地 **64/64 unit、298/298 PostgreSQL integration（22/15个测试文件）、typecheck/build** 全部通过；独立E CI同样64/298。E仅完成整单协议记录、分离退款陈述与授权人工核查/等待资金事实，**正式终止及真实退款仍受阻**，按任务E3明示，不冒称完整支付/结案能力。
 
-建立GitHub Actions独立PG16 service验证；首次Linux单测脚本glob展开失败已保留并最小修复。新增5项真实PG过渡回归，最终本地59单测、221PG集成、typecheck/build、迁移status/diff通过；实现提交8f17060有独立远端成功运行。现行支付说明统一服从主产品第1G节，两路线均未选型、未实现，历史正文及归档报告保留。
-
-| 阶段 | 实际完整SHA | 提交/验证范围 |
+| 节点 | 完整SHA | 实际验证 |
 | --- | --- | --- |
-| 同步前本地 | 494381d177635406a99f9866e97d52c637982b2f | main干净，无未提交/未跟踪文件 |
-| 同步后起点 | c743c30eabfde2cf997d39d4a0cc368c38b9a4b2 | fetch后仅普通ff-only，远端领先2个提交；读取最新AGENTS/CODEX_TASK |
-| A 数据盘点 | d3c3ad511a791179d0a163f7c31f17e6f475b277 | 无损恢复、全库备份/恢复取证、盘点文档；本地基线59/216、build/typecheck绿色后普通push |
-| B CI首次 | 7ec3275a8a3224b89b620dfa3ce3a580da04d3b4 | workflow提交；实际首次run失败，未称通过 |
-| B CI最小修复 | 1a62d25ebfea282e0507f0c4180dbf18a9382136 | 仅给排除glob加引号；单测本地59/59，远端完整59/216及迁移/重复Seed成功 |
-| C 过渡复核 | 8f170605b214b2c3c814860d12de36e182114e5b | 增加5项PG回归及字段说明；全套本地59/221，独立CI59/221成功，普通push |
-| D 文档收口 | e53b1235e1a5eee37b51ff58d8ab26c2f0e1d279 | 现行支付/角色/导航与历史替代说明、数据盘点补充；14份改动文档本地链接及diff检查通过，普通push；独立CI成功 |
-| D 审查收口 / 报告前终点 | 1d99196db0b6e07b5127f43d984b9603f8e02cb6 | 只读审查唯一P3的两处README遗留措辞已修正，内容/diff检查通过，普通push；应用实现仍为8f17060 |
+| 首次本地同步前 | 4abd382a98c0254006507322ebdc49e1a19814aa | 本地状态核对后安全fetch/ff同步，无reset/clean/覆盖 |
+| 本轮授权起点 | 5f11a61ef72d048d6f938e2d59f30d2556bbd673 | 最新任务/产品权威读取，未重复执行历史任务 |
+| 0 盘点及恢复证据 | f9e655b4e47b75106c067bb22f763e4fd85f2256 | 59unit/221PG基线；独立CI [38345333022](https://github.com/Serena-Lyric/campus-delivery/actions/runs/38345333022) 成功 |
+| 0 逐对象批准清理结果 | f58012cd7ddb220ee894b8224fc3bf7e67b2d8ef | 精确批准对象执行一次，主55表未变，B环境保留；CI [38346311245](https://github.com/Serena-Lyric/campus-delivery/actions/runs/38346311245) 成功 |
+| A 商家预计 | 0b14d758673964204c9033ad7ec8aaea502eed08 | 本地61unit/234PG；CI [38347218417](https://github.com/Serena-Lyric/campus-delivery/actions/runs/38347218417) 成功 |
+| B 自愿到店 | 0d68bb10c978ab3a95980969b76a67ec88e10d1d | 本地64unit/243PG；CI [38360085758](https://github.com/Serena-Lyric/campus-delivery/actions/runs/38360085758) 成功 |
+| C 暂停/恢复及待审退出 | dce1882332664dbb670203ed14ac2cc4b9146a30 | 本地64unit/263PG；CI [38371930121](https://github.com/Serena-Lyric/campus-delivery/actions/runs/38371930121) 成功 |
+| D 通知/知悉/独立风险核查 | fd172b19baa3276b413040392e57e1694dfb9b19 | 本地64unit/283PG；CI [38394905905](https://github.com/Serena-Lyric/campus-delivery/actions/runs/38394905905) 成功 |
+| E 实现终点 | 4aab935c1e3dd7335c9fe8096af4fe810bda7b66 | 本地64unit/298PG；CI [38397623421](https://github.com/Serena-Lyric/campus-delivery/actions/runs/38397623421) 成功，headSha及全部步骤核实 |
 
-报告及任务完成标记在上述实施验证后单独普通提交；报告本身SHA用 `git log -1 --format=%H -- CODEX_REPORT.md` 查询，避免自引用。最终本地/远端HEAD和报告提交CI状态由交付前再次读取；不把仅文档后续提交的状态冒称为先前实现提交状态。所有提交直接按用户授权普通push main，没有reset、clean、强推、丢弃工作或PR。
+所有阶段均普通提交并正常push main，无强推、reset、clean或未提交工作丢弃。C/D/E只读复审发现的问题已修复并有对应真实PG回归；审查与独立CI分别记录，不把审查说成运行了测试。
 
-## 2. 数据身份、保护与恢复
+本报告是实施/验证完成后的独立文档提交。为避免自引用，报告提交的完整SHA用 `git log -1 --format=%H -- CODEX_REPORT.md` 查询；实现结束SHA为上表E。本地/远端最终HEAD及报告提交CI在交付前再核实。第十轮A根报告原正文已完整归档于 [第十轮A报告](CODEX_REPORT_2026-10-13_ROUND10A.md)，其Git blob仍为397fb7b51d5cb44356da893853a58ee5f87fe32a，未改历史正文。
 
-完整双campus对照、数据库清单、逐库表数/迁移行数/Order/Product行数、端口和恢复方式见 [本机PostgreSQL盘点](docs/local-postgres-inventory-2026-10-13.md)。核心证据如下：
+## 2. 编号需求—运行时—验证映射
 
-| 对象 | 数据、连接与最终状态 | 用途判定 |
+测试简称：ETA=[preparation-estimate](apps/api/tests/integration/preparation-estimate.test.ts)，ARR=[rider-arrival](apps/api/tests/integration/rider-arrival.test.ts)，PREP=[preparation-control](apps/api/tests/integration/preparation-control.test.ts)，EXIT=[preparation-exit](apps/api/tests/integration/preparation-exit.test.ts)，CHANGE=[order-change](apps/api/tests/integration/order-change.test.ts)，NEG=[preparation-negotiation](apps/api/tests/integration/preparation-negotiation.test.ts)。不是仅字段/路由存在的验收。
+
+| 任务编号 | 运行时与验收证据 | 状态/边界 |
 | --- | --- | --- |
-| campus-delivery-postgres-1 / 0dc1d0c9c90e | campus-delivery_postgres-data；宿主5432；原停止，现healthy运行；PG16 | 当前两份本机.env指向localhost:5432/campus-delivery；主开发库 |
-| campus-round9-postgres / 5609be7ed2db | **同一个campus-delivery_postgres-data卷**；原127.0.0.1:55439；始终停止 | 第九轮替代启动入口，不是第二份数据；绝不同时启动 |
-| shop_campus-postgres-data | 原无容器挂载，原卷只读且保持；独立PG16集群含campus_delivery/postgres | 旧shop项目标签、正常关闭、只有初始迁移；历史环境判断有证据，原始用途/所有权仍需用户确认 |
-| 本轮verification/shop-recovery | 新独立卷与127.0.0.1:55441/55440；验证后均停止，未删除 | 主21库/shop恢复副本、独立测试库；只在副本进行Seed/测试 |
+| 0.1 | Git现场、diff/未跟踪/迁移历史、最新任务/产品与历史报告/CI核对；恢复从真实代码而非旧口述进度继续 | 完成 |
+| 0.2 | 主卷、共卷替代容器、A verification/shop/recovery/archive/restore及历史库均逐项盘点 | 完成；见清理记录 |
+| 0.3 | 备份SHA/冷恢复/逐库指纹/活动连接核验后等待逐对象许可，C6另询；许可后精确清理一次 | 完成；B新增对象未获删除批准且全部保留 |
+| 0.4 | 主5432未migration/Seed/集成测试；只用55442新测试/空库、55443恢复副本和CI PG16 | 完成；主55表最终指纹不变 |
+| A.1 | 默认无预计；OWNER独立版本/键/UTC时间/追加历史；订单锁拒跨店、陈旧/额外字段及取餐竞态 | ETA：默认、提前/延后、重试/并发、权限/历史/UTC和校园时区 |
+| A.2 | 查询时同步逾期/商家更新提醒；READY不继续提醒，原deadline/金额/风险不动 | ETA：过去预测如实显示、READY与原40分钟/快照；无微信/SMS实际推送 |
+| A.3 | 旧订单默认、角色负测试及claim响应校园时区；本地/CI绿色 | 完成 |
+| B.1 | 当前ACTIVE assignment在物理取餐前一次服务器自报到店，重试幂等；无记录仍能正常取餐 | ARR：并发双击、身份/assignment、无记录取餐 |
+| B.2 | 到店→READY与READY→交接两个声明节点区间；提前READY=0，无READY中间节点缺失，换人不继承 | ARR和unit：节点/终态/异议。不是连续在店或真实现场核验 |
+| B.3 | 合法异常结束保留记录；缺结束节点的旧终态返回未知结束/空总时长，不伪造持续计时 | ARR：取消/换人/异常/旧终态；无GPS、离店打卡、赔偿或自动解除 |
+| C.1 | OWNER无法制作追加事件/审计，独立门禁锁内挡池/直接claim及正常READY/取餐，保留Order/assignment/原期限/资金 | PREP：池/直接claim、双向真实锁竞争、重试、角色/金额不变 |
+| C.2 | 无承接且无冲突、原deadline未来才恢复；暂停过期建一个人工Case，不误算自然无人承接或自动资金义务 | PREP：原窗口、重复并发expiry、期限已过不能恢复 |
+| C.3 | 正式骑手报告后恢复为提议，同一当前assignment明确接受才继续；拒绝/冲突保持承接转人工 | PREP：回应版本/角色/锁等待/升级/双案件；EXIT：批准才正式解除 |
+| C.4 | 可靠人工升级；原市场deadline升级与骑手回应超时分开；重复扫描幂等 | **自动回应超时升级未启用**：recoveryTimeoutSeconds=null/automaticEscalationEnabled=false；用户未确认时长，无默认接受/拒绝 |
+| C.5 | 归属用户/OWNER/当前骑手可查独立状态、说明和等待回应；商家不能自行清人工门禁 | PREP：完整DTO负测、人工恢复事实/handler/版本；仅站内查询/事件 |
+| D.1 | OWNER只追加取餐前通知/三态自报；通知不自动改商品、金额、结算或原风险 | CHANGE：商品/价格/风险/task全事实比对、数据库UPDATE保护 |
+| D.2 | 冻结商家身份名称、服务器时间/版本；池/详情/持单必要消息及风险可读，风险池claimable=false | CHANGE：池及角色隔离、历史稳定、原骑手新通知/时间线不泄露 |
+| D.3 | 每notice/当前assignment自愿知悉一次，新通知/换人不继承；不是同意或弃权，不作为取餐条件 | CHANGE：并发、换人、无知悉正常取餐、知悉后仍可举报 |
+| D.4 | 原/orders/:id/exceptions新增GOODS_CHANGE_OBJECTION，绑定当前assignment/可选通知/证据，共享Case | CHANGE：报告重试、实际证据保留、覆盖事件一并核查解决；不自动解除/判责/赔偿 |
+| D.5 | 新增/未核定核心风险独立sticky门禁，后续无风险声明不能自己清；当前handler双版本核查；未知价值继续HOLD | CHANGE：直接claim/取餐/送达/旧退款/终止旁路、照片+短码并行、真实锁竞争、双域和待审退出组合。既有漏报/交接保护可用，但不清本门禁或按旧低价放行未知新增风险 |
+| E.1 | 原共享Case的单处理人/合法状态/领取升级；三版本+键+Order→Task→Case锁；SUPER_ADMIN也不得跳过handler | NEG：handler、升级、终态、陈旧/即时重试、真实Order锁等待 |
+| E.2 | 整单提议/双方独立确认/异议与退款进度分离追加；新提议失去旧确认，金额冲突/承接历史走普通核查 | NEG：双方确认、争议金额、历史承接、后续事实令review失效。**正式终止未完成**，仅简化事实核查/等待可信资金流 |
+| E.3 | 所有真实资金标志保持false，旧REFUND_AND_CLOSE不能用于新未完成控制单；不造收入、余额、补偿或到账 | NEG：price/Settlement完整不变、无RiderSettlement/CompensationObligation；按任务允许安全降级验收 |
+| E.4 | 请求只允许wholeOrderUnavailable=true；当前骑手拒协议入口，历史权益保持；不改原商品和账、不开新窗口 | NEG：部分范围/注入字段/角色/原承接快照负测；无部分退款、价差或用户免审批结案 |
+| F.1 | 64/298完整回归；六迁移隔离升级/空库/status/diff/双Seed；主55表不变 | 完成，旧59/221未回退 |
+| F.2 | frozen install、generate、typecheck、unit、PG integration、build实际执行；A–E实现SHA CI全部成功 | 完成；独立日志也确认E64/298 |
+| F.3 | 主产品导航、专题/角色、README、OpenAPI/API说明和本报告更新；历史A报告保留 | 完成；报告提交另做文档及CI检查 |
+| F.4 | 无新增支付/自动关店/Root/UI/库存/资金规则；B新增数据保留，完成交付后停止 | 遵守 |
 
-主库55张public表，30个已完成迁移+2条历史回滚记录；User10、Merchant2、Product234、Order2、Settlement2。shop旧库16张public表，仅init迁移；User5、Merchant1、Product2、Order1、Settlement1。两集群system_identifier不同，schema及业务指纹不同，不能凭名称判为重复数据。既有第2/7/8/9轮测试/迁移库同样逐库保留，不重跑旧任务。
+续接新增容量确认已运行：待审退出只释放个人容量，所有ACTIVE且未正式解除承接仍占该骑手的统一硬上限（第一版10，既有版本配置保留）。驳回后个人可能超限，原合法单不取消，只阻新claim。EXIT真实10单/个人额度恢复/合法handler/多案件测试通过。当前新待审申请入口限取餐前出餐异常；不把它泛化成所有举报自动无责，原有限个人原因取消/冷却与已核定漏报保护保持。
 
-Docker取证实际运行：context ls、info、desktop status、compose ls --all、ps -a --no-trunc、volume ls、inspect容器/卷；Windows Get-NetTCPConnection及netsh端口保留查询。Engine29.8.2可用，Desktop status却报stopped，以CLI/真实PG连接验证为准，未重启Desktop。5432本次无监听者/保留冲突，直接启动原容器成功，Prisma能连接；第九轮冲突未复现，不声称永不复发。没有更改.env、Compose、生产配置或其他程序；原5432发布所有宿主接口事实在盘点注明，正式网络策略另行审核。
+## 3. 迁移、Seed与数据保护
 
-备份目录：`D:\Application\ClaudeCode\backups\campus-round10a-20261013`（仓库外，仅本机）。包含21份custom pg_dump、globals.sql、shop冷备/逻辑备份、SHA256清单、前/恢复/后指纹、测试及CI日志。目录取消继承，只给当前Windows用户及SYSTEM访问。备份和角色定义不提交Git、不上传Actions artifact，报告不包含连接凭据或业务行明细。
+新增迁移只有以下六条，Git对起点的迁移差异全部为新增，没有修改已应用历史SQL：
 
-| 备份 | SHA256 | 恢复结果 |
-| --- | --- | --- |
-| campus-delivery.dump | 663BCF42900E1A674D471055D27514A3BDBE3C3B60C102568D5418F3C4506792 | 新独立实例pg_restore --exit-on-error，55表内容指纹一致；其他20库同样逐库恢复一致 |
-| shop-pgdata.tar.gz | 47B1372E6F26A81D30191C7AE43AA8C0F5287B9021B2B81961CE539A9DFE8540 | 原卷只读冷备；解压到新空卷并启动单一PG16实例，正常读取 |
-| shop-campus_delivery.dump | D908D1D54D2D186C6EC0916337FC6118FBA793B72BB0F24FDABFC0668155D143 | 从物理副本dump再逻辑恢复到另一独立库，16表行数/指纹一致 |
-
-备份是逐库一致快照，本次没有应用写入；不声称所有数据库之间全局原子快照。globals保存但未在副本回放（已存在同名campus角色），不声称角色凭据恢复已演练。指纹MD5用于内容对比，备份完整性使用SHA256。原卷只有原容器一个PG进程运行，shop恢复只用新副本卷。主库不做Seed/写迁移；原21库结束前逐表复核未变，历史回滚记录不改写。
-
-本轮辅助archive/restore容器、恢复容器/卷及测试库也都保留，仅停止无需运行的副本。没有删除、合并、重置任一数据库、容器或数据卷；没有必要通过清理完成验收。未来如要移除round9替代容器、历史测试库、shop旧卷或本轮验证副本，仍须逐对象提供差异及备份恢复证据并取得独立用户批准。**备份成功不等于删除授权。**
-
-## 3. 独立CI证据和失败修复
-
-`.github/workflows/ci.yml`：push main / pull_request / workflow_dispatch；Node24、固定pnpm11.5.1、frozen lockfile；checkout/setup-node/pnpm setup以实际官方tag SHA固定，contents:read，checkout不保留凭据。每job全新PG16 service，仅使用可丢弃的ci测试身份，不使用本机.env或数据库、不接真实支付、不导出本机备份。
-
-顺序为install、Prisma generate、typecheck、单测、build、integration（迁移deploy+Seed）、migrate status/diff、重复Seed。历史PostgreSQL triggers由30条migration建立，未使用db push。CI没有连接用户Docker主库。
-
-| run / 精确提交 | 状态与证据 |
+| 迁移 | 实际用途 |
 | --- | --- |
-| [38339931534](https://github.com/Serena-Lyric/campus-delivery/actions/runs/38339931534) / 7ec3275 | **失败**：Linux展开未引用的tests/integration/**，单测阶段误跑集成，新service尚无表，P2021；build/integration等后续跳过。完整失败日志本机保留 |
-| [38340171941](https://github.com/Serena-Lyric/campus-delivery/actions/runs/38340171941) / 1a62d25 | **成功**：59单测、216PG集成；install/generate/typecheck/build、迁移status/diff、重复Seed均成功 |
-| [38340552960](https://github.com/Serena-Lyric/campus-delivery/actions/runs/38340552960) / 8f17060 | **成功**：59单测、221PG集成及完整上述检查成功；覆盖新增5项过渡回归的实际实现SHA |
-| [38340857796](https://github.com/Serena-Lyric/campus-delivery/actions/runs/38340857796) / e53b123 | **成功**：实际读取headSha/conclusion及全部步骤；59单测、221PG集成、typecheck/build、迁移status/diff、重复Seed全成功 |
+| 20261013000100_merchant_preparation_estimates | 可空预计/独立版本/历史 |
+| 20261013000200_rider_arrival | assignment一次自报到店时间 |
+| 20261013000300_preparation_control | 独立出餐控制/来源与追加审计 |
+| 20261013000400_pending_exit_capacity | 待审退出状态/个人容量临时释放及约束 |
+| 20261013000500_order_change_notices | 三态通知/assignment知悉/变更审计/UPDATE保护 |
+| 20261013000600_preparation_negotiation | 整单协商版本/陈述/核查追加记录，整数分约束 |
 
-修复仅将apps/api/package.json单测命令的glob用双引号包住，未删除测试、修改业务规则或提前Seed主库。Windows本地59单测验证和Linux独立CI均证实排除正确。第九轮原报告仍是其提交的本地记录，不回写成当时已有独立CI。此处“独立”指GitHub托管runner执行，不代表独立人工财务审计或生产验收。
+[scripts/verify-round10b-migrations.ps1](scripts/verify-round10b-migrations.ps1)只指向固定B隔离目标。升级副本先后比对所有旧业务行投影（排除本轮新增字段及_prisma_migrations）；新列默认不回补虚假出餐/到店/付款事实。新空库campus_round10b_empty及_b/_c/_d/_e分别完成全迁移、status、diff无漂移、双Seed；原订单/价格/结算/审计等稳定表均保持。旧主库30条成功迁移与2条历史回滚记录未改，新增迁移只应用于隔离环境。
 
-## 4. 营业日过渡与字段
+主库campus-delivery-postgres-1 / campus-delivery_postgres-data / 5432保持健康，全部55表最终行数/内容MD5与本轮起点相同。**主库未升级**，现有.env未改；新代码必须使用明确的本轮隔离DATABASE_URL，正式主库部署/迁移需另外安排审批与数据保护，不能直接拿当前默认旧schema运行新版本。
 
-见 [过渡复核与字段表](docs/business-day-transition-review-2026-10-13.md)。保留第九轮既有04→08、08→02、跨午夜、身份隔离、无background jobs同步门禁、旧quote重新准入、配置/商家/商品锁后实时读取及既有订单履约回归。
+## 4. Docker实际清理与仍保留对象
 
-新增5项PG/API回归：
+精确对象、命令、依赖、备份SHA/恢复及执行结果见 [清理记录](docs/round10b-cleanup-plan.md)。用户先逐对象批准C1–C5、V1–V5、H1–H19、A1–A23、S1–S2、O1–O2，后另行批准C6。实际先重新核实与备份/恢复，再删除原集群19历史测试库、C1–C6旧容器及V1–V5旧卷（含已批准A/S/O库）；没有DROP FORCE、prune、删除主卷或仓库外备份。
 
-1. 多次覆盖pending在原边界后继续延长，形成46h已确认营业日；期间预览及创建可用，实际边界后未确认拒绝；原确认及已建立订单不回写。
-2. America/New_York春季DST缺失时段：配置过渡、偏好阈值、真人确认、预览/创建及下一次过期。
-3. 秋季DST重复时段：同样核对真实DTO/UTC起点及准入；基础本地算法仍按首次出现。
-4. 实际管理员替换pending后，商家确认与preview在真实PG商家锁后跨配置生效点排队，使用新策略/实际日。
-5. 相同竞态覆盖create，旧quote不能替代实时确认校验。
+第十轮A verification冷归档SHA256为E23DB8C7DE56B59B5CFE60E2B946E6D9E6F63F0736AA7CAB18EBF3AFF823B179，先在B新卷恢复23库并逐表核验。原逻辑备份及独立shop物理/逻辑恢复证据均保留，A repeat Seed造成的一个镜像与原库差异已单独记录，不当成无用重复。恢复现场未重复执行已删除对象清理。
 
-没有发现需改业务代码的缺陷，没有把超过24h本身当bug；没有新增最大营业日、修改次数、强制关店规则。首个过渡区间可长/短于24h，是已授权的非回溯工程策略，不是固定排班。
-
-已明确本人顶层effectiveAt是启用偏好的最早阈值，schedule.effectiveAt是当前有效策略生效点，configuredEffectiveAt是最新提交策略生效点；active根据**实际日起点**判定。schedule.time/version是当前有效，configuredTime/version是最新已提交；businessDayStartsAt/nextBusinessDayStartsAt才是实际UTC边界。
-
-管理员GET当前为 `{config,audit}`、PUT返回config本身，config.version/payload.time是最新配置，不必已生效。管理员GET没有解析后的日视图或完整响应OpenAPI schema、没有完整管理UI；本轮只明确现有契约限制，不开发新增视图。真实UI将来须同时展示有效、pending及实际边界。
-
-首次新增专项运行：20通过、1失败，原因是新增断言误以为管理员GET直接返回config；改为实际config包裹后21通过，补两项竞态后23专项全部通过。此失败是测试断言错误，不冒称运行时bug或业务修复。
-
-## 5. 本地验证、范围与编号验收
-
-| 检查 | 实际执行 / 结果 |
+| 明确保留 | 最终用途/状态 |
 | --- | --- |
-| install/generate | pnpm install --frozen-lockfile、pnpm db:generate成功；pnpm11.5.1、Node24.15.0，无lockfile变更 |
-| A基线 | pnpm typecheck、test（59）、build、test:integration（216）全部成功 |
-| C全套 | db:generate、typecheck、test（59）、build、test:integration（221）全部成功；PG9文件全通过 |
-| C专项 | vitest run tests/integration/daily-confirmation.test.ts，最终23/23成功；原单位business-day3项保留 |
-| 主库只读迁移 | Prisma migrate status：30条migration最新；migrate diff --from-url / --to-schema-datamodel --exit-code：无差异；没有迁移写入 |
-| 隔离空库迁移 | 新campus_round10a_test由test:integration deploy全部历史migration及Seed；status/diff通过；CI另在新service独立重复验证 |
-| Seed | 独立测试库重复db:seed成功；恢复副本127.0.0.1:55441/campus_round9_final_old执行既有verify-daily-confirmation-seed.ts，两次Seed的23资金/审计表、营业/商品状态断言全一致，历史false仍隐藏；不对原库执行 |
-| 数据与diff | 21个原库前/恢复/后public表指纹全部一致；shop物理→逻辑16表一致；git diff --check及14份修改文档本地链接通过 |
-| 历史保留 | 第九轮root旧报告与归档原内容hash同为20233d355d08ac083511e07fb9626655e59ce17c；全部CODEX_REPORT_* / CODEX_TASK_*、migration和lockfile相对起点无改动 |
+| campus-delivery-postgres-1 / campus-delivery_postgres-data | 主应用库与postgres保留，健康；55表原事实不变 |
+| campus-round10b-test / campus-round10b-test-data | 55442独立开发验证；campus_round10b_test与_empty/_b/_c/_d/_e全保留 |
+| campus-round10b-restore / campus-round10b-restore-data | 55443，恢复的23库保留；campus-delivery副本只做升级演练，其他恢复内容不Seed/删除 |
+| campus-round10b-restore-archive | 本轮停止的恢复辅助容器保留，不扩展旧C6删除许可 |
+| 仓库外备份目录 | D:\Application\ClaudeCode\backups\campus-round10b-20261013及原A备份保留，限制ACL，无备份入Git |
 
-日志在仓库外证据目录：baseline-integration.log、phase-c-*、transition-first/second/final.log、seed-preservation.log及ci-*。首次只读盘点误用shop库名campus-delivery导致不存在错误，实际枚举后改用campus_delivery；没有创建/重命名原库。初期查找两个不存在路径（run-integration-tests.ts、admin/routes.ts）和错误skill路径，随后按实际文件定位；这些不算应用失败。
+B新测试库、恢复卷和辅助容器没有逐对象删除授权，本轮未删除，也不通过停止/清理范围外资源来修复测试。
 
-完成后另对20个原业务/历史验证库的_prisma_migrations只读汇总：未完成且未回滚记录均为0，历史rolled-back保留；postgres管理库无public迁移表。汇总留本机original-migration-summary.json。
+## 5. 实际验证与修复过程
 
-按requesting-code-review技能作一次新上下文只读整体审查（c743c30→e53b123+报告/任务草稿）：无阻断，唯一P3为README两处“首期直付模式”遗留，已改为“未来选定支付路线”。该修复只涉及文字，做内容/引用/diff验证，没有为文字修复重跑应用测试。审查核对代码/新增测试、保存的CI证据与历史文件未改，未重新运行恢复/Seed/集成或实时请求GitHub；这次审查不构成第二次数据库/CI实跑，也不评估完整既有资金安全或生产能力。没有未处理审查发现。
+本地Node v24.15.0、pnpm11.5.1、Docker Server29.8.2/PG16。frozen install成功、无锁文件/依赖改动。最终typecheck、64unit、build、298PG及六迁移验证成功；远端每阶段真实run/完整SHA见第1节，CI使用全新PG16 service，完成迁移、Seed、测试、schema drift与重复Seed，不能与本地通过混为一谈。
 
-| CODEX_TASK要求 | 证据 / 结论 |
+关键失败与闭环均留原日志：C案件锁/旧普通案件清后续出餐门禁/双案件恢复绕过，D旧异常自动终止受控承接/双域与待审退出互锁/追加异议未解决/原骑手时间线泄漏，E旧核查显示未失效/退款进度金额冲突/无参与者记录却可核查，均有真实RED或复审复现并补PG回归。E最后新增“空协商不能核查”测试使一次完整运行297通过/1失败，守卫修复后重跑最终298/298。前期未实现入口RED、测试夹具40分钟约束/错误取消路由、TS库不支持findLast和AJV尝试union时删除字段的问题也修正；没有为通过测试重置数据或修改已应用迁移。
+
+全部证据保存在上述仓库外目录：stage-c-complete-*、stage-d-final-*、stage-e-complete-*及stage-*-ci.json/watch/full.log、stage-*-migrations.log、各RED/GREEN日志和campus-delivery-final.jsonl。该目录只存本轮取证，不作产品规则。C/D/E复审为只读代码审查；D一次代理额度限制后恢复并完成审查，没有将失败代理或未运行检查称作验证通过。
+
+最终收口只改文档：64条本地文档链接、内容/范围及diff检查通过；报告复核独立读取CI/迁移/主指纹取证确认无重大夸大。未因文档改动重跑本地应用测试，最终提交仍按任务验证独立CI。
+
+## 6. 四档实施状态及未完成事项
+
+| 分类 | 本轮真实状态 |
 | --- | --- |
-| 0.1 Git保护与最新main | 本地干净，fetch+ff-only，阶段普通提交/push，无覆盖 |
-| 0.2–3 数据禁删、同卷单进程、备份隐私 | 原/替代挂载核验，替代始终停止，新副本卷恢复，仓库外限制ACL，全部原对象保留 |
-| 0.4 阶段验证及实际SHA | 第1节及CI/local检查，首次失败真实记录 |
-| A1 Docker/端口/卷 | 实际CLI清点与Windows占用/保留范围取证，完整盘点文档 |
-| A2 区分数据身份/只读比较/实际.env | 两原容器一个主集群，另有独立shop；21库/迁移/表数/指纹；连接掩码 |
-| A3 备份与恢复 | 21逻辑备份/全库恢复、shop冷备/新卷恢复及逻辑对比，SHA256 |
-| A4 无损恢复开发连接 | 5432无当前冲突，原容器启动/Prisma连接；无需更改映射或生产配置 |
-| A5 对照及待确认清理 | 两原容器ID/卷/状态、shop历史数据差异及保留对象明确；未执行清理，原始shop用途仍待用户确认 |
-| B1–2 独立CI/隔离迁移Seed | Actions新PG16 service、固定工具/锁依赖，完整迁移及测试 |
-| B3 实際运行/失败修复 | 3个已完成run精确SHA及日志；文档commit后续run单独记录 |
-| C1 过渡/DST/竞态 | 原回归+5新增PG，23专项及221全套；无新增业务规则 |
-| C2 字段契约 | 本人有效/配置/偏好版本与边界说明；管理员GET原样契约与展示限制明确 |
-| D1 支付一致性 | 第1G同步当前摘要及角色；旧计划/审计/运营仅追加替代说明，历史保留 |
-| D2 报告与旧引用 | 根报告第十轮A，九轮归档不改；五/七/九轮导航指向实际历史报告 |
-| D3–4 验收/完整证据/停止 | 开发环境安全可用、CI与本地证据明确、原数据不变；审批/产品/生产阻断分级，停止在A |
+| enforced | OWNER/assignment/handler/版本/合法状态门禁；原期限、暂停与真实锁序；个人/统一容量；风险核查、照片/短码并行；协议/金额冲突与陈旧核查拒绝 |
+| data/telemetry | 自报预计、到店、声明节点经过时长、追加通知/知悉、各方协商/退款陈述、审计与人工核查记录；均不是现场/支付/责任证明 |
+| reserved/placeholder | recoveryTimeoutSeconds=null、automaticEscalationEnabled=false；未选正式自动回应超时参数，没有启用分钟数或默认接受 |
+| not implemented/blocked | 正式协议后终止、可信支付/退款适配器、真实退款批准/发起/到账、支付/分账/提现、Root/L1/L2及强认证、实际媒体可信防伪、微信/SMS外发、完整UI、自动关店、数量库存、部分履约/差价重算 |
 
-## 6. 支付文档与未实施事项
+E正式终止阻断来自任务E3允许的安全分离缺口及未确认可信支付渠道；不能拿双方口述当到账，不能复用旧REFUND_AND_CLOSE为未送达订单创造骑手收入。本轮新控制单挡住旧危险入口，**未全面关闭历史严重异常财务审计缺口**，不把新流程保护说成旧四本账已全部修复。
 
-遵循最高产品第1G节，没有新支付决定：修正PRODUCT_DECISIONS现行第6节/待办及历史优先级导航、ROLE职责的历史优先级与资金限制、FINANCE/DELIVERY_PRICING/EXCEPTION现行状态；旧OPERATIONS、IMPLEMENTATION_PLAN、AUDIT_FOLLOWUP正文保留，追加2026-10-13替代说明。经营专题补足付款顺序/库存时点未决，README和PRE_NEXT_ROUND_CHECKLIST收口。第五/七/九轮引用匹配归档；旧审计裸CODEX_REPORT文字仍指其审核时点，已加说明，不能被根新报告覆盖。
+真实新增核心易损的价值/安全取证或替换风险重算不明确时保持人工HOLD，不猜金额或降低原要求。恢复回应自动升级时长、协议撤销后的合法重开、真实退款/金额授权及安全终止流程仍需后续决策/单独任务。当前API仍为开发x-user-id认证，绿色CI不是生产认证或资金运营许可。
 
-四档状态：**enforced** 为已有营业确认与准入门禁（只增加回归）、CI脚本正确排除与独立校验；**data/telemetry** 为本地盘点、恢复取证、实际DTO/配置及报告；**reserved/placeholder** 无本轮新增策略钩子或未使用输入；**not implemented** 为自动关店、数量库存、真实支付/退款/分账/提现、正式Root/强认证/完整UI及第十轮B。
-
-待用户批准只涉及未来真实清理/回收，无清理获批，本次全部保留。shop原业务用途需用户确认，不影响现主库安全使用。若未来要限制长过渡日/改时频率，或选择支付路线，须新产品决定及单独开发授权。
-
-**第十轮B前工程遗留**：本轮数据关系、环境可连接、CI、过渡专项和现行支付一致性已处理；恢复副本/历史数据回收不是B启动条件，B仍需用户授权。**正式生产前阻断**：x-user-id开发认证、正式Root/L1/L2、强认证、真实合法支付主体/产品与可信收款/退款/对账、正式网络/备份恢复/审计验收；当前CI通过不替代这些能力，也不关闭历史资金安全审计所有未完成发现。
-
-本轮在上述范围完成后停止，不自动进入新功能开发。
+本轮按上述已验证范围及E3安全降级交付，保留受阻子项与数据，报告提交/推送/CI核实后停止，不自动进入下一轮。

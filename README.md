@@ -4,7 +4,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 ## 当前阶段
 
-第十轮A历史工程整理见 [归档报告](CODEX_REPORT_2026-10-13_ROUND10A.md) / [PostgreSQL盘点](docs/local-postgres-inventory-2026-10-13.md)。第十轮B的A–D已有对应SHA绿色CI，E协议/安全人工核查正在验收，正式终止/真实退款按E3受阻；任务及真实连续证据见 [CODEX_TASK.md](CODEX_TASK.md) / [进度](docs/round10b-progress.md)。不能把文档或数据字段本身算作功能交付。
+第十轮A历史工程整理见 [归档报告](CODEX_REPORT_2026-10-13_ROUND10A.md) / [PostgreSQL盘点](docs/local-postgres-inventory-2026-10-13.md)。第十轮B的A–D及E协议/安全人工核查已有对应SHA绿色CI，最终本地64unit/298PG；正式终止/真实退款按E3受阻，主库未升级。完整SHA、编号验收和保留事项见 [第十轮B报告](CODEX_REPORT.md) / [进度](docs/round10b-progress.md)。不能把文档或数据字段本身算作功能交付。
 
 本阶段仍是模块化单体 REST API。第四轮报价及第五轮财务安全基础已有完成记录；商家基础报价仅作定价参考、商品佣金可配置且默认0%均已确认。代码能力和当前应用配置不同，历史报告只说明其记录的提交与验证，不代表所有产品规则已上线。
 
@@ -44,11 +44,11 @@ OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日
 
 ## 第十轮B阶段A/B：自愿预计出餐和到店（后端/API）
 
-本单OWNER可在确认后、交接/终止前用 `PUT /merchant/orders/:orderId/preparation-estimate` 版本化更新预计；`GET /orders/:orderId/preparation-estimates` 保留追加历史。默认无预计，过去预测如实显示逾期，订单/池/当前骑手视图同步计算提醒；无处罚/资金操作/重置40分钟/真实外部通知。UTC保存、校园时区显示。当前骑手可自愿 `POST /delivery-tasks/:taskId/arrive` 记录本assignment到店，重复幂等；视图提供两个自报节点经过时长，缺READY不阻止合法交接，不等于连续在店证明。C–E仍未实施。字段、角色和**主库尚未应用新migration**的运行限制见 [API说明](docs/round10b-preparation-api.md)。清理按用户逐对象批准执行，备份及主数据完整性记录见 [B清理记录](docs/round10b-cleanup-plan.md)。
+本单OWNER可在确认后、交接/终止前用 `PUT /merchant/orders/:orderId/preparation-estimate` 版本化更新预计；`GET /orders/:orderId/preparation-estimates` 保留追加历史。默认无预计，过去预测如实显示逾期，订单/池/当前骑手视图同步计算提醒；无处罚/资金操作/重置40分钟/真实外部通知。UTC保存、校园时区显示。当前骑手可自愿 `POST /delivery-tasks/:taskId/arrive` 记录本assignment到店，重复幂等；视图提供两个自报节点经过时长，缺READY不阻止合法交接，不等于连续在店证明。C–E最新范围见本轮报告。字段、角色和**主库尚未应用新migration**的运行限制见 [API说明](docs/round10b-preparation-api.md)。清理按用户逐对象批准执行，备份及主数据完整性记录见 [B清理记录](docs/round10b-cleanup-plan.md)。
 
 ## 2026-10-10 履约与管理员能力边界
 
-C阶段独立出餐暂停、恢复双确认、原deadline人工升级及待审退出已实现、正在验收；个人临时释放与全局未解除承接分开计数，驳回超限不取消已有合法单。恢复回应自动超时未启用（分钟数未确认），原真实支付/Root不扩展。入口、权限与模型边界见 [异常API](docs/round10b-exception-api.md)。
+C阶段独立出餐暂停、恢复双确认、原deadline人工升级及待审退出已验证；个人临时释放与统一未解除承接分开计数，驳回超限不取消已有合法单。恢复回应自动超时未启用（分钟数未确认），原真实支付/Root不扩展。入口、权限与模型边界见 [异常API](docs/round10b-exception-api.md)。
 
 - 易损商品如蛋糕、圣代的取餐证据规则：易损商品相关价值 > ¥15 建议照片，> ¥50 强制有效照片或审计化例外；阈值由新的一级管理员/root 控制台配置。**金额按同订单全部已核定易损商品行小计之和**（两份 ¥30 圣代计 ¥60、强制），优惠分摊、无法拍照时的替代凭证及放行权限仍待确认，详情见 `FRAGILE_PICKUP_EVIDENCE_DECISIONS.md`。照片仅证明取餐时可见状态，不自动判定骑手无责。
 - 管理员产品方向是 **不可通过普通后台任免/删除/撤销的特殊 Root 身份 + 可扩展运营层级**；首版普通管理员为一级运营管理、二级（暂定客服），未来可增加三级、四级或中间层，业务权限由 Root 受控下放。Root 可参与但通常不上线，作为最后应急权能；不能将密码、永久令牌硬编码于程序。详见 `ADMIN_ROLE_DECISIONS.md` 和主产品决策。
