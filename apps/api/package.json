@@ -10,7 +10,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:seed": "prisma db seed",
-    "test": "vitest run --exclude tests/integration/**",
+    "test": "vitest run --exclude \"tests/integration/**\"",
     "test:integration": "prisma migrate deploy && prisma db seed && vitest run tests/integration",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
