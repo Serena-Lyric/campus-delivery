@@ -214,6 +214,101 @@ describe('merchant daily confirmation', () => {
     vi.setSystemTime(new Date('2026-10-15T18:00:00Z')); expect((await preview()).statusCode).toBe(409);
     expect(await prisma.merchantBusinessDayConfirmation.findMany({ where: { id: firstFact[0]!.id } })).toEqual(firstFact);
   });
+  it('preserves the original confirmation across repeated pending replacements and a 46-hour transition day', async () => {
+    await toggle(true); vi.setSystemTime(new Date('2026-10-12T20:00:00Z')); await confirm(0);
+    const facts = await prisma.merchantBusinessDayConfirmation.findMany({ where: { merchantId } });
+    vi.setSystemTime(new Date('2026-10-13T04:00:00Z'));
+    expect((await schedule({ time: '08:00' })).json().payload.effectiveAt).toBe('2026-10-14T00:00:00.000Z');
+    vi.setSystemTime(new Date('2026-10-13T22:00:00Z'));
+    expect((await schedule({ time: '10:00' }, 1)).json().payload.effectiveAt).toBe('2026-10-14T02:00:00.000Z');
+    vi.setSystemTime(new Date('2026-10-14T01:00:00Z'));
+    const replacement = await schedule({ time: '02:00' }, 2);
+    expect(replacement.statusCode, replacement.body).toBe(200);
+    expect(replacement.json()).toMatchObject({ version: 3, payload: { time: '02:00',
+      effectiveAt: '2026-10-14T18:00:00.000Z', transitionDayStart: '2026-10-12T20:00:00.000Z',
+      previous: { time: '04:00', version: 0, effectiveAt: null } } });
+    const admin = await app.inject({ method: 'GET', url: `/admin/business-configs/${key}`, headers: headers(seedIds.admin) });
+    expect(admin.statusCode, admin.body).toBe(200);
+    expect(admin.json()).toMatchObject({ config: { version: 3, payload: replacement.json().payload } });
+    for (const at of ['2026-10-14T02:00:00Z', '2026-10-14T16:00:00Z', '2026-10-14T17:59:59.999Z']) {
+      vi.setSystemTime(new Date(at));
+      expect((await read()).json()).toMatchObject({ active: true, confirmedToday: true,
+        businessDayStartsAt: '2026-10-12T20:00:00.000Z', nextBusinessDayStartsAt: '2026-10-14T18:00:00.000Z',
+        schedule: { time: '04:00', version: 0, configuredTime: '02:00', configuredVersion: 3, pending: true,
+          effectiveAt: null, configuredEffectiveAt: '2026-10-14T18:00:00.000Z' } });
+      const quote = await preview(); expect(quote.statusCode, quote.body).toBe(200);
+      expect((await order(quote.json().quoteToken)).statusCode).toBe(201);
+    }
+    const token = (await preview()).json().quoteToken;
+    const contracts = await prisma.order.findMany({ where: { merchantId }, include: { pricing: true, items: true } });
+    vi.setSystemTime(new Date('2026-10-14T18:00:00Z'));
+    expect((await preview()).statusCode).toBe(409); expect((await order(token)).statusCode).toBe(409);
+    expect((await read()).json()).toMatchObject({ confirmedToday: false, businessDay: '2026-10-15',
+      businessDayStartsAt: '2026-10-14T18:00:00.000Z', nextBusinessDayStartsAt: '2026-10-15T18:00:00.000Z',
+      schedule: { time: '02:00', version: 3, pending: false, effectiveAt: '2026-10-14T18:00:00.000Z' } });
+    expect((await confirm(1)).statusCode).toBe(200);
+    expect(await prisma.merchantBusinessDayConfirmation.findMany({ where: { id: facts[0]!.id } })).toEqual(facts);
+    expect(await prisma.order.findMany({ where: { merchantId }, include: { pricing: true, items: true } })).toEqual(contracts);
+    expect(await prisma.businessConfigAudit.count({ where: { key } })).toBe(3);
+  });
+  it.each([
+    { name: 'spring gap', now: '2026-03-07T17:00:00Z', time: '02:30', effective: '2026-03-08T08:00:00.000Z', next: '2026-03-09T06:30:00.000Z' },
+    { name: 'autumn repeat', now: '2026-10-31T16:00:00Z', time: '01:30', effective: '2026-11-01T09:00:00.000Z', next: '2026-11-02T06:30:00.000Z' },
+  ])('keeps real configuration and confirmation DTOs coherent across the DST $name transition', async ({ now, time, effective, next }) => {
+    vi.setSystemTime(new Date(now));
+    const local = await buildApp({ ...config, campusTimeZone: 'America/New_York' }, prisma); await local.ready();
+    const call = (method: 'GET' | 'PUT' | 'POST', url: string, payload?: object, id = ownerId) => local.inject({
+      method, url, headers: headers(id), ...(payload ? { payload } : {}) });
+    try {
+      const setting = await call('PUT', `/admin/business-configs/${key}`, { payload: { time }, expectedVersion: 0, reason: 'DST transition review' }, seedIds.admin);
+      expect(setting.statusCode, setting.body).toBe(200);
+      expect(setting.json().payload).toMatchObject({ effectiveAt: effective, previous: { time: '04:00', version: 0 } });
+      expect((await call('PUT', '/merchant/daily-confirmation', { enabled: true, expectedVersion: 0, reason: 'opt in' })).json()).toMatchObject({ active: false, pendingActivation: true, effectiveAt: effective });
+      expect((await call('POST', '/merchant/confirm-business-day', { expectedVersion: 0, reason: 'before transition' })).statusCode).toBe(200);
+      vi.setSystemTime(new Date(Date.parse(effective) - 1));
+      expect((await call('GET', '/merchant/daily-confirmation')).json()).toMatchObject({ active: false, confirmedToday: true, nextBusinessDayStartsAt: effective,
+        schedule: { time: '04:00', version: 0, configuredTime: time, configuredVersion: 1, pending: true } });
+      vi.setSystemTime(new Date(effective));
+      expect((await call('POST', '/orders/price-preview', input(), seedIds.customer)).statusCode).toBe(409);
+      expect((await call('GET', '/merchant/daily-confirmation')).json()).toMatchObject({ active: true, confirmedToday: false,
+        businessDayStartsAt: effective, nextBusinessDayStartsAt: next, schedule: { time, version: 1, pending: false, effectiveAt: effective } });
+      const confirmed = await call('POST', '/merchant/confirm-business-day', { expectedVersion: 1, reason: 'after transition' });
+      expect(confirmed.statusCode, confirmed.body).toBe(200);
+      expect(confirmed.json().confirmation).toMatchObject({ businessDayStartsAt: effective, switchingTime: time, policyVersion: 1 });
+      const quote = await call('POST', '/orders/price-preview', input(), seedIds.customer); expect(quote.statusCode).toBe(200);
+      expect((await call('POST', '/orders', { ...input(), expectedQuoteToken: quote.json().quoteToken }, seedIds.customer)).statusCode).toBe(201);
+      vi.setSystemTime(new Date(next));
+      expect((await call('POST', '/orders/price-preview', input(), seedIds.customer)).statusCode).toBe(409);
+    } finally { await local.close(); }
+  });
+  it.each(['preview', 'create'] as const)('serializes a real admin replacement, queued confirmation and %s across its effective boundary', async (action) => {
+    await toggle(true); vi.setSystemTime(new Date('2026-10-12T20:00:00Z')); await confirm(0);
+    const token = (await preview()).json().quoteToken;
+    vi.setSystemTime(new Date('2026-10-13T04:00:00Z')); await schedule({ time: '08:00' });
+    vi.setSystemTime(new Date('2026-10-13T23:59:59.999Z'));
+    const held = barrier(), release = barrier();
+    const blocking = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Merchant" WHERE "id"=${merchantId}::uuid FOR UPDATE`;
+      held.release(); await release.promise;
+    });
+    await held.promise;
+    try {
+      const changed = await schedule({ time: '02:00' }, 1);
+      expect(changed.statusCode, changed.body).toBe(200);
+      expect(changed.json().payload.effectiveAt).toBe('2026-10-14T18:00:00.000Z');
+      const confirming = confirm(1); await waitForLock('"Merchant"');
+      const checkout = action === 'preview' ? preview() : order(token);
+      await waitForLock('FOR SHARE');
+      vi.setSystemTime(new Date('2026-10-14T18:00:00Z')); release.release();
+      await blocking;
+      const confirmed = await confirming;
+      expect(confirmed.statusCode, confirmed.body).toBe(200);
+      expect(confirmed.json().confirmation).toMatchObject({ policyVersion: 2, switchingTime: '02:00',
+        businessDay: '2026-10-15', businessDayStartsAt: '2026-10-14T18:00:00.000Z' });
+      const result = await checkout; expect(result.statusCode, result.body).toBe(action === 'preview' ? 200 : 201);
+      expect((await read()).json()).toMatchObject({ confirmedToday: true, schedule: { time: '02:00', version: 2, pending: false } });
+    } finally { release.release(); await blocking; }
+  });
   it('uses the configured campus zone throughout preference, confirmation, catalog, preview and creation; mismatched instances fail closed', async () => {
     const local = await buildApp({ ...config, campusTimeZone: 'America/Los_Angeles' }, prisma); await local.ready();
     const call = (method: 'GET' | 'PUT' | 'POST', url: string, payload?: object, id = ownerId) => local.inject({ method, url, headers: headers(id), ...(payload ? { payload } : {}) });

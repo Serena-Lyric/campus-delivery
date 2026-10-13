@@ -36,6 +36,8 @@ OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日
 
 旧 SUPER_ADMIN 用独立 `PUT /admin/business-configs/MERCHANT_DAILY_CONFIRMATION` 配置 `{payload:{time:"HH:mm"},expectedVersion,reason}`；不改 PRODUCT_DAILY_RESTORE、不获得 Root 或资金权限。服务器保存版本化时区、过渡营业日起点和 effectiveAt。修改时延长当前营业日至“当前已公布的下一切换点”和“新时刻下一切换点”中较晚者；替换待生效配置也不提前已公布边界。生效首日从实际生效时刻开始，之后按新 HH:mm 切换，旧确认不在修改瞬间失效。DST 重复分钟取首次出现，缺失分钟取其后的首个有效分钟；部署实例须使用一致校园时区，已有配置时区不匹配则拒绝请求，需另行审查迁移。
 
+第十轮A专项回归及字段说明见 [营业日过渡复核](docs/business-day-transition-review-2026-10-13.md)。管理GET返回 `{config,audit}`，最新已提交 `config.version/payload.time` 不一定已生效；本人视图的 `schedule.version/time` 才是当前有效策略。过渡日可超过24h，尚无改时次数/最长日规则。无完整管理UI或管理员解析后营业日DTO。
+
 有效接单 = 手动营业 + 当前日确认资格（或无需确认）+ 现有曝光限制。目录提供一致的 acceptingOrders、businessDay、confirmedToday；未确认在顾客侧显示「休息中」，本人侧显示「待今日确认」，菜单保留且商品 purchasable=false。价格预览和创建在配置→商家→商品/位置锁内读取服务器实时状态，创建前再核验；旧 quoteToken 跨切换点不能绕过未确认门禁。**ENABLE_BACKGROUND_JOBS=false 仍执行门禁**，确认过期不更新 isOpen、不处分旧订单。确认不是商品每日恢复、订单确认或付款成功；单店自定时刻仅保留计算函数参数扩展点，未开放设置。详见 [主产品第1E节](PRODUCT_DECISIONS.md) / [经营专题第8/9节](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) / [第九轮归档报告](CODEX_REPORT_2026-10-12_DAILY_CONFIRMATION.md)。
 
 ## 2026-10-10 履约与管理员能力边界
