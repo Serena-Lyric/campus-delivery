@@ -8,7 +8,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 **2026-10-13 已决定暂缓真实支付选型**：商品款直付+独立配送费和统一支付/合规分账均只是候选，等待合法主体及通道实际能力。现有后端仍为开发内账模拟，无真实支付/提现或实际商品款冻结。现行依据见 [PRODUCT_DECISIONS.md](PRODUCT_DECISIONS.md) 第1G节与 [财务专题](FINANCE_OPERATIONS_DECISIONS.md)。
 
-文档维护按 [AGENTS.md](AGENTS.md) 的任务索引读取相关章节；旧计划/已完成任务不自动启动下一轮。报价实现与验证见 [第四轮报告](CODEX_REPORT_2026-10-11_DUAL_SIDE_PRICING.md)，财务实现与验证见 [第五轮报告](CODEX_REPORT_2026-10-11_FINANCE_SAFEGUARDS.md)。第六轮为文档精简（`d450d6d`）；第七轮手动营业与商品三态报告见 [第七轮归档报告](CODEX_REPORT_2026-10-12_MERCHANT_OPERATIONS.md)；第八轮商品每日恢复的测试报告见 [第八轮归档报告](CODEX_REPORT_2026-10-12_DAILY_PRODUCT_RESTORE.md)；第九轮已完成后端/API（未交付完整UI），见 [任务](CODEX_TASK.md) 和 [报告](CODEX_REPORT.md)；[自动关店专题](MERCHANT_AUTO_CLOSE_DECISIONS.md) 仍未开发，下一轮前先尝试处理 [四项遗留检查](PRE_NEXT_ROUND_CHECKLIST.md)，此二者均不授权下一轮开发。
+文档维护按 [AGENTS.md](AGENTS.md) 的任务索引读取相关章节；旧计划/已完成任务不自动启动下一轮。报价实现与验证见 [第四轮报告](CODEX_REPORT_2026-10-11_DUAL_SIDE_PRICING.md)，财务实现与验证见 [第五轮报告](CODEX_REPORT_2026-10-11_FINANCE_SAFEGUARDS.md)。第六轮为文档精简（`d450d6d`）；第七轮手动营业与商品三态报告见 [第七轮归档报告](CODEX_REPORT_2026-10-12_MERCHANT_OPERATIONS.md)；第八轮商品每日恢复的测试报告见 [第八轮归档报告](CODEX_REPORT_2026-10-12_DAILY_PRODUCT_RESTORE.md)；第九轮已完成后端/API（未交付完整UI），见 [第九轮任务](CODEX_TASK_2026-10-12_DAILY_CONFIRMATION.md) 和 [第九轮报告](CODEX_REPORT_2026-10-12_DAILY_CONFIRMATION.md)；[自动关店专题](MERCHANT_AUTO_CLOSE_DECISIONS.md) 仍未开发，下一轮前先尝试处理 [四项遗留检查](PRE_NEXT_ROUND_CHECKLIST.md)，此二者均不授权下一轮开发。
 
 ## 商家营业与商品菜单（2026-10-12 手动 API 已实现）
 
@@ -24,7 +24,7 @@ OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日
 
 旧 `isAvailable` 保留为可售投影：仅在售为 true；旧 false 迁移为下架。旧布尔创建/完整编辑端点仍可用，SOLD_OUT 的相同 false 完整编辑保留售罄；需要明确区分售罄/下架时用状态接口。数据库 trigger 与约束维护一致性，重复 Seed 不重开商家、不恢复商品状态。迁移含 PostgreSQL 原生触发器，升级应使用 `prisma migrate deploy`；只做 `db push` 不足以安装兼容逻辑。
 
-当前交付是 API、后台执行与测试，没有完整小程序或商家前端标签。第九轮每日营业确认已实现后端；定时关店、数量库存、真实支付均未实现；没有预留或开放不安全库存开关。详见 [经营专题](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) 和本轮 [CODEX_REPORT.md](CODEX_REPORT.md)。
+当前交付是 API、后台执行与测试，没有完整小程序或商家前端标签。第九轮每日营业确认已实现后端；定时关店、数量库存、真实支付均未实现；没有预留或开放不安全库存开关。详见 [经营专题](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) 和本轮 [第九轮归档报告](CODEX_REPORT_2026-10-12_DAILY_CONFIRMATION.md)。
 
 每日自动恢复已由第八轮实现后端运行路径，应用迁移保留原营业/商品/订单事实且所有旧商家默认未启用；后台开关也默认关闭，API 能力不等于部署时已运行或完整 UI 上线。数量库存和支付预留另行开发，详见产品第1D节及经营专题第6/7节。
 
@@ -36,7 +36,7 @@ OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日
 
 旧 SUPER_ADMIN 用独立 `PUT /admin/business-configs/MERCHANT_DAILY_CONFIRMATION` 配置 `{payload:{time:"HH:mm"},expectedVersion,reason}`；不改 PRODUCT_DAILY_RESTORE、不获得 Root 或资金权限。服务器保存版本化时区、过渡营业日起点和 effectiveAt。修改时延长当前营业日至“当前已公布的下一切换点”和“新时刻下一切换点”中较晚者；替换待生效配置也不提前已公布边界。生效首日从实际生效时刻开始，之后按新 HH:mm 切换，旧确认不在修改瞬间失效。DST 重复分钟取首次出现，缺失分钟取其后的首个有效分钟；部署实例须使用一致校园时区，已有配置时区不匹配则拒绝请求，需另行审查迁移。
 
-有效接单 = 手动营业 + 当前日确认资格（或无需确认）+ 现有曝光限制。目录提供一致的 acceptingOrders、businessDay、confirmedToday；未确认在顾客侧显示「休息中」，本人侧显示「待今日确认」，菜单保留且商品 purchasable=false。价格预览和创建在配置→商家→商品/位置锁内读取服务器实时状态，创建前再核验；旧 quoteToken 跨切换点不能绕过未确认门禁。**ENABLE_BACKGROUND_JOBS=false 仍执行门禁**，确认过期不更新 isOpen、不处分旧订单。确认不是商品每日恢复、订单确认或付款成功；单店自定时刻仅保留计算函数参数扩展点，未开放设置。详见 [主产品第1E节](PRODUCT_DECISIONS.md) / [经营专题第8/9节](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) / [CODEX_REPORT.md](CODEX_REPORT.md)。
+有效接单 = 手动营业 + 当前日确认资格（或无需确认）+ 现有曝光限制。目录提供一致的 acceptingOrders、businessDay、confirmedToday；未确认在顾客侧显示「休息中」，本人侧显示「待今日确认」，菜单保留且商品 purchasable=false。价格预览和创建在配置→商家→商品/位置锁内读取服务器实时状态，创建前再核验；旧 quoteToken 跨切换点不能绕过未确认门禁。**ENABLE_BACKGROUND_JOBS=false 仍执行门禁**，确认过期不更新 isOpen、不处分旧订单。确认不是商品每日恢复、订单确认或付款成功；单店自定时刻仅保留计算函数参数扩展点，未开放设置。详见 [主产品第1E节](PRODUCT_DECISIONS.md) / [经营专题第8/9节](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) / [第九轮归档报告](CODEX_REPORT_2026-10-12_DAILY_CONFIRMATION.md)。
 
 ## 2026-10-10 履约与管理员能力边界
 

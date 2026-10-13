@@ -1,35 +1,40 @@
-# CODEX_TASK — 第九轮：商家每日营业确认与有效新单门禁（2026-10-12）
+# CODEX_TASK — 第十轮 A：历史遗留工程清理（2026-10-13）
 
-> **本轮已完成（2026-10-12）**：A/B/C均已独立全套验证、普通提交与推送；实际SHA、59项单测/216项PG集成、迁移/备份、非回溯切换策略和未实现范围见 [CODEX_REPORT.md](CODEX_REPORT.md)。下文保留任务编制时要求，不授权自动续做支付、库存或定时关店。
+> **只执行第十轮 A，不开发第十轮 B 新功能。** 用户已要求先解决第九轮遗留问题及 Docker 中两个 campus 数据库的疑问，之后再开发。A 阶段的工作是：无损核查/恢复开发环境、建立独立 CI、营业日切换过渡审查、纠正遗留文档。完成验收后停止，下一组产品决策和 B 阶段另行授权。
 >
-> 第八轮已完成（main结尾`cbb34fe5`），其原任务/报告分别已归档到`CODEX_TASK_2026-10-12_DAILY_PRODUCT_RESTORE.md`及`CODEX_REPORT_2026-10-12_DAILY_PRODUCT_RESTORE.md`，**不可当成仍未执行**。任务编制时要求先检查git status/diff、最新main、当前数据库/迁移/Seed、既有第七/第八轮商家与商品调度代码；按AGENTS.md读取 PRODUCT_DECISIONS.md第1C/1D/1E、MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md第8节、ROLE_RESPONSIBILITIES.md对应身份、涉及的catalog/checkout/admin配置及已知审核边界。旧归档仅在必要时定位实现事实。
+> 第九轮原 [任务](CODEX_TASK_2026-10-12_DAILY_CONFIRMATION.md)、[报告](CODEX_REPORT_2026-10-12_DAILY_CONFIRMATION.md) 已归档，不能重跑第九轮。第八轮也已完成。当前主产品第1G节：真实支付两路线均未选型；第1F节自动关店仅已设计、**未开发**。依据 AGENTS.md、PRODUCT_DECISIONS.md、PRE_NEXT_ROUND_CHECKLIST.md、CODEX_REPORT_2026-10-12_DAILY_CONFIRMATION.md 开展只限遗留工程工作。
 
-## 0. 确认规则与禁止跨界
+## 0. 开始前必做与停止线
 
-- 可选**每日营业确认**：商家默认不启用，继续使用旧手动开关店。启用后在**下一营业日**才开始执行确认门禁；停用**立即生效**，只解除门禁，不能隐式修改`isOpen`。平台统一本地切换默认`04:00`（项目campusTimeZone，默认Asia/Shanghai），管理员可修改，**单独新配置键**，不能复用/改写`PRODUCT_DAILY_RESTORE`。未来商家自定切换时刻只预留结构/服务接口扩展位置，本轮不开放。
-- 营业日由**本地切换HH:mm定义**，默认04:00前仍属于上一营业日，04:00起属于新营业日；不同于第八轮每日商品恢复按校园自然日计算。**生效准入=手动isOpen + 当前营业日确认资格（或无需确认）+ 现有曝光/其他限制**，门禁必须在每次结账预览与订单创建时以服务器当前时间判断，不依赖后台job定时改isOpen，即使ENABLE_BACKGROUND_JOBS=false也必须执行。
-- 本店OWNER主动操作「确认今日营业」或旧PUT`/merchant/operating-status`传`isOpen:true`视为当天确认，并同时使手动营业为true。**重要：原isOpen已经true而确认已过期时，主动同值PUT仍必须记录确认，不能在原no-op分支提前返回**；旧客户端仍能使用既有API。重复确认同日应幂等且审计准确，版本过期仍409。关店不清除当天确认，再开不要求重复确认。
-- 当日未确认者即使isOpen还true也拒绝新单；商家目录/详情与本人GET应该提供一致的`acceptingOrders`、可读状态提示（顾客可见休息中；商家可识别“待今日确认”）、当前营业日及本日是否已确认；商品purchasable不能与有效店铺接单资格矛盾。休息/待确认仍正常展示菜单，HIDDEN/SUSPENDED继续隐藏。订单已建、已接单、已结算仍原样履约；不能以确认过期当作处罚、退款或商家违约。
-- **不开**商家自动关店、后台自动开店、每日固定营业时间排班、为各商家单独配置时间、商品数量库存/原料、支付预留/微信支付/真收款/分账/提现。第八轮`PRODUCT_DAILY_RESTORE`商品恢复仍按已实现的时区/自然日/幂等规则独立运行，不能被本次配置污染；无真实客户端就明确仅后端API。
-- 平台管理员中途修改切换时刻不得造成**已确认商家被当日追溯撤销接单权或已有订单失效**。此细节尚无额外商业选择：建议采用配置版本锁 + 自下一安全切换点起应用的新规则/持久化生效时间；工程阶段选择不回溯、可审计的办法，报告说明有效日期、凌晨边界与并发。如存在需新的产品决定才能避免重大行为冲突，暂停该子项并报告，不擅自选会当日追溯关店的行为。
+1. 检查 git status、diff、未跟踪文件、最新本地/远端 main、任务/报告；若本地有未提交工作，**保留并停止任何可能覆盖的同步**。仅允许无冲突的普通 fast-forward、提交和 push。禁止 reset/clean/force-push，禁止修改历史 migration 或旧报告原文。
+2. Docker 数据**优先保全**。禁止 `docker compose down -v`、`docker volume rm/prune`、`docker rm`、`docker system prune`、`DROP DATABASE`/`DROP SCHEMA`、`prisma migrate reset`，也不得对原应用库做具有删除副作用的 Seed。**不得删除/合并用户看到的任一个 campus 容器、数据库或卷**。涉及删除/合并必须给用户明确对象、差异与可恢复备份证明后，等待独立批准。
+3. 切勿让两个 PostgreSQL 进程同时读写**同一个 PGDATA 数据卷**。备份及敏感连接信息只能留本机仓库外，不写 GitHub/报告原文；仅引用非敏感路径与掩码。
+4. 分阶段执行、验证、独立普通提交并报告实际 SHA。失败/阻断要真实记录，不得把本地测试当作 GitHub CI。
 
-## A. 独立营业日配置 + 商家可选偏好（先单独验证/提交）
+## A. 先查清两个 campus 数据库和 5432 端口（先只读）
 
-1. 审计第八轮 `PRODUCT_DAILY_RESTORE`、`BusinessConfig`校验/CAS/审计/管理员权限；创建独立`MERCHANT_DAILY_CONFIRMATION`有效默认`04:00` + platform-config管理入口（保留expectedVersion/reason/审计，拒绝额外字段），普通SUPER_ADMIN临时运营配置，不扩充Root/支付权限。用校园IANA时区、测试03:59/04:00、午夜、跨日和可能的时区边界，避免把UTC04:00/自然日当切换时刻。
-2. 商家独立偏好与版本/审计：默认关闭；启用仅从下一营业日切换时刻生效（保留明确effectiveAt/activationDay或等效数据）；关闭立即生效且不修改isOpen；再次开启仍按下一营业日。只能本店OWNER更改，不能商家指定其它merchantId。Seed迁移既有商家必须仍处原营业事实，历史审计/价格/Order等保持。
-3. 提供本人GET/PUT偏好及有效营业日视图、平台配置时刻来源与时区，API/OpenAPI契约显式区分配置意愿、实际生效中、等待明日生效、当前确认状态。不要虚构现有真实UI。
+1. 先用 `docker context ls`、`docker info`、`docker compose ls --all`、`docker ps -a --no-trunc`、`docker volume ls`、`docker inspect` 清点相关容器/项目、状态/Compose labels、端口、真实挂载卷/路径与镜像版本。检查 Windows 本地 5432 端口占用（`Get-NetTCPConnection` 或 netstat）。仓库 compose 目前只定义一个 postgres、默认 DB `campus-delivery`；第九轮另建过 `campus-round9-postgres` 并临时挂载原 `campus-delivery_postgres-data` 卷、监听 127.0.0.1:55439，**但这不证明目前是两份数据**。
+2. 区分“两个容器 / 两个 PostgreSQL 实例 / 一个实例下的两个或更多数据库 / 共用数据卷的替代启动容器”。在安全可读的实例中只读枚举数据库、migration status、代表性原业务表行数/最新记录、创建/运行用途；比对本地 `DATABASE_URL` 实际连接端口/库，但隐藏任何密码。若停止实例的卷可能正被使用，**不为盘点而强行同时启动**。
+3. 按证据标记主应用库、独立测试库、历史备份或待确认库；不凭名字/文件大小直接决定主库。可对安全访问的库执行 `pg_dump -Fc` 及 SHA256，尽可能在全新隔离库验证可恢复；备份必须放仓库外并防止泄漏，且**备份完成不代表可删除原库**。
+4. 先无损解决开发环境可连接问题：确认 5432 被哪一个进程或端口保留占用，选择清晰、稳定的端口映射/.env 配套方案，不劫持其他程序、不删除数据卷、不偷偷改生产配置。原容器如有冲突，先向用户说明两种方案的影响。
+5. 交付明确的“双 campus 对照表”：容器名/ID、DB名、卷、端口、状态、迁移/行数概要、代码真正连接位置、各自用途、备份/恢复取证、建议保留的主库和**待用户确认的清理对象**。可留下非必要容器停止但不可删除，不能自动合并/删库。
 
-## B. 今日确认、手动开店复用与同步门禁（A绿色后开始）
+## B. 独立 CI 及可复核证据
 
-1. 设计商家×营业日**已确认事实**（含真实actor、事件来源EXPLICIT_CONFIRM或MANUAL_OPEN、确认时间、营业日/时区/切换时刻/策略版本），可在并发重复动作中幂等，绝不借用第八轮系统恢复审计伪造真人确认。若本日手动关店仍保留确认事实。显式确认API（例如POST`/merchant/confirm-business-day`）要在同一事务中合法记录确认并开店，受expectedVersion/必要审计保护；与原PUT手动开启共享一条确认业务函数，注意isOpen已true而确认过期的同值PUT。模式未生效时不应无意改变既定手动逻辑。
-2. 更新`/merchants`、`/merchants/:id/products`、`/merchant/operating-status`、`POST /orders/price-preview`、`POST /orders`有效状态计算；catalog DTO的`operatingStatusLabel`和产品`purchasable`应与服务端订单准入一致。目录读取可高效批量读取配置/确认，无N+1失控；checkout依据同一服务器事实与数据库锁保护，防管理员改时刻、开关偏好、商家手动开关与下单竞态。旧quoteToken跨过营业日边界必须在创建阶段重新校验且拒绝尚未确认之店。
-3. **不依赖背景调度**：营业日切换时间到就立即成为待确认，不直接更新`Merchant.isOpen`；后台循环即使关闭仍不能下单，打开确认模式不会中断当天现有营业。确认当日后再次手动关店（仍然待售/不可接单）及重新开店应可正确恢复接单。
-4. 保留第七轮现有写入`expectedVersion`/CAS、无变化处理、状态版本及审计一致性，不通过不安全绕过跳过版本检测。人工开店和确认同事务，拒绝跨店/无权操作；旧代码/用户端初始默认不开确认，无差异表现。现有独立商品每日恢复任务不得确认开店。
+1. 创建最小 GitHub Actions CI：Node 20+/仓库固定 pnpm 11.5.1、frozen lockfile、Prisma generate、typecheck、单测、build，最好加 PostgreSQL 16 **全新一次性 service** 的 integration/迁移检查。不得连接用户 Docker 主库、公开数据库凭据或接入真实支付。
+2. 注意 `pnpm test:integration` 本身会跑 `prisma migrate deploy` 和 `prisma db seed`，只能对**可丢弃的独立测试数据库**执行。历史 PostgreSQL triggers 必须由迁移建立，不能用 db push 冒充验证。
+3. push 后实际读取 workflow run/commit SHA/结果/日志；若权限限制或失败，记录阻断、最小修复与后续验收。不准将“有 YAML”写成“CI 已通过”。不得通过删安全测试或修改产品规则让 CI 变绿。
 
-## C. 实际回归、数据库升级、报告（B绿色后开始）
+## C. 第九轮营业日过渡专项
 
-- PG并发与边界：两商家启用/未启用，普通在售与被HIDDEN/SUSPENDED，已经true却未确认的“开始营业”、确认即开店、当天关再开、次日过期、次日之前启用不生效、关闭立即生效且不自动开店、时刻变更/跨午夜/跨日/各实例锁顺序、重复确认及陈旧版本、无background jobs时过期拒单、quoteToken已预览过期拒单；商品自动恢复第八轮功能不能解除营业确认；拒绝额外字段/他店角色。
-- 保留旧版`isOpen`和商品三态/`isAvailable`兼容，原有商品恢复198项集成基线、56项单测、订单池40分钟、学生资格、易损证据与交接争议、业务配置、报价/佣金0与费用模拟、订单和已FINALIZED财务事实不回写。
-- 安全备份应用库后**在隔离测试库**进行测试破坏动作；新增Prisma增量migration不能修改旧migration，验证应用/旧库副本/空库迁移与重复Seed，避免用db push跳过旧Postgres trigger；保留原业务表及订单/金额/履约指纹。实际运行`pnpm db:generate`、`pnpm typecheck`、`pnpm test`、`pnpm test:integration`、`pnpm build`与migrate status/diff，记录红→绿及测试失败，不假报CI。
-- A/B/C每阶段独立commit、实际全套验证及普通push；不中途强制重置/force-push、不误用生产库Seed、不制造真实资金；问题停止在上一已验证绿色阶段。完成后把本轮runtime对照/文档链接写入`ROLE_RESPONSIBILITIES.md`、`MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md`、`README.md`，覆盖`CODEX_REPORT.md`记录每步SHA、功能门禁、默认态、迁移/备份、可验证配置生效策略、UI缺口与未实施的每日自动关店/库存/真实付款。然后停止。
+1. 复测 04:00→08:00、08:00→02:00、反复覆盖待生效配置、跨午夜/DST、商家确认与订单预览/创建的竞态。区分现有**非回溯延长过渡日**策略与真实缺陷；过渡区间可能超过24h不自动认定是 bug。
+2. 检查管理员查询/配置 DTO 中有效时间与待生效时间、`effectiveAt`、`businessDayStartsAt`、`nextBusinessDayStartsAt`、版本字段的实际说明。可补严格的回归/文档或明显 bug，但不可自行新增改时次数上限、最长营业日、强制关店等未决业务规则。需要新决策则停止对应功能改动。
 
+## D. 文档收口、验收与报告
+
+1. 主产品1G已暂停两条真实支付路线，核实 README、AGENTS、财务、角色、经营专题和其他**非历史实施指令**不存在“首期必须分开支付”的误导。原审计/旧计划保留历史真相，只追加必要替代声明，不擦除证据。
+2. 正式执行完成**之后**，把根 `CODEX_REPORT.md` 改成第十轮 A 的实际执行报告；第九轮报告保持在独立归档文档。及时更新第九轮具体报告引用，不能让旧链接指向新的根报告。
+3. 验收：真实环境已可安全使用且没有误删数据；两个 campus 的身份清晰、需要删除的对象仍等审批；有独立 CI 的实际 SHA/run 或透明阻断；营业日过渡验证结论；支付文档一致。分清 “第十轮B前必要” 与 “正式生产上线前必要”（x-user-id、正式 Root、真实支付主体）。
+4. 报告本地/远端 SHA、每阶段命令与验证、失败、数据库清单、备份/恢复证据与隐私保护、GitHub Actions run URL、未完成/需用户审批事项。停止，不自动做商家自动关店、数量库存、真实支付、Root/认证或第十轮 B。
+
+**所有删除数据、移除容器/卷、实际合并数据库都必须在提交证据后等待用户授权；第十轮 B 新功能也需用户另行授权。**
