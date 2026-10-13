@@ -4,7 +4,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 ## 当前阶段
 
-第十轮A仅处理历史工程遗留：本地数据关系/无损恢复见 [PostgreSQL盘点](docs/local-postgres-inventory-2026-10-13.md)，GitHub Actions在全新PG16 service验证，营业日过渡及支付文档已复核。实际SHA、运行结果与保留事项见 [第十轮A执行报告](CODEX_REPORT.md)。第九轮历史证据仍使用对应归档；第十轮B须另行授权。
+第十轮A仅处理历史工程遗留：本地数据关系/无损恢复见 [PostgreSQL盘点](docs/local-postgres-inventory-2026-10-13.md)，GitHub Actions在全新PG16 service验证，营业日过渡及支付文档已复核。实际SHA、运行结果与保留事项见 [第十轮A归档报告](CODEX_REPORT_2026-10-13_ROUND10A.md)。第九轮历史证据仍使用对应归档。**第十轮B已获授权、任务已准备但尚未执行**：详见 [CODEX_TASK.md](CODEX_TASK.md) 和 [出餐/异常/商品变更决策](ORDER_PREPARATION_AND_EXCEPTION_DECISIONS.md)；不能把文档提交算作功能交付。
 
 本阶段仍是模块化单体 REST API。第四轮报价及第五轮财务安全基础已有完成记录；商家基础报价仅作定价参考、商品佣金可配置且默认0%均已确认。代码能力和当前应用配置不同，历史报告只说明其记录的提交与验证，不代表所有产品规则已上线。
 
@@ -77,7 +77,8 @@ OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日
       src/pricing/            价格视图、资金变更与可配置定价 policy
       tests/                  单元和 PostgreSQL 集成测试
     docs/superpowers/specs/   设计规范
-    CODEX_REPORT.md           本轮交接报告
+    CODEX_TASK.md             当前第十轮B已授权任务
+    CODEX_REPORT.md           上一完成轮次A的执行报告（B结束后将覆盖）
 
 ## 本地启动
 
