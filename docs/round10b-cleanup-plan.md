@@ -1,6 +1,6 @@
 # 第十轮 B：本机数据盘点与逐对象清理审批
 
-2026-10-13，起点 `5f11a61`。**本文件是候选清单，不是删除授权；截至本次记录没有删除任何数据库、容器或卷。** 具体批准必须指明下表对象 ID。未批准的对象一律保留。非本项目 Docker 对象不在范围内。
+2026-10-13，起点 `5f11a61`。具体批准必须指明下表对象 ID。非本项目 Docker 对象不在范围内。**用户已在本聊天明确批准 C1–C5、V1–V5、H1–H19、A1–A23、S1–S2、O1–O2**；删除前仍重新核验。不包含本轮新建B环境。
 
 ## 已核实事实
 
@@ -34,13 +34,14 @@ verification冷备SHA256：`E23DB8C7DE56B59B5CFE60E2B946E6D9E6F63F0736AA7CAB18EB
 | C3 | campus-round10a-shop-recovery | 候选：shop恢复入口；原业务仍待核实 | `docker rm campus-round10a-shop-recovery` |
 | C4 | campus-round10a-shop-archive | 候选：A只读归档辅助；外部备份保留 | `docker rm campus-round10a-shop-archive` |
 | C5 | campus-round10a-shop-restore | 候选：A解压辅助；恢复事实保留 | `docker rm campus-round10a-shop-restore` |
+| C6 | campus-round10b-preservation | 用户另行明确批准：本轮停止的只读冷备辅助，引用V1–V5；归档已复制到仓库外并核对SHA256，Docker删卷前必须移除此依赖。仅丢弃辅助容器入口，归档保留 | `docker rm campus-round10b-preservation` |
 | V1 | campus-round10a-verification-data | 候选：删除其全部23库；须另获每库批准、停止并移除所有依赖容器 | `docker volume rm campus-round10a-verification-data` |
 | V2 | campus-round10a-shop-recovery-data | 用途待核实：shop物理恢复集群，含campus_delivery/postgres | `docker volume rm campus-round10a-shop-recovery-data` |
 | V3 | shop_campus-postgres-data | 用途待核实：原shop独立数据，不推荐在用途未明时删除 | `docker volume rm shop_campus-postgres-data` |
 | V4 | 1508c16467613ba97d219c2f528d0069bcdf1299308735db1daea0c0e1bd0dfa | 候选：A archive附带空匿名卷，先移除依赖 | `docker volume rm 1508c16467613ba97d219c2f528d0069bcdf1299308735db1daea0c0e1bd0dfa` |
 | V5 | 048c86d67aa74f65eeb555a70141aaa22c763995c8cc2df534082ae96798255a | 候选：A restore附带空匿名卷，先移除依赖 | `docker volume rm 048c86d67aa74f65eeb555a70141aaa22c763995c8cc2df534082ae96798255a` |
 
-本轮新建的 `campus-round10b-preservation`（停止的只读归档辅助）、`campus-round10b-restore-archive`（停止的解压辅助）、`campus-round10b-restore`/`campus-round10b-restore-data`（A冷备恢复校验）、`campus-round10b-test`/`campus-round10b-test-data`（全新隔离测试）均保留；本清单不申请删除它们。B test仅绑定127.0.0.1:55442，B restore仅绑定127.0.0.1:55443，绝不与原PGDATA共卷。恢复镜像不用于集成测试池。
+本轮新建的 `campus-round10b-preservation` 已以C6另获用户明确批准并删除。`campus-round10b-restore-archive`（停止的解压辅助）、`campus-round10b-restore`/`campus-round10b-restore-data`（A冷备恢复校验）、`campus-round10b-test`/`campus-round10b-test-data`（全新隔离测试）均保留；本清单不申请删除这些对象。B test仅绑定127.0.0.1:55442，B restore仅绑定127.0.0.1:55443，绝不与原PGDATA共卷。恢复镜像不用于集成测试池。
 
 ## 数据库候选（逐库审批，当前全部保留）
 
@@ -97,3 +98,9 @@ shop原卷（V3）内的campus_delivery/postgres是另外两个对象，记为O1
 
 批准示例：只批准 C1、C4、V4；其他全部保留。不能将「清理测试环境」解释为上表所有对象获批。
 
+
+## 已批准清理的实际结果
+
+用户先批准 C1–C5、V1–V5、H1–H19、A1–A23、S1–S2、O1–O2，再单独批准新增C6。重新核对各库指纹、活动连接为0及归档SHA256后，逐库删除原集群19个历史测试库；停止状态检查后删除C1–C6；确认无其他容器引用后删除V1–V5（包含已批准的A/S/O数据库）。没有强制断连接、prune、删除主卷或备份目录。主集群目前只剩campus-delivery/postgres；主应用全部55表指纹与本轮起点一致。B恢复镜像和测试环境仍保留。Docker总卷空间从3.921GB变为3.667GB，期间新增B隔离/恢复卷；这个净差不是仅旧对象的占用大小。
+
+阶段0本地基线：59单测、221PG集成、typecheck/build通过；隔离新测试库完成旧30条migration。盘点提交f9e655b的独立CI [38345333022](https://github.com/Serena-Lyric/campus-delivery/actions/runs/38345333022) 完整成功。表内候选命令保留为审批历史，不可重复拿来授权后续新增对象。
