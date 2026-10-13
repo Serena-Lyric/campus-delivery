@@ -40,6 +40,11 @@ export async function refundAndCloseExceptionCase(
     );
   }
   return prisma.$transaction(async (tx) => {
+    const identity = await tx.exceptionCase.findUnique({ where: { id: caseId }, select: { orderId: true } });
+    if (!identity) throw notFound('Exception case');
+    await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id"=${identity.orderId}::uuid FOR UPDATE`;
+    const taskIdentity = await tx.deliveryTask.findUnique({ where: { orderId: identity.orderId }, select: { id: true } });
+    if (taskIdentity) await tx.$queryRaw`SELECT "id" FROM "DeliveryTask" WHERE "id"=${taskIdentity.id}::uuid FOR UPDATE`;
     await tx.$queryRaw`SELECT "id" FROM "ExceptionCase" WHERE "id" = ${caseId}::uuid FOR UPDATE`;
     const exceptionCase = await tx.exceptionCase.findUnique({
       where: { id: caseId },
@@ -54,6 +59,8 @@ export async function refundAndCloseExceptionCase(
       },
     });
     if (!exceptionCase) throw notFound('Exception case');
+    if (exceptionCase.category === 'MERCHANT_PREPARATION_UNAVAILABLE') throw conflict('PREPARATION_REFUND_FACTS_REQUIRED', 'Preparation agreements cannot execute a simulated rider-compensation refund');
+    if (exceptionCase.order.preparationControlVersion > 0 && exceptionCase.order.status !== 'DELIVERED') throw conflict('PREPARATION_REFUND_FACTS_REQUIRED', 'Controlled unfinished orders require the separate safe funds-fact workflow');
     if (exceptionCase.category === 'PICKUP_CUSTODY_DISPUTE') throw conflict('PICKUP_DISPUTE_NON_ECONOMIC', 'Custody review cannot create compensation or a refund');
     await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${exceptionCase.orderId}::uuid FOR UPDATE`;
     const pickupTask = await tx.deliveryTask.findUnique({ where: { orderId: exceptionCase.orderId }, select: { id: true } });
@@ -61,6 +68,7 @@ export async function refundAndCloseExceptionCase(
     await assertNoPickupDispute(tx, exceptionCase.orderId);
     // Re-read the workflow facts after custody locks; a concurrent correction may have committed while waiting.
     const lockedOrder = await tx.order.findUniqueOrThrow({ where: { id: exceptionCase.orderId }, include: { pricing: true, deliveryTask: { include: { assignments: { orderBy: { claimedAt: 'desc' } } } } } });
+    if (lockedOrder.preparationControlVersion > 0 && lockedOrder.status !== 'DELIVERED') throw conflict('PREPARATION_REFUND_FACTS_REQUIRED', 'Controlled unfinished orders cannot create unearned rider income through the legacy refund route');
     const task = lockedOrder.deliveryTask;
     const assignment = task?.assignments.find((candidate) => candidate.riderId === task.riderId)
       ?? task?.assignments[0];
@@ -222,7 +230,7 @@ export async function refundAndCloseExceptionCase(
     await tx.deliveryTask.update({ where: { id: task.id }, data: { status: DeliveryTaskStatus.EXCEPTION } });
     await tx.deliveryAssignment.updateMany({
       where: { taskId: task.id, status: DeliveryAssignmentStatus.ACTIVE },
-      data: { status: DeliveryAssignmentStatus.EXCEPTION, endedAt: now, reason: 'REFUND_AND_CLOSE' },
+      data: { status: DeliveryAssignmentStatus.EXCEPTION, endedAt: now, reason: 'REFUND_AND_CLOSE', temporaryPersonalCapacityRelease: false },
     });
     const resolvedCase = await tx.exceptionCase.updateMany({
       where: { id: caseId, version: input.expectedVersion + 1, status: exceptionCase.status },

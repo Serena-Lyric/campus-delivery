@@ -70,7 +70,7 @@ export async function recordCatalogRiskReport(tx: Prisma.TransactionClient, acto
       policyVersion: task.order.pickupEvidencePolicyVersion, revision: task.order.pickupRiskRevision,
     }, createdAt: now,
   } });
-  await tx.deliveryAssignment.update({ where: { id: assignment.id }, data: { status: 'ABANDONED', endedAt: now, reason: 'MERCHANT_CORE_FRAGILE_MISDECLARATION' } });
+  await tx.deliveryAssignment.update({ where: { id: assignment.id }, data: { status: 'ABANDONED', endedAt: now, reason: 'MERCHANT_CORE_FRAGILE_MISDECLARATION', temporaryPersonalCapacityRelease: false } });
   await tx.deliveryTask.update({ where: { id: task.id }, data: { status: 'RISK_REVIEW', riderId: null, claimedAt: null } });
   await tx.order.update({ where: { id: task.orderId }, data: { pickupRiskRevision: { increment: 1 } } });
   await transitionOrder(tx, task.orderId, task.order.status, 'READY_FOR_RIDER', performedBy, {

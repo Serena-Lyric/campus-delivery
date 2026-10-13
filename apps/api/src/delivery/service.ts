@@ -26,6 +26,7 @@ import { assertQualificationCanClaim, eligibilityPolicyLock, loadEligibilityGate
 import { qualificationSnapshot } from '../riders/eligibility-policy.js';
 import { preparationEstimateView } from '../orders/preparation-estimate.js';
 import { arrivalElapsedView } from './arrival.js';
+import { preparationControlView } from '../orders/preparation-control.js';
 
 const taskSelect = {
   id: true,
@@ -39,7 +40,7 @@ const taskSelect = {
   deliveredAt: true,
   createdAt: true,
   updatedAt: true,
-  assignments: { select: { id: true, riderId: true, status: true, merchantArrivedAt: true, endedAt: true } },
+  assignments: { select: { id: true, riderId: true, status: true, merchantArrivedAt: true, endedAt: true, noFaultExitStatus: true, temporaryPersonalCapacityRelease: true } },
   order: {
     select: {
       id: true,
@@ -53,6 +54,10 @@ const taskSelect = {
       deliveryMethod: true,
       merchantPreparationStatus: true,
       merchantPreparationUpdatedAt: true,
+      preparationControlState: true,
+      preparationControlVersion: true,
+      preparationControlReason: true,
+      preparationControlUpdatedAt: true,
       merchantEstimatedReadyAt: true,
       merchantPreparationEstimateVersion: true,
       pickupRiskRevision: true,
@@ -137,6 +142,9 @@ function presentRiderTask(task: RiderTask, actor?: Actor, timeZone = 'Asia/Shang
       })),
     },
     preparationStatus: task.order.merchantPreparationStatus,
+    preparationControl: !actor ? { ...preparationControlView(task.order), reason: null }
+      : activeAssignmentId ? preparationControlView(task.order) : undefined,
+    riderExitReview: actor && arrivalAssignment ? { status: arrivalAssignment.noFaultExitStatus, personalCapacityTemporarilyReleased: arrivalAssignment.temporaryPersonalCapacityRelease } : undefined,
     arrivalElapsed: arrivalAssignment ? arrivalElapsedView(arrivalAssignment.merchantArrivedAt,
       task.order.merchantPreparationStatus === 'READY_FOR_PICKUP' ? task.order.merchantPreparationUpdatedAt : null,
       handedOffAt, arrivalAssignment.endedAt, now, Boolean(handedOffAt && latestHandoff?.dispute && ['OPEN', 'INCONCLUSIVE'].includes(latestHandoff.dispute.status)), task.order.status) : undefined,
@@ -183,7 +191,7 @@ export async function listAvailableTasks(prisma: PrismaClient, actor: Actor, lim
         status: DeliveryTaskStatus.OPEN,
         riderId: null,
         claimDeadline: { gt: now },
-        order: { merchant: { blockedBy: { none: { riderId } } } },
+        order: { preparationControlState: 'NORMAL', merchant: { blockedBy: { none: { riderId } } } },
       },
       select: taskSelect,
       orderBy: { createdAt: 'asc' },
@@ -235,13 +243,12 @@ export async function claimTask(
     await assertRiderCanClaim(tx, riderId, now);
     const capacity = await resolveRiderCapacity(tx, riderId, config, campusTimeZone, now);
 
-    const activeCount = await tx.deliveryTask.count({
-      where: {
-        riderId,
-        status: { in: [DeliveryTaskStatus.CLAIMED, DeliveryTaskStatus.PICKED_UP] },
-      },
-    });
-    if (activeCount >= capacity.effectiveCapacity) {
+    const [globalHeldCount, personalHeldCount] = await Promise.all([
+      tx.deliveryAssignment.count({ where: { riderId, status: 'ACTIVE' } }),
+      tx.deliveryAssignment.count({ where: { riderId, status: 'ACTIVE', temporaryPersonalCapacityRelease: false } }),
+    ]);
+    if (globalHeldCount >= capacity.globalAbsoluteCapacity) throw conflict('RIDER_GLOBAL_ORDER_LIMIT', 'Every unresolved assignment still occupies the global hard limit');
+    if (personalHeldCount >= capacity.personalCapacity) {
       throw conflict('RIDER_ORDER_LIMIT', 'Rider has reached the current concurrent order limit');
     }
 
@@ -250,6 +257,7 @@ export async function claimTask(
       include: { order: { include: { pricing: true } } },
     });
     if (!task) throw notFound('Delivery task');
+    if (task.order.preparationControlState !== 'NORMAL') throw conflict('PREPARATION_CLAIM_PAUSED', 'Merchant preparation is paused; the original claim deadline has not been reset');
     if (
       task.status !== DeliveryTaskStatus.OPEN
       || task.riderId
@@ -343,6 +351,7 @@ export async function deliverTask(
     if (!task) throw notFound('Delivery task');
     if (task.riderId !== actor.riderId) throw forbidden();
     if (task.status !== DeliveryTaskStatus.PICKED_UP) throw conflict('TASK_STATE_CONFLICT', 'Task is not ready for delivery');
+    if (task.order.preparationControlState !== 'NORMAL') throw conflict('FULFILLMENT_REVIEW_PAUSED', 'The current exception must be reviewed before completion');
     await assertNoPickupDispute(tx, task.orderId);
     if (!task.order.pricing) throw notFound('Order pricing');
 
@@ -406,7 +415,7 @@ export async function deliverTask(
     const finalRiderPayoutMinor = assignment.riderGuaranteedPayoutMinorAtClaim + assignment.postClaimTipMinor;
     await tx.deliveryAssignment.update({
       where: { id: assignment.id },
-      data: { status: DeliveryAssignmentStatus.COMPLETED, endedAt: now },
+      data: { status: DeliveryAssignmentStatus.COMPLETED, endedAt: now, temporaryPersonalCapacityRelease: false },
     });
     await tx.settlement.update({
       where: { orderId: task.orderId },

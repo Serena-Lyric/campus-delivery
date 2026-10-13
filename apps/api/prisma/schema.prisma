@@ -167,6 +167,20 @@ enum MerchantPreparationStatus {
   READY_FOR_PICKUP
 }
 
+enum PreparationControlState {
+  NORMAL
+  UNABLE
+  RECOVERY_PENDING
+  MANUAL_REVIEW
+}
+
+enum NoFaultExitStatus {
+  NONE
+  PENDING
+  REJECTED
+  APPROVED
+}
+
 enum ClaimSampleType {
   NATURAL
   SUBSIDIZED
@@ -218,6 +232,7 @@ enum PickupCustodyStatus {
 }
 
 enum ExceptionType {
+  MERCHANT_PREPARATION_UNAVAILABLE
   PICKUP_CUSTODY_DISPUTE
   CUSTOMER_UNREACHABLE
   WRONG_ADDRESS
@@ -283,6 +298,8 @@ enum ExceptionResolutionType {
 }
 
 enum ExceptionCaseActionType {
+  NOFAULT_EXIT_REQUESTED
+  NOFAULT_EXIT_REVIEWED
   CREATED
   CLAIMED
   RELEASED
@@ -323,6 +340,7 @@ enum CompensationFundingSource {
 }
 
 model User {
+  preparationControlChanges PreparationControlAudit[]
   preparationEstimateChanges MerchantPreparationEstimateAudit[]
   id                        String                            @id @default(uuid()) @db.Uuid
   displayName               String
@@ -714,6 +732,14 @@ model RiderBlockedMerchant {
 }
 
 model Order {
+  preparationControlState PreparationControlState @default(NORMAL)
+  preparationControlVersion Int @default(0)
+  preparationControlReason String?
+  preparationControlUpdatedAt DateTime?
+  preparationSourceExceptionId String? @db.Uuid
+  preparationSourceException ExceptionEvent? @relation("PreparationSource", fields: [preparationSourceExceptionId], references: [id], onDelete: SetNull)
+  preparationReportedAssignmentId String? @db.Uuid
+  preparationControlHistory PreparationControlAudit[]
   merchantEstimatedReadyAt      DateTime?
   merchantPreparationEstimateVersion Int @default(0)
   preparationEstimateHistory   MerchantPreparationEstimateAudit[]
@@ -793,6 +819,24 @@ model MerchantPreparationEstimateAudit {
   @@unique([orderId, requestKey])
 }
 
+model PreparationControlAudit {
+  id String @id @default(uuid()) @db.Uuid
+  orderId String @db.Uuid
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  version Int
+  action String
+  previousState PreparationControlState
+  newState PreparationControlState
+  actorId String? @db.Uuid
+  actor User? @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  requestKey String? @db.Uuid
+  payloadSignature String
+  createdAt DateTime @default(now())
+
+  @@unique([orderId, version])
+  @@unique([orderId, requestKey])
+}
+
 model OrderItem {
   id                           String   @id @default(uuid()) @db.Uuid
   orderId                      String   @db.Uuid
@@ -864,6 +908,8 @@ model DeliveryTask {
 }
 
 model DeliveryAssignment {
+  temporaryPersonalCapacityRelease Boolean @default(false)
+  noFaultExitStatus NoFaultExitStatus @default(NONE)
   merchantArrivedAt                         DateTime?
   id                                       String                   @id @default(uuid()) @db.Uuid
   taskId                                   String                   @db.Uuid
@@ -1048,6 +1094,7 @@ model Evidence {
 }
 
 model ExceptionEvent {
+  preparationControls Order[] @relation("PreparationSource")
   id            String         @id @default(uuid()) @db.Uuid
   orderId       String         @db.Uuid
   order         Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)

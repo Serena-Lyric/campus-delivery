@@ -7,6 +7,7 @@ import {
   type Prisma,
   type PrismaClient,
 } from '@prisma/client';
+import { expirePausedPreparation } from './preparation-control.js';
 
 export async function expireOpenDeliveryTask(
   tx: Prisma.TransactionClient,
@@ -26,6 +27,8 @@ export async function expireOpenDeliveryTask(
     || task.order.status !== OrderStatus.READY_FOR_RIDER
     || !task.order.pricing
   ) return 0;
+
+  if (await expirePausedPreparation(tx, task, now)) return 0;
 
   const pricing = task.order.pricing;
   const refundableTipMinor = pricing.customerRiderTipMinor;

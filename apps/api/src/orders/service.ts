@@ -32,6 +32,7 @@ import { readConfirmationState } from '../catalog/daily-confirmation-state.js';
 import { operatingStatusFields } from '../catalog/operating-status.js';
 import { preparationEstimateView } from './preparation-estimate.js';
 import { arrivalElapsedView } from '../delivery/arrival.js';
+import { getPreparationControl, preparationControlView } from './preparation-control.js';
 
 export type CreateOrderInput = CheckoutInput;
 
@@ -98,6 +99,11 @@ function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown, time
     },
     merchantPreparationStatus: order.merchantPreparationStatus,
     merchantPreparationUpdatedAt: order.merchantPreparationUpdatedAt,
+    preparationControl: actor.role !== 'RIDER' || deliveryTask?.assignments.some((a) => a.status === 'ACTIVE' && a.riderId === actor.riderId && deliveryTask.riderId === actor.riderId)
+      ? preparationControlView(order) : undefined,
+    riderExitReview: actor.role === 'RIDER' && arrivalAssignment && arrivalAssignment.riderId === actor.riderId ? {
+      status: arrivalAssignment.noFaultExitStatus, personalCapacityTemporarilyReleased: arrivalAssignment.temporaryPersonalCapacityRelease,
+    } : undefined,
     arrivalElapsed: actor.role !== 'RIDER' || arrivalAssignment?.riderId === actor.riderId
       ? arrivalElapsedView(arrivalAssignment?.merchantArrivedAt ?? null, order.merchantPreparationStatus === 'READY_FOR_PICKUP' ? order.merchantPreparationUpdatedAt : null,
         handedOffAt, arrivalAssignment?.endedAt ?? null, now, Boolean(handedOffAt && handoff?.dispute && ['OPEN', 'INCONCLUSIVE'].includes(handoff.dispute.status)), order.status) : undefined,
@@ -344,9 +350,13 @@ export async function createOrder(
 }
 
 export async function getOrder(prisma: PrismaClient, actor: Actor, orderId: string, timeZone = 'Asia/Shanghai', clock = () => new Date()) {
-  const order = await prisma.order.findUnique({ where: { id: orderId }, include: orderInclude });
+  let order = await prisma.order.findUnique({ where: { id: orderId }, include: orderInclude });
   if (!order) throw notFound('Order');
   assertOrderAccess(actor, order);
+  if (order.preparationControlState !== 'NORMAL' && (actor.role !== 'RIDER' || order.deliveryTask?.riderId === actor.riderId)) {
+    await getPreparationControl(prisma, actor, orderId, clock);
+    order = await prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
+  }
   return presentOrder(
     actor,
     order,
@@ -392,6 +402,7 @@ export async function confirmOrder(
     if (!order) throw notFound('Order');
     if (order.merchantId !== actor.merchantId) throw forbidden();
     if (order.deliveryTask) throw conflict('ORDER_ALREADY_PUBLISHED', 'Order already has a delivery task');
+    if (order.preparationControlState !== 'NORMAL') throw conflict('PREPARATION_PAUSED', 'Resolve the preparation pause before confirming this order');
 
     await transitionOrder(tx, order.id, order.status, OrderStatus.MERCHANT_CONFIRMED, actor, {
       eventType: OrderEventType.MERCHANT_CONFIRMED,
@@ -439,6 +450,7 @@ export async function markOrderReady(
     const order = await tx.order.findUnique({ where: { id: orderId } });
     if (!order) throw notFound('Order');
     if (order.merchantId !== actor.merchantId) throw forbidden();
+    if (order.preparationControlState !== 'NORMAL') throw conflict('PREPARATION_PAUSED', 'Recovery must be confirmed before declaring READY');
     if (order.status !== OrderStatus.READY_FOR_RIDER && order.status !== OrderStatus.CLAIMED) {
       throw conflict('ORDER_STATE_CONFLICT', 'Preparation status can only be updated for a published order before pickup');
     }
@@ -538,8 +550,10 @@ export async function cancelOrder(
 
 export async function markOrderException(prisma: PrismaClient, actor: Actor, orderId: string, reason: string) {
   return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id"=${orderId}::uuid FOR UPDATE`;
     const order = await tx.order.findUnique({ where: { id: orderId }, include: { deliveryTask: true } });
     if (!order) throw notFound('Order');
+    if (order.preparationControlVersion > 0) throw conflict('USE_PREPARATION_CASE_REVIEW', 'A controlled preparation order requires the authorized case workflow; this legacy termination route is unavailable');
     const exception = await tx.exceptionEvent.create({
       data: {
         orderId,

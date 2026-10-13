@@ -93,8 +93,9 @@ export async function getMyCapacity(
   if (!actor.riderId) throw notFound('Rider');
   const { config } = await loadPolicyConfig(prisma);
   const capacity = await resolveRiderCapacity(prisma, actor.riderId, config, appConfig.campusTimeZone, now);
-  const [activeHeldOrders, events] = await Promise.all([
-    prisma.deliveryTask.count({ where: { riderId: actor.riderId, status: { in: ['CLAIMED', 'PICKED_UP'] } } }),
+  const [globalHeldCount, personalHeldCount, events] = await Promise.all([
+    prisma.deliveryAssignment.count({ where: { riderId: actor.riderId, status: 'ACTIVE' } }),
+    prisma.deliveryAssignment.count({ where: { riderId: actor.riderId, status: 'ACTIVE', temporaryPersonalCapacityRelease: false } }),
     prisma.riderCapacityEvent.findMany({
       where: { riderId: actor.riderId },
       select: { id: true, type: true, stage: true, previousCapacity: true, newCapacity: true, reason: true, createdAt: true },
@@ -102,7 +103,8 @@ export async function getMyCapacity(
       take: 20,
     }),
   ]);
-  return { ...capacity, activeHeldOrders, events };
+  return { ...capacity, activeHeldOrders: globalHeldCount, globalHeldCount, personalHeldCount,
+    remainingCapacity: Math.max(0, Math.min(capacity.personalCapacity - personalHeldCount, capacity.globalAbsoluteCapacity - globalHeldCount)), events };
 }
 
 export async function setRiderCapacityOverride(

@@ -31,6 +31,7 @@ export async function createExceptionEvent(
   input: CreateExceptionInput,
   classifier: ExceptionClassifier = new DeterministicExceptionClassifier(),
 ) {
+  if (input.type === 'MERCHANT_PREPARATION_UNAVAILABLE') throw conflict('USE_BOUND_PREPARATION_REPORT', 'Preparation unavailability needs the current assignment and workflow version');
   if (input.type === ExceptionType.PICKUP_CUSTODY_DISPUTE) throw conflict('PICKUP_DISPUTE_REQUIRES_DEDICATED_ROUTE', 'Report custody disputes through the current task and handoff');
   if (input.type === ExceptionType.PICKUP_EVIDENCE_UNAVAILABLE) {
     throw conflict('PICKUP_EXCEPTION_REQUIRES_DEDICATED_ROUTE', 'Report pickup evidence unavailable through the bound delivery task route');
@@ -157,8 +158,20 @@ async function createExceptionEventInternal(
       && !allowsUnattendedDelivery(config, order.deliveryMethod)
     ) || input.type === ExceptionType.RIDER_DELIVERY_EXCEPTION;
 
+    if (stopsDelivery && order.preparationControlVersion > 0 && !['DELIVERED', 'CANCELLED', 'EXCEPTION', 'NO_RIDER_ACCEPTED'].includes(order.status)) {
+      const now = new Date();
+      const sourceId = order.preparationControlState === 'NORMAL' ? exception.id : order.preparationSourceExceptionId ?? exception.id;
+      await tx.order.update({ where: { id: order.id }, data: { preparationControlState: 'MANUAL_REVIEW', preparationControlVersion: { increment: 1 },
+        preparationControlUpdatedAt: now, preparationSourceExceptionId: sourceId } });
+      await tx.preparationControlAudit.create({ data: { orderId: order.id, version: order.preparationControlVersion + 1, action: 'DELIVERY_EXCEPTION_PAUSED',
+        previousState: order.preparationControlState, newState: 'MANUAL_REVIEW', actorId: actor.id, payloadSignature: exception.id, createdAt: now } });
+      await tx.orderEvent.create({ data: { orderId: order.id, eventType: 'EXCEPTION_RECORDED', actorType: 'USER', fromStatus: order.status, toStatus: order.status,
+        operatorId: actor.id, operatorRole: actor.role, metadata: { action: 'DELIVERY_EXCEPTION_PAUSED', exceptionEventId: exception.id, automaticTermination: false, fundsChanged: false }, createdAt: now } });
+    }
+
     if (
       stopsDelivery
+      && order.preparationControlVersion === 0
       && order.status !== OrderStatus.DELIVERED
       && order.status !== OrderStatus.CANCELLED
       && order.status !== OrderStatus.EXCEPTION
@@ -175,7 +188,7 @@ async function createExceptionEventInternal(
         });
         await tx.deliveryAssignment.updateMany({
           where: { taskId: order.deliveryTask.id, status: DeliveryAssignmentStatus.ACTIVE },
-          data: { status: DeliveryAssignmentStatus.EXCEPTION, endedAt: new Date(), reason: input.type },
+          data: { status: DeliveryAssignmentStatus.EXCEPTION, endedAt: new Date(), reason: input.type, temporaryPersonalCapacityRelease: false },
         });
       }
     }

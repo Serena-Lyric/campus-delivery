@@ -126,7 +126,7 @@ export async function cancelBeforePickup(
 
     await tx.deliveryAssignment.update({
       where: { id: assignment.id },
-      data: { status: DeliveryAssignmentStatus.ABANDONED, endedAt: now, reason: `PRE_PICKUP:${input.reason}` },
+      data: { status: DeliveryAssignmentStatus.ABANDONED, endedAt: now, reason: `PRE_PICKUP:${input.reason}`, temporaryPersonalCapacityRelease: false },
     });
     await tx.deliveryTask.update({
       where: { id: task.id },

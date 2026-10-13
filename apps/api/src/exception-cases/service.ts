@@ -110,6 +110,9 @@ export async function getExceptionCaseForAdmin(prisma: PrismaClient, actor: Acto
       },
       order: {
         select: {
+          preparationControlState: true,
+          preparationControlVersion: true,
+          preparationReportedAssignmentId: true,
           status: true,
           shortCode: true,
           customerId: true,
@@ -341,9 +344,23 @@ export async function resolveNonEconomicCase(
 ) {
   assertAdmin(actor);
   return prisma.$transaction(async (tx) => {
-    const current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
+    let current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
     if (!current) throw notFound('Exception case');
     if (current.category === 'PICKUP_CUSTODY_DISPUTE') throw conflict('USE_PICKUP_DISPUTE_REVIEW', 'Resolve through the versioned pickup custody review action');
+    let controlledResume = false;
+    const initialOrder = await tx.order.findUniqueOrThrow({ where: { id: current.orderId } });
+    if (initialOrder.preparationControlVersion > 0 || current.category === 'MERCHANT_PREPARATION_UNAVAILABLE') {
+      await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id"=${current.orderId}::uuid FOR UPDATE`;
+      const order = await tx.order.findUniqueOrThrow({ where: { id: current.orderId } });
+      await tx.$queryRaw`SELECT "id" FROM "ExceptionCase" WHERE "id"=${caseId}::uuid FOR UPDATE`;
+      current = await tx.exceptionCase.findUniqueOrThrow({ where: { id: caseId } });
+      if (current.currentHandlerAdminId !== actor.id) throw forbidden();
+      if (order.preparationSourceExceptionId === current.exceptionEventId && order.preparationControlState !== 'NORMAL') {
+        if (current.category === 'MERCHANT_PREPARATION_UNAVAILABLE') throw conflict('PREPARATION_REVIEW_REQUIRED', 'The active preparation pause must be handled through its guarded review workflow');
+        if (!['RIDER_DELIVERY_EXCEPTION', 'CUSTOMER_UNREACHABLE'].includes(current.category) || !['CONTINUE_FULFILLMENT', 'WAITING_FOR_INFORMATION'].includes(resolutionType)) throw conflict('CONTROLLED_FULFILLMENT_DECISION_REQUIRED', 'The paused delivery requires an explicit continuation or further information; no automatic termination');
+        controlledResume = resolutionType === 'CONTINUE_FULFILLMENT';
+      }
+    }
     assertExceptionCaseAction(current.status, 'RESOLVE');
     if (current.currentHandlerAdminId !== actor.id && actor.adminLevel !== 'SUPER_ADMIN') throw forbidden();
     if (resolutionType === ExceptionResolutionType.ESCALATED_OTHER) {
@@ -375,6 +392,13 @@ export async function resolveNonEconomicCase(
       },
     });
     if (updated.count !== 1) throw conflict('CASE_VERSION_CONFLICT', 'Exception case changed before resolution');
+    if (controlledResume) {
+      if (await tx.exceptionCase.count({ where: { orderId: current.orderId, id: { not: caseId }, status: { notIn: ['RESOLVED', 'CLOSED'] } } })) throw conflict('OTHER_EXCEPTION_UNRESOLVED', 'Other current conflicts must be reviewed before continuation');
+      const order = await tx.order.findUniqueOrThrow({ where: { id: current.orderId } });
+      await tx.order.update({ where: { id: current.orderId }, data: { preparationControlState: 'NORMAL', preparationControlVersion: { increment: 1 }, preparationControlUpdatedAt: now } });
+      await tx.preparationControlAudit.create({ data: { orderId: current.orderId, version: order.preparationControlVersion + 1, action: 'HANDLER_CONTINUE_DELIVERY',
+        previousState: order.preparationControlState, newState: 'NORMAL', actorId: actor.id, payloadSignature: caseId, createdAt: now } });
+    }
     if (!waiting) await resolveLinkedExceptionEvent(tx, current, now);
     await tx.exceptionCaseAction.create({
       data: {

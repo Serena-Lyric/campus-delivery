@@ -14,6 +14,7 @@ import { registerExceptionRoutes } from './exceptions/routes.js';
 import { registerExceptionCaseRoutes } from './exception-cases/routes.js';
 import { registerMerchantRiskRoutes } from './merchant-risk/routes.js';
 import { registerOrderRoutes } from './orders/routes.js';
+import { registerPreparationControlRoutes } from './orders/preparation-control-routes.js';
 import { registerMarketPricingRoutes } from './pricing/routes.js';
 import { registerPricingViewRoutes } from './pricing/view-routes.js';
 import { registerRiderRoutes } from './riders/routes.js';
@@ -56,6 +57,7 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
   app.get('/health', { schema: { tags: ['system'], security: [] } }, async () => ({ status: 'ok' }));
   await registerCatalogRoutes(app, prisma, config);
   await registerOrderRoutes(app, prisma, config);
+  await registerPreparationControlRoutes(app, prisma, config);
   await registerMarketPricingRoutes(app, prisma, config);
   await registerPricingViewRoutes(app, prisma, config);
   await registerDeliveryRoutes(app, prisma, config);
