@@ -1,8 +1,9 @@
 # IMPLEMENTATION_PLAN
 
 > **历史实施计划，非当前执行任务（2026-10-11维护）**：正文保留2026-09-27计划及当时的provisional假设、必测要求和提交流程，不自动启动开发或push。基础报价资金语义的旧阻塞已由 `PRODUCT_DECISIONS.md` 第6节2026-10-10确认取代：B只作参考、双侧比例独立、救单独立。
-> 第四轮实际执行范围见 [归档任务](CODEX_TASK_2026-10-11_DUAL_SIDE_PRICING.md)、[设计](docs/delivery-pricing-round-four.md)及 [归档报告](CODEX_REPORT_2026-10-11_DUAL_SIDE_PRICING.md)；第五轮已完成记录见 [CODEX_TASK.md](CODEX_TASK.md) / [CODEX_REPORT.md](CODEX_REPORT.md)。不据此宣布本计划其他阶段整体完成。
+> 第四轮实际执行范围见 [归档任务](CODEX_TASK_2026-10-11_DUAL_SIDE_PRICING.md)、[设计](docs/delivery-pricing-round-four.md)及 [归档报告](CODEX_REPORT_2026-10-11_DUAL_SIDE_PRICING.md)；第五轮已完成记录见 [第五轮归档报告](CODEX_REPORT_2026-10-11_FINANCE_SAFEGUARDS.md)。不据此宣布本计划其他阶段整体完成。
 > 当前有效与待决边界仍以主产品为准：佣金可配置、默认0%已确认；首期分开支付暂定且未实现，旧统一商品款收取及48小时冷却保留为未来目标。第4节、角色与测试列表中“初始金额语义待确认”的表述属于被替代的历史记录；其他未闭合审计/异常资金缺口须按影响范围核对，不能据旧计划重新实施或追溯改账。
+> **2026-10-13替代说明**：上段2026-10-11状态记录中的首期分开支付优先级已由主产品第1G节撤回，统一与分开支付均暂缓选型；48小时真实资金控制仅在未来具有合法渠道权限时重新评估。正文旧计划/任务/报告指令继续保留历史，不授权新支付开发或覆盖历史账本。根CODEX_TASK.md / CODEX_REPORT.md现属于第十轮A。
 
 ## 0. 先完成上一轮审核补丁
 

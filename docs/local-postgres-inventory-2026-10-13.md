@@ -35,9 +35,31 @@ shop旧库 `campus_delivery`：16张public表（含迁移表），仅20260922000
 
 逐库migration表及全部public表的行数和排序后JSON行内容MD5指纹保存在本机证据目录；恢复副本与对应源库全部一致。MD5用于本次内容对比，备份完整性另外使用SHA256。不把这些副本当作多个独立线上应用，也不对历史库再次Seed。
 
+| 库 | public表数 | migration记录数 | Order / Product行数 |
+| --- | --- | --- | --- |
+| campus-delivery | 55 | 32（30成功+2回滚） | 2 / 234 |
+| campus_round2_empty / campus_round2_legacy_final / campus_round2_old | 各42 | 各22 | 各8 / 2 |
+| campus_round7_baseline | 48 | 26 | 2 / 234 |
+| campus_round7_empty / campus_round7_final_empty | 各50 | 各26 | 各8 / 2 |
+| campus_round7_old | 50 | 28 | 10 / 234 |
+| campus_round7_test | 50 | 26 | 10 / 92 |
+| campus_round8_baseline | 50 | 28 | 2 / 234 |
+| campus_round8_empty / campus_round8_final_empty | 各53 | 各28 | 各8 / 2 |
+| campus_round8_old | 53 | 30 | 10 / 234 |
+| campus_round8_test | 53 | 28 | 10 / 107 |
+| campus_round9_baseline | 53 | 30 | 2 / 234 |
+| campus_round9_empty / campus_round9_final_empty | 各55 | 各30 | 各8 / 2 |
+| campus_round9_old / campus_round9_final_old | 各55 | 各32 | 各10 / 234 |
+| campus_round9_test | 55 | 30 | 10 / 77 |
+| postgres | 0 | 无public迁移表 | 无对应表 |
+
+上表是历史库盘点，迁移记录数可能含回滚，不等于全部成功数；没有将旧schema升级至当前版本或宣称旧基线与当前schema一致。主库及隔离测试库才运行当前Prisma status/diff。主卷数据库21个，恢复验证额外新库不计入原库清单。
+
 ## 备份、恢复与隐私
 
 仓库外目录：`D:\Application\ClaudeCode\backups\campus-round10a-20261013`。包含主集群21份pg_dump custom备份、globals.sql、shop原卷冷备、shop逻辑备份、SHA256清单及逐库恢复指纹。数据库备份和角色定义可能含敏感数据，仅留本机，不提交Git、不上传Actions artifact。连接文档省略凭据。
+
+证据目录已取消继承权限，仅当前Windows用户与SYSTEM具有访问权限；SHA256清单、控制/指纹与本轮测试及CI日志留本机。目录ACL验证通过，不把备份当作公开可下载附件。
 
 | 备份 | SHA256 | 实际恢复证据 |
 | --- | --- | --- |

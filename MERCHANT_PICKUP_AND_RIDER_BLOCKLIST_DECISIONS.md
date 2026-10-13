@@ -65,3 +65,5 @@
 ## 7. 参考
 
 以 `PRODUCT_DECISIONS.md` 为根决策；参阅 `FRAGILE_PICKUP_EVIDENCE_DECISIONS.md`、`CATALOG_DISPLAY_AND_DELIVERY_CLASSIFICATION.md`、`EXCEPTION_HANDLING.md`、`ORDER_POOL_DECISIONS.md` 和上一轮 `CODEX_REPORT.md`。本文件还未使运行时代码生效。
+
+> 2026-10-13引用补记：上段是专题编制时状态，“上一轮CODEX_REPORT.md”不是当前第十轮A报告；取餐/黑名单后续实际实现与验证见 [对应归档报告](CODEX_REPORT_2026-10-10_PICKUP_AND_BLOCKLIST.md)，本次不改变原专题或历史报告。
