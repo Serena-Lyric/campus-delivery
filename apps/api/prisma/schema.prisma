@@ -232,6 +232,7 @@ enum PickupCustodyStatus {
 }
 
 enum ExceptionType {
+  GOODS_CHANGE_OBJECTION
   MERCHANT_PREPARATION_UNAVAILABLE
   PICKUP_CUSTODY_DISPUTE
   CUSTOMER_UNREACHABLE
@@ -732,6 +733,11 @@ model RiderBlockedMerchant {
 }
 
 model Order {
+  goodsChangeVersion Int @default(0)
+  goodsChangeReviewPending Boolean @default(false)
+  goodsChangeSourceExceptionId String? @db.Uuid
+  changeNotices OrderChangeNotice[]
+  goodsChangeActions GoodsChangeAction[]
   preparationControlState PreparationControlState @default(NORMAL)
   preparationControlVersion Int @default(0)
   preparationControlReason String?
@@ -837,6 +843,52 @@ model PreparationControlAudit {
   @@unique([orderId, requestKey])
 }
 
+enum ChangeRiskDeclaration {
+  NO_ADDITIONAL_CORE_FRAGILE
+  ADDITIONAL_CORE_FRAGILE
+  UNASSESSED
+}
+
+model OrderChangeNotice {
+  id String @id @default(uuid()) @db.Uuid
+  orderId String @db.Uuid
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  version Int
+  merchantId String @db.Uuid
+  merchantNameSnapshot String
+  content String
+  riskDeclaration ChangeRiskDeclaration
+  createdAt DateTime @default(now())
+  acknowledgements OrderChangeAcknowledgement[]
+  @@unique([orderId, version])
+}
+
+model OrderChangeAcknowledgement {
+  id String @id @default(uuid()) @db.Uuid
+  noticeId String @db.Uuid
+  notice OrderChangeNotice @relation(fields: [noticeId], references: [id], onDelete: Cascade)
+  assignmentId String @db.Uuid
+  assignment DeliveryAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@unique([noticeId, assignmentId])
+}
+
+model GoodsChangeAction {
+  id String @id @default(uuid()) @db.Uuid
+  orderId String @db.Uuid
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  version Int
+  action String
+  actorId String @db.Uuid
+  requestKey String @db.Uuid
+  payloadSignature String
+  noticeId String? @db.Uuid
+  exceptionEventId String? @db.Uuid
+  createdAt DateTime @default(now())
+  @@unique([orderId, version])
+  @@unique([orderId, requestKey])
+}
+
 model OrderItem {
   id                           String   @id @default(uuid()) @db.Uuid
   orderId                      String   @db.Uuid
@@ -908,6 +960,7 @@ model DeliveryTask {
 }
 
 model DeliveryAssignment {
+  changeAcknowledgements OrderChangeAcknowledgement[]
   temporaryPersonalCapacityRelease Boolean @default(false)
   noFaultExitStatus NoFaultExitStatus @default(NONE)
   merchantArrivedAt                         DateTime?

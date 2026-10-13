@@ -14,6 +14,7 @@ export async function confirmRiderPickup(prisma: PrismaClient, actor: Actor, ord
     const task = await lockPickupOrder(tx, orderId);
     if (task.order.merchantId !== actor.merchantId) throw forbidden();
     if (task.order.preparationControlState !== 'NORMAL') throw conflict('PREPARATION_PICKUP_PAUSED', 'Recovery or manual preparation review must complete before handoff');
+    if (task.order.goodsChangeReviewPending) throw conflict('GOODS_CHANGE_PICKUP_PAUSED', 'Added or unassessed goods risk requires authorized human review before handoff');
     const assignment = task.assignments.find((a) => a.id === input.assignmentId && a.riderId === task.riderId);
     if (!assignment || task.order.pickupHandoffRevision !== input.expectedRevision) throw conflict('PICKUP_ASSIGNMENT_CHANGED', 'Current assignment or pickup revision differs');
     await assertNoPickupDispute(tx, orderId);

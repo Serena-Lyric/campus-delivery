@@ -4,7 +4,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 ## 当前阶段
 
-第十轮A仅处理历史工程遗留：本地数据关系/无损恢复见 [PostgreSQL盘点](docs/local-postgres-inventory-2026-10-13.md)，GitHub Actions在全新PG16 service验证，营业日过渡及支付文档已复核。实际SHA、运行结果与保留事项见 [第十轮A归档报告](CODEX_REPORT_2026-10-13_ROUND10A.md)。第九轮历史证据仍使用对应归档。**第十轮B已获授权、任务已准备但尚未执行**：详见 [CODEX_TASK.md](CODEX_TASK.md) 和 [出餐/异常/商品变更决策](ORDER_PREPARATION_AND_EXCEPTION_DECISIONS.md)；不能把文档提交算作功能交付。
+第十轮A历史工程整理见 [归档报告](CODEX_REPORT_2026-10-13_ROUND10A.md) / [PostgreSQL盘点](docs/local-postgres-inventory-2026-10-13.md)。第十轮B已执行A/B/C并有对应SHA绿色CI，D变更告知正在验收、E协商流程随后执行；任务及真实连续证据见 [CODEX_TASK.md](CODEX_TASK.md) / [进度](docs/round10b-progress.md)。不能把文档或数据字段本身算作功能交付。
 
 本阶段仍是模块化单体 REST API。第四轮报价及第五轮财务安全基础已有完成记录；商家基础报价仅作定价参考、商品佣金可配置且默认0%均已确认。代码能力和当前应用配置不同，历史报告只说明其记录的提交与验证，不代表所有产品规则已上线。
 
@@ -473,3 +473,6 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
 - 场景现金在扣除义务之前，场景合法收益在扣除安全储备之前；义务须说明是否已在各基数中扣减，避免重复计算。现金/收益分别减去尚未扣减义务、工资预留及储备，再取较小非负上限；这些输入始终是假设，客户端不可声明真实余额或 Root 认证。
 - 所有财务预览均标记 `simulated:true`、`notVerified:true`、`realWithdrawalEnabled:false`、`realWithdrawableMinor:0`。骑手既有 `withdrawableMinor` 也固定为0，原内账未预留额改由 `internalUnreservedMinor` 表达；已得收入、冻结与 AVAILABLE 账务状态不变。
 - 两项新财务配置无 Seed 默认值，复用现有配置 CAS/版本审计。没有新增迁移、真实收款/提现/工资审批接口，旧 SUPER_ADMIN 不是 Root。外部手续费去重/调整纯函数仅为隔离测试契约，可信渠道验证和实际费用持久化尚未实现。
+## 第十轮B订单变更接口
+
+三态自报通知、当前骑手自愿知悉与商品变更异议见 [接口与安全边界](docs/round10b-change-api.md)。新增/未知核心易损保持人工核查，原价格/风险与照片/短码不变。运行状态以第十轮B连续记录和最终报告为准；新代码只用明确的隔离DATABASE_URL，原应用5432库仍未升级。

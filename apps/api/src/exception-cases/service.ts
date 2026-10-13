@@ -111,6 +111,9 @@ export async function getExceptionCaseForAdmin(prisma: PrismaClient, actor: Acto
       order: {
         select: {
           preparationControlState: true,
+          goodsChangeVersion: true,
+          goodsChangeReviewPending: true,
+          changeNotices: { select: { id: true, version: true, content: true, riskDeclaration: true, merchantNameSnapshot: true, createdAt: true }, orderBy: { version: 'desc' }, take: 100 },
           preparationControlVersion: true,
           preparationReportedAssignmentId: true,
           status: true,
@@ -347,6 +350,7 @@ export async function resolveNonEconomicCase(
     let current = await tx.exceptionCase.findUnique({ where: { id: caseId } });
     if (!current) throw notFound('Exception case');
     if (current.category === 'PICKUP_CUSTODY_DISPUTE') throw conflict('USE_PICKUP_DISPUTE_REVIEW', 'Resolve through the versioned pickup custody review action');
+    if (current.category === 'GOODS_CHANGE_OBJECTION') throw conflict('USE_GOODS_CHANGE_REVIEW', 'Risk facts require the dedicated goods-change review, not generic case resolution');
     let controlledResume = false;
     const initialOrder = await tx.order.findUniqueOrThrow({ where: { id: current.orderId } });
     if (initialOrder.preparationControlVersion > 0 || current.category === 'MERCHANT_PREPARATION_UNAVAILABLE') {

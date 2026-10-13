@@ -29,6 +29,7 @@ export async function expireOpenDeliveryTask(
   ) return 0;
 
   if (await expirePausedPreparation(tx, task, now)) return 0;
+  if (task.order.goodsChangeReviewPending) return 0;
 
   const pricing = task.order.pricing;
   const refundableTipMinor = pricing.customerRiderTipMinor;

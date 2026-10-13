@@ -25,6 +25,7 @@ import { registerSubsidyRoutes } from './subsidy/routes.js';
 import { registerTimelineRoutes } from './timeline/routes.js';
 import { registerVerificationRoutes } from './verification/routes.js';
 import { registerFinanceRoutes } from './finance/routes.js';
+import { registerOrderChangeRoutes } from './orders/order-change-routes.js';
 
 export async function buildApp(config: AppConfig, prisma: PrismaClient) {
   const app = Fastify({
@@ -58,6 +59,7 @@ export async function buildApp(config: AppConfig, prisma: PrismaClient) {
   await registerCatalogRoutes(app, prisma, config);
   await registerOrderRoutes(app, prisma, config);
   await registerPreparationControlRoutes(app, prisma, config);
+  await registerOrderChangeRoutes(app, prisma, config);
   await registerMarketPricingRoutes(app, prisma, config);
   await registerPricingViewRoutes(app, prisma, config);
   await registerDeliveryRoutes(app, prisma, config);

@@ -59,8 +59,8 @@ export async function refundAndCloseExceptionCase(
       },
     });
     if (!exceptionCase) throw notFound('Exception case');
-    if (exceptionCase.category === 'MERCHANT_PREPARATION_UNAVAILABLE') throw conflict('PREPARATION_REFUND_FACTS_REQUIRED', 'Preparation agreements cannot execute a simulated rider-compensation refund');
-    if (exceptionCase.order.preparationControlVersion > 0 && exceptionCase.order.status !== 'DELIVERED') throw conflict('PREPARATION_REFUND_FACTS_REQUIRED', 'Controlled unfinished orders require the separate safe funds-fact workflow');
+    if (['MERCHANT_PREPARATION_UNAVAILABLE', 'GOODS_CHANGE_OBJECTION'].includes(exceptionCase.category)) throw conflict('PREPARATION_REFUND_FACTS_REQUIRED', 'Preparation or goods-risk cases cannot execute a simulated rider-compensation refund');
+    if ((exceptionCase.order.preparationControlVersion > 0 || exceptionCase.order.goodsChangeVersion > 0) && exceptionCase.order.status !== 'DELIVERED') throw conflict('PREPARATION_REFUND_FACTS_REQUIRED', 'Controlled unfinished orders require the separate safe funds-fact workflow');
     if (exceptionCase.category === 'PICKUP_CUSTODY_DISPUTE') throw conflict('PICKUP_DISPUTE_NON_ECONOMIC', 'Custody review cannot create compensation or a refund');
     await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${exceptionCase.orderId}::uuid FOR UPDATE`;
     const pickupTask = await tx.deliveryTask.findUnique({ where: { orderId: exceptionCase.orderId }, select: { id: true } });
@@ -68,7 +68,7 @@ export async function refundAndCloseExceptionCase(
     await assertNoPickupDispute(tx, exceptionCase.orderId);
     // Re-read the workflow facts after custody locks; a concurrent correction may have committed while waiting.
     const lockedOrder = await tx.order.findUniqueOrThrow({ where: { id: exceptionCase.orderId }, include: { pricing: true, deliveryTask: { include: { assignments: { orderBy: { claimedAt: 'desc' } } } } } });
-    if (lockedOrder.preparationControlVersion > 0 && lockedOrder.status !== 'DELIVERED') throw conflict('PREPARATION_REFUND_FACTS_REQUIRED', 'Controlled unfinished orders cannot create unearned rider income through the legacy refund route');
+    if ((lockedOrder.preparationControlVersion > 0 || lockedOrder.goodsChangeVersion > 0) && lockedOrder.status !== 'DELIVERED') throw conflict('PREPARATION_REFUND_FACTS_REQUIRED', 'Controlled unfinished orders cannot create unearned rider income through the legacy refund route');
     const task = lockedOrder.deliveryTask;
     const assignment = task?.assignments.find((candidate) => candidate.riderId === task.riderId)
       ?? task?.assignments[0];

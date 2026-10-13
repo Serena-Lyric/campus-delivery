@@ -20,21 +20,29 @@ const sourceRank: Record<TimelineItem['source'], number> = {
 };
 
 export async function getOrderTimeline(prisma: PrismaClient, actor: Actor, orderId: string) {
-  const order = await prisma.order.findUnique({
+  return prisma.$transaction(async (tx) => {
+  const order = await tx.order.findUnique({
     where: { id: orderId },
     include: {
       deliveryTask: true,
-      assignments: { select: { riderId: true } },
+      assignments: { select: { riderId: true, status: true, endedAt: true } },
     },
   });
   if (!order) throw notFound('Order');
   assertOrderAccess(actor, order);
 
   const [events, evidence, exceptions] = await Promise.all([
-    prisma.orderEvent.findMany({ where: { orderId } }),
-    prisma.evidence.findMany({ where: { orderId } }),
-    prisma.exceptionEvent.findMany({ where: { orderId } }),
+    tx.orderEvent.findMany({ where: { orderId } }),
+    tx.evidence.findMany({ where: { orderId } }),
+    tx.exceptionEvent.findMany({ where: { orderId } }),
   ]);
+
+  const currentRider = actor.role === 'RIDER' && order.deliveryTask?.riderId === actor.riderId
+    && order.assignments.some((a) => a.riderId === actor.riderId && a.status === 'ACTIVE');
+  const latestEndedAt = order.assignments.filter((a) => a.riderId === actor.riderId && a.endedAt)
+    .reduce<Date | null>((latest, a) => !latest || a.endedAt! > latest ? a.endedAt : latest, null);
+  const hiddenGoodsEvents = new Set(exceptions.filter((e) => actor.role === 'RIDER' && !currentRider && e.type === 'GOODS_CHANGE_OBJECTION'
+    && e.reporterId !== actor.id && (!latestEndedAt || e.createdAt > latestEndedAt)).map((e) => e.id));
 
   const items: TimelineItem[] = [
     ...events.map((event) => ({
@@ -53,7 +61,7 @@ export async function getOrderTimeline(prisma: PrismaClient, actor: Actor, order
           : {}),
       },
     })),
-    ...evidence.map((item) => ({
+    ...evidence.filter((item) => !item.exceptionEventId || !hiddenGoodsEvents.has(item.exceptionEventId)).map((item) => ({
       id: item.id,
       source: 'EVIDENCE' as const,
       type: item.evidenceType,
@@ -68,7 +76,7 @@ export async function getOrderTimeline(prisma: PrismaClient, actor: Actor, order
           : {}),
       },
     })),
-    ...exceptions.map((item) => ({
+    ...exceptions.filter((item) => !hiddenGoodsEvents.has(item.id)).map((item) => ({
       id: item.id,
       source: 'EXCEPTION' as const,
       type: item.type,
@@ -87,4 +95,5 @@ export async function getOrderTimeline(prisma: PrismaClient, actor: Actor, order
     || sourceRank[left.source] - sourceRank[right.source]
     || left.id.localeCompare(right.id)
   ));
+  }, { isolationLevel: 'RepeatableRead' });
 }

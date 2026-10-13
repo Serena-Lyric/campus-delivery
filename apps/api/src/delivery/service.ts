@@ -27,6 +27,7 @@ import { qualificationSnapshot } from '../riders/eligibility-policy.js';
 import { preparationEstimateView } from '../orders/preparation-estimate.js';
 import { arrivalElapsedView } from './arrival.js';
 import { preparationControlView } from '../orders/preparation-control.js';
+import { changeNoticeSelect, changeNoticeView, goodsChangeView } from '../orders/order-change.js';
 
 const taskSelect = {
   id: true,
@@ -58,6 +59,9 @@ const taskSelect = {
       preparationControlVersion: true,
       preparationControlReason: true,
       preparationControlUpdatedAt: true,
+      goodsChangeVersion: true,
+      goodsChangeReviewPending: true,
+      changeNotices: { select: changeNoticeSelect, orderBy: { version: 'asc' } },
       merchantEstimatedReadyAt: true,
       merchantPreparationEstimateVersion: true,
       pickupRiskRevision: true,
@@ -142,6 +146,9 @@ function presentRiderTask(task: RiderTask, actor?: Actor, timeZone = 'Asia/Shang
       })),
     },
     preparationStatus: task.order.merchantPreparationStatus,
+    claimable: task.order.preparationControlState === 'NORMAL' && !task.order.goodsChangeReviewPending,
+    goodsChangeReview: !actor || activeAssignmentId ? goodsChangeView(task.order) : undefined,
+    changeNotices: !actor || activeAssignmentId ? task.order.changeNotices.map((n) => changeNoticeView(n, activeAssignmentId)) : undefined,
     preparationControl: !actor ? { ...preparationControlView(task.order), reason: null }
       : activeAssignmentId ? preparationControlView(task.order) : undefined,
     riderExitReview: actor && arrivalAssignment ? { status: arrivalAssignment.noFaultExitStatus, personalCapacityTemporarilyReleased: arrivalAssignment.temporaryPersonalCapacityRelease } : undefined,
@@ -258,6 +265,7 @@ export async function claimTask(
     });
     if (!task) throw notFound('Delivery task');
     if (task.order.preparationControlState !== 'NORMAL') throw conflict('PREPARATION_CLAIM_PAUSED', 'Merchant preparation is paused; the original claim deadline has not been reset');
+    if (task.order.goodsChangeReviewPending) throw conflict('GOODS_CHANGE_CLAIM_PAUSED', 'Goods risk requires authorized human review');
     if (
       task.status !== DeliveryTaskStatus.OPEN
       || task.riderId
@@ -352,6 +360,7 @@ export async function deliverTask(
     if (task.riderId !== actor.riderId) throw forbidden();
     if (task.status !== DeliveryTaskStatus.PICKED_UP) throw conflict('TASK_STATE_CONFLICT', 'Task is not ready for delivery');
     if (task.order.preparationControlState !== 'NORMAL') throw conflict('FULFILLMENT_REVIEW_PAUSED', 'The current exception must be reviewed before completion');
+    if (task.order.goodsChangeReviewPending) throw conflict('GOODS_CHANGE_FULFILLMENT_PAUSED', 'Goods risk requires authorized human review before completion');
     await assertNoPickupDispute(tx, task.orderId);
     if (!task.order.pricing) throw notFound('Order pricing');
 

@@ -33,10 +33,12 @@ import { operatingStatusFields } from '../catalog/operating-status.js';
 import { preparationEstimateView } from './preparation-estimate.js';
 import { arrivalElapsedView } from '../delivery/arrival.js';
 import { getPreparationControl, preparationControlView } from './preparation-control.js';
+import { changeNoticeSelect, changeNoticeView, goodsChangeView } from './order-change.js';
 
 export type CreateOrderInput = CheckoutInput;
 
 const orderInclude = {
+  changeNotices: { select: changeNoticeSelect, orderBy: { version: 'asc' as const } },
   pickupHandoffs: { select: { id: true, assignmentId: true, revision: true, eventId: true, createdAt: true, dispute: { select: { id: true, caseId: true, status: true, version: true, merchantAcknowledgedAt: true } } }, orderBy: { revision: 'desc' as const }, take: 1 },
   items: true,
   pricing: true,
@@ -99,6 +101,9 @@ function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown, time
     },
     merchantPreparationStatus: order.merchantPreparationStatus,
     merchantPreparationUpdatedAt: order.merchantPreparationUpdatedAt,
+    goodsChangeReview: actor.role !== 'RIDER' || deliveryTask?.assignments.some((a) => a.status === 'ACTIVE' && a.riderId === actor.riderId && deliveryTask.riderId === actor.riderId) ? goodsChangeView(order) : undefined,
+    changeNotices: actor.role !== 'RIDER' || deliveryTask?.assignments.some((a) => a.status === 'ACTIVE' && a.riderId === actor.riderId && deliveryTask.riderId === actor.riderId)
+      ? order.changeNotices.map((n) => changeNoticeView(n, actor.role === 'RIDER' ? arrivalAssignment?.id : undefined)) : undefined,
     preparationControl: actor.role !== 'RIDER' || deliveryTask?.assignments.some((a) => a.status === 'ACTIVE' && a.riderId === actor.riderId && deliveryTask.riderId === actor.riderId)
       ? preparationControlView(order) : undefined,
     riderExitReview: actor.role === 'RIDER' && arrivalAssignment && arrivalAssignment.riderId === actor.riderId ? {
@@ -403,6 +408,7 @@ export async function confirmOrder(
     if (order.merchantId !== actor.merchantId) throw forbidden();
     if (order.deliveryTask) throw conflict('ORDER_ALREADY_PUBLISHED', 'Order already has a delivery task');
     if (order.preparationControlState !== 'NORMAL') throw conflict('PREPARATION_PAUSED', 'Resolve the preparation pause before confirming this order');
+    if (order.goodsChangeReviewPending) throw conflict('GOODS_CHANGE_PAUSED', 'Resolve goods risk before confirming');
 
     await transitionOrder(tx, order.id, order.status, OrderStatus.MERCHANT_CONFIRMED, actor, {
       eventType: OrderEventType.MERCHANT_CONFIRMED,
@@ -451,6 +457,7 @@ export async function markOrderReady(
     if (!order) throw notFound('Order');
     if (order.merchantId !== actor.merchantId) throw forbidden();
     if (order.preparationControlState !== 'NORMAL') throw conflict('PREPARATION_PAUSED', 'Recovery must be confirmed before declaring READY');
+    if (order.goodsChangeReviewPending) throw conflict('GOODS_CHANGE_PAUSED', 'Resolve goods risk before declaring READY');
     if (order.status !== OrderStatus.READY_FOR_RIDER && order.status !== OrderStatus.CLAIMED) {
       throw conflict('ORDER_STATE_CONFLICT', 'Preparation status can only be updated for a published order before pickup');
     }
@@ -553,7 +560,7 @@ export async function markOrderException(prisma: PrismaClient, actor: Actor, ord
     await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id"=${orderId}::uuid FOR UPDATE`;
     const order = await tx.order.findUnique({ where: { id: orderId }, include: { deliveryTask: true } });
     if (!order) throw notFound('Order');
-    if (order.preparationControlVersion > 0) throw conflict('USE_PREPARATION_CASE_REVIEW', 'A controlled preparation order requires the authorized case workflow; this legacy termination route is unavailable');
+    if (order.preparationControlVersion > 0 || order.goodsChangeVersion > 0) throw conflict('USE_PREPARATION_CASE_REVIEW', 'A controlled order requires the authorized case workflow; this legacy termination route is unavailable');
     const exception = await tx.exceptionEvent.create({
       data: {
         orderId,
