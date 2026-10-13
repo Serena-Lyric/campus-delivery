@@ -30,6 +30,7 @@ import { unverifiedRiderBalanceView } from '../finance/permissions.js';
 import { calculateCheckoutQuote, checkoutQuantities, readCheckoutFacts, type CheckoutInput } from './quote.js';
 import { readConfirmationState } from '../catalog/daily-confirmation-state.js';
 import { operatingStatusFields } from '../catalog/operating-status.js';
+import { preparationEstimateView } from './preparation-estimate.js';
 
 export type CreateOrderInput = CheckoutInput;
 
@@ -48,7 +49,7 @@ const orderInclude = {
 
 type IncludedOrder = Prisma.OrderGetPayload<{ include: typeof orderInclude }>;
 
-function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown) {
+function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown, timeZone: string, now: Date) {
   const { deliveryTask, settlement, riderSettlement } = order;
   const task = deliveryTask
     ? {
@@ -92,6 +93,8 @@ function presentOrder(actor: Actor, order: IncludedOrder, pricing: unknown) {
     },
     merchantPreparationStatus: order.merchantPreparationStatus,
     merchantPreparationUpdatedAt: order.merchantPreparationUpdatedAt,
+    preparationEstimate: actor.role !== 'RIDER' || deliveryTask?.assignments.some((a) => a.status === 'ACTIVE' && a.riderId === actor.riderId && deliveryTask.riderId === actor.riderId)
+      ? preparationEstimateView(order, timeZone, now, actor.role === 'MERCHANT') : undefined,
     status: order.status,
     merchant: order.merchant,
     destinationLocation: order.destinationLocation,
@@ -332,7 +335,7 @@ export async function createOrder(
   throw conflict('SHORT_CODE_EXHAUSTED', 'Could not allocate a unique short order code');
 }
 
-export async function getOrder(prisma: PrismaClient, actor: Actor, orderId: string) {
+export async function getOrder(prisma: PrismaClient, actor: Actor, orderId: string, timeZone = 'Asia/Shanghai', clock = () => new Date()) {
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: orderInclude });
   if (!order) throw notFound('Order');
   assertOrderAccess(actor, order);
@@ -340,10 +343,12 @@ export async function getOrder(prisma: PrismaClient, actor: Actor, orderId: stri
     actor,
     order,
     await getOrderPricingView(prisma, actor, order.id),
+    timeZone,
+    clock(),
   );
 }
 
-export async function listCustomerOrders(prisma: PrismaClient, actor: Actor, limit: number, offset: number) {
+export async function listCustomerOrders(prisma: PrismaClient, actor: Actor, limit: number, offset: number, timeZone = 'Asia/Shanghai', clock = () => new Date()) {
   if (actor.role !== 'CUSTOMER') throw forbidden();
   const orders = await prisma.order.findMany({
     where: { customerId: actor.id },
@@ -356,6 +361,8 @@ export async function listCustomerOrders(prisma: PrismaClient, actor: Actor, lim
     actor,
     order,
     await getOrderPricingView(prisma, actor, order.id),
+    timeZone,
+    clock(),
   )));
 }
 
@@ -420,6 +427,7 @@ export async function markOrderReady(
 ) {
   if (!actor.merchantId) throw forbidden();
   return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id"=${orderId}::uuid FOR UPDATE`;
     const order = await tx.order.findUnique({ where: { id: orderId } });
     if (!order) throw notFound('Order');
     if (order.merchantId !== actor.merchantId) throw forbidden();

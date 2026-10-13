@@ -42,6 +42,10 @@ OWNER 使用 `GET/PUT /merchant/daily-product-restore` 读取/修改本店每日
 
 有效接单 = 手动营业 + 当前日确认资格（或无需确认）+ 现有曝光限制。目录提供一致的 acceptingOrders、businessDay、confirmedToday；未确认在顾客侧显示「休息中」，本人侧显示「待今日确认」，菜单保留且商品 purchasable=false。价格预览和创建在配置→商家→商品/位置锁内读取服务器实时状态，创建前再核验；旧 quoteToken 跨切换点不能绕过未确认门禁。**ENABLE_BACKGROUND_JOBS=false 仍执行门禁**，确认过期不更新 isOpen、不处分旧订单。确认不是商品每日恢复、订单确认或付款成功；单店自定时刻仅保留计算函数参数扩展点，未开放设置。详见 [主产品第1E节](PRODUCT_DECISIONS.md) / [经营专题第8/9节](MERCHANT_OPERATIONS_AND_STOCK_DECISIONS.md) / [第九轮归档报告](CODEX_REPORT_2026-10-12_DAILY_CONFIRMATION.md)。
 
+## 第十轮B阶段A：自愿预计出餐（后端/API）
+
+本单OWNER可在确认后、交接/终止前用 `PUT /merchant/orders/:orderId/preparation-estimate` 版本化更新预计；`GET /orders/:orderId/preparation-estimates` 保留追加历史。默认无预计，过去预测如实显示逾期，订单/池/当前骑手视图同步计算提醒；无处罚/资金操作/重置40分钟/真实外部通知。UTC保存、校园时区显示；B–E仍未实施。字段、角色和**主库尚未应用新migration**的运行限制见 [API说明](docs/round10b-preparation-api.md)。清理按用户逐对象批准执行，备份及主数据完整性记录见 [B清理记录](docs/round10b-cleanup-plan.md)。
+
 ## 2026-10-10 履约与管理员能力边界
 
 - 易损商品如蛋糕、圣代的取餐证据规则：易损商品相关价值 > ¥15 建议照片，> ¥50 强制有效照片或审计化例外；阈值由新的一级管理员/root 控制台配置。**金额按同订单全部已核定易损商品行小计之和**（两份 ¥30 圣代计 ¥60、强制），优惠分摊、无法拍照时的替代凭证及放行权限仍待确认，详情见 `FRAGILE_PICKUP_EVIDENCE_DECISIONS.md`。照片仅证明取餐时可见状态，不自动判定骑手无责。

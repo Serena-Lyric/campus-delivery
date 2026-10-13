@@ -24,6 +24,7 @@ import { requireRider } from '../riders/blocklist.js';
 import { assertNoPickupDispute } from './custody-guard.js';
 import { assertQualificationCanClaim, eligibilityPolicyLock, loadEligibilityGate } from '../riders/eligibility-gate.js';
 import { qualificationSnapshot } from '../riders/eligibility-policy.js';
+import { preparationEstimateView } from '../orders/preparation-estimate.js';
 
 const taskSelect = {
   id: true,
@@ -50,6 +51,8 @@ const taskSelect = {
       pickupRegionSnapshot: true,
       deliveryMethod: true,
       merchantPreparationStatus: true,
+      merchantEstimatedReadyAt: true,
+      merchantPreparationEstimateVersion: true,
       pickupRiskRevision: true,
       pickupHandoffRevision: true,
       pickupHandoffs: { select: { id: true, assignmentId: true, revision: true, eventId: true, createdAt: true, dispute: { select: { id: true, caseId: true, status: true, version: true, merchantAcknowledgedAt: true } } }, orderBy: { revision: 'desc' }, take: 1 },
@@ -78,7 +81,7 @@ const taskSelect = {
 
 type RiderTask = Prisma.DeliveryTaskGetPayload<{ select: typeof taskSelect }>;
 
-function presentRiderTask(task: RiderTask, actor?: Actor) {
+function presentRiderTask(task: RiderTask, actor?: Actor, timeZone = 'Asia/Shanghai', now = new Date()) {
   const activeAssignmentId = task.assignments.find((assignment) => assignment.riderId === actor?.riderId)?.id;
   const latestHandoff = task.order.pickupHandoffs[0];
   const handoff = latestHandoff?.assignmentId === activeAssignmentId ? latestHandoff ?? null : null;
@@ -129,6 +132,8 @@ function presentRiderTask(task: RiderTask, actor?: Actor) {
       })),
     },
     preparationStatus: task.order.merchantPreparationStatus,
+    preparationEstimate: !actor || activeAssignmentId
+      ? preparationEstimateView(task.order, timeZone, now) : undefined,
     orderStatus: task.order.status,
     shortCode: task.order.shortCode,
   };
@@ -159,7 +164,7 @@ async function requireEvidence(
   return evidence;
 }
 
-export async function listAvailableTasks(prisma: PrismaClient, actor: Actor, limit: number, offset: number) {
+export async function listAvailableTasks(prisma: PrismaClient, actor: Actor, limit: number, offset: number, timeZone = 'Asia/Shanghai') {
   const riderId = requireRider(actor);
   return prisma.$transaction(async (tx) => {
     const now = new Date();
@@ -177,11 +182,11 @@ export async function listAvailableTasks(prisma: PrismaClient, actor: Actor, lim
       take: limit,
       skip: offset,
     });
-    return tasks.map((task) => presentRiderTask(task));
+    return tasks.map((task) => presentRiderTask(task, undefined, timeZone, new Date()));
   }, { isolationLevel: 'RepeatableRead' });
 }
 
-export async function listRiderTasks(prisma: PrismaClient, actor: Actor, limit: number, offset: number) {
+export async function listRiderTasks(prisma: PrismaClient, actor: Actor, limit: number, offset: number, timeZone = 'Asia/Shanghai') {
   if (!actor.riderId) throw forbidden();
   const tasks = await prisma.deliveryTask.findMany({
     where: { assignments: { some: { riderId: actor.riderId } } },
@@ -190,7 +195,7 @@ export async function listRiderTasks(prisma: PrismaClient, actor: Actor, limit: 
     take: limit,
     skip: offset,
   });
-  return tasks.map((task) => presentRiderTask(task, actor));
+  return tasks.map((task) => presentRiderTask(task, actor, timeZone));
 }
 
 export async function claimTask(
@@ -294,7 +299,7 @@ export async function claimTask(
         claimLatencySeconds,
       },
     });
-    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: taskId }, select: taskSelect }), actor);
+    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: taskId }, select: taskSelect }), actor, campusTimeZone);
   });
 }
 
@@ -419,7 +424,7 @@ export async function deliverTask(
       },
     });
     await recordFirstNormalDelivery(tx, actor.riderId, now, campusTimeZone);
-    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect }), actor);
+    return presentRiderTask(await tx.deliveryTask.findUniqueOrThrow({ where: { id: task.id }, select: taskSelect }), actor, campusTimeZone);
   });
 }
 

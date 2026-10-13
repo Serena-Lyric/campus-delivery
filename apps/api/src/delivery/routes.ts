@@ -58,12 +58,12 @@ export async function registerDeliveryRoutes(app: FastifyInstance, prisma: Prism
   app.get<{ Querystring: { limit?: number; offset?: number } }>('/delivery-tasks/available', {
     preHandler: rider,
     schema: { tags: ['delivery'], querystring: Pagination },
-  }, async (request) => listAvailableTasks(prisma, actorOf(request), request.query.limit ?? 20, request.query.offset ?? 0));
+  }, async (request) => listAvailableTasks(prisma, actorOf(request), request.query.limit ?? 20, request.query.offset ?? 0, config.campusTimeZone));
 
   app.get<{ Querystring: { limit?: number; offset?: number } }>('/delivery-tasks/mine', {
     preHandler: rider,
     schema: { tags: ['delivery'], querystring: Pagination },
-  }, async (request) => listRiderTasks(prisma, actorOf(request), request.query.limit ?? 20, request.query.offset ?? 0));
+  }, async (request) => listRiderTasks(prisma, actorOf(request), request.query.limit ?? 20, request.query.offset ?? 0, config.campusTimeZone));
 
   app.post<{ Params: { taskId: string } }>('/delivery-tasks/:taskId/claim', {
     preHandler: rider,

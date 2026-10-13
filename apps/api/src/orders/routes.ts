@@ -1,9 +1,12 @@
 import { DeliveryMethod, type PrismaClient } from '@prisma/client';
 import { Type } from '@sinclair/typebox';
+import { Value } from '@sinclair/typebox/value';
 import type { FastifyInstance } from 'fastify';
 import { actorOf, adminGuard, authGuard } from '../auth/auth.js';
 import type { AppConfig } from '../config.js';
 import { previewOrderQuote, type CheckoutInput } from './quote.js';
+import { listPreparationEstimates, PreparationEstimateBody, PreparationEstimateUpdateView, PreparationEstimateHistoryView, updatePreparationEstimate, type PreparationEstimateInput } from './preparation-estimate.js';
+import { badRequest } from '../shared/errors.js';
 import {
   cancelOrder,
   confirmOrder,
@@ -37,6 +40,21 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   const merchant = authGuard(prisma, config, ['MERCHANT']);
   const admin = adminGuard(prisma, config);
 
+  app.put<{ Params: { orderId: string }; Body: PreparationEstimateInput }>('/merchant/orders/:orderId/preparation-estimate', {
+    preHandler: merchant,
+    preValidation: async (request) => {
+      if (!Value.Check(PreparationEstimateBody, request.body)) {
+        throw badRequest('INVALID_PREPARATION_ESTIMATE', 'Invalid prediction fields');
+      }
+    },
+    schema: { tags: ['merchant'], description: 'Voluntary prediction, append-only history and version guard; does not change readiness, claim deadline, payment or pickup.', params: OrderIdParams, body: PreparationEstimateBody, response: { 200: PreparationEstimateUpdateView } },
+  }, async (request) => updatePreparationEstimate(prisma, actorOf(request), request.params.orderId, request.body, config.campusTimeZone));
+
+  app.get<{ Params: { orderId: string } }>('/orders/:orderId/preparation-estimates', {
+    preHandler: anyUser,
+    schema: { tags: ['orders'], description: 'Ordered prediction history for the customer, owner, current active rider or authorized development administrator; operator IDs are private to owner/admin.', params: OrderIdParams, response: { 200: PreparationEstimateHistoryView } },
+  }, async (request) => listPreparationEstimates(prisma, actorOf(request), request.params.orderId));
+
   app.post<{ Body: CheckoutInput }>('/orders/price-preview', {
     preHandler: customer,
     schema: { tags: ['pricing'], description: 'Read-only customer checkout preview; no order or payment is created.', body: CheckoutBody },
@@ -52,18 +70,18 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   }, async (request, reply) => {
     const actor = actorOf(request);
     const created = await createOrder(prisma, actor, request.body, config.campusTimeZone);
-    return reply.status(201).send(await getOrder(prisma, actor, created.id));
+    return reply.status(201).send(await getOrder(prisma, actor, created.id, config.campusTimeZone));
   });
 
   app.get<{ Querystring: { limit?: number; offset?: number } }>('/orders/my', {
     preHandler: customer,
     schema: { tags: ['orders'], querystring: Pagination },
-  }, async (request) => listCustomerOrders(prisma, actorOf(request), request.query.limit ?? 20, request.query.offset ?? 0));
+  }, async (request) => listCustomerOrders(prisma, actorOf(request), request.query.limit ?? 20, request.query.offset ?? 0, config.campusTimeZone));
 
   app.get<{ Params: { orderId: string } }>('/orders/:orderId', {
     preHandler: anyUser,
     schema: { tags: ['orders'], params: OrderIdParams },
-  }, async (request) => getOrder(prisma, actorOf(request), request.params.orderId));
+  }, async (request) => getOrder(prisma, actorOf(request), request.params.orderId, config.campusTimeZone));
 
   app.post<{ Params: { orderId: string }; Body: { reason?: string } }>('/orders/:orderId/cancel', {
     preHandler: customer,
@@ -71,7 +89,7 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   }, async (request) => {
     const actor = actorOf(request);
     await cancelOrder(prisma, actor, request.params.orderId, request.body.reason);
-    return getOrder(prisma, actor, request.params.orderId);
+    return getOrder(prisma, actor, request.params.orderId, config.campusTimeZone);
   });
 
   app.post<{ Params: { orderId: string } }>('/merchant/orders/:orderId/confirm', {
@@ -80,7 +98,7 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   }, async (request) => {
     const actor = actorOf(request);
     await confirmOrder(prisma, actor, request.params.orderId);
-    return getOrder(prisma, actor, request.params.orderId);
+    return getOrder(prisma, actor, request.params.orderId, config.campusTimeZone);
   });
 
   app.post<{ Params: { orderId: string } }>('/merchant/orders/:orderId/ready', {
@@ -89,7 +107,7 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
   }, async (request) => {
     const actor = actorOf(request);
     await markOrderReady(prisma, actor, request.params.orderId);
-    return getOrder(prisma, actor, request.params.orderId);
+    return getOrder(prisma, actor, request.params.orderId, config.campusTimeZone);
   });
 
   app.post<{ Params: { orderId: string }; Body: { reason?: string } }>('/admin/orders/:orderId/exception', {
@@ -104,6 +122,6 @@ export async function registerOrderRoutes(app: FastifyInstance, prisma: PrismaCl
       request.params.orderId,
       reason,
     );
-    return getOrder(prisma, actor, request.params.orderId);
+    return getOrder(prisma, actor, request.params.orderId, config.campusTimeZone);
   });
 }

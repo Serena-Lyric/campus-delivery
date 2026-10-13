@@ -322,6 +322,7 @@ enum CompensationFundingSource {
 }
 
 model User {
+  preparationEstimateChanges MerchantPreparationEstimateAudit[]
   id                        String                            @id @default(uuid()) @db.Uuid
   displayName               String
   role                      UserRole
@@ -712,6 +713,9 @@ model RiderBlockedMerchant {
 }
 
 model Order {
+  merchantEstimatedReadyAt      DateTime?
+  merchantPreparationEstimateVersion Int @default(0)
+  preparationEstimateHistory   MerchantPreparationEstimateAudit[]
   id                           String                            @id @default(uuid()) @db.Uuid
   shortCode                    String
   shortCodeDay                 DateTime                          @db.Date
@@ -770,6 +774,22 @@ model Order {
   @@index([customerId, createdAt])
   @@index([merchantId, status])
   @@index([status, coolingOffEndsAt])
+}
+
+model MerchantPreparationEstimateAudit {
+  id                       String @id @default(uuid()) @db.Uuid
+  orderId                  String @db.Uuid
+  order                    Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  version                  Int
+  previousEstimatedReadyAt DateTime?
+  estimatedReadyAt         DateTime
+  actorId                  String @db.Uuid
+  actor                    User @relation(fields: [actorId], references: [id])
+  requestKey               String @db.Uuid
+  createdAt                DateTime @default(now())
+
+  @@unique([orderId, version])
+  @@unique([orderId, requestKey])
 }
 
 model OrderItem {
