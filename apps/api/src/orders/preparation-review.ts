@@ -30,6 +30,7 @@ export async function reviewPreparationControl(prisma: PrismaClient, actor: Acto
     }
     assertExceptionCaseAction(current.status, 'RESOLVE');
     if (current.version !== input.expectedCaseVersion || order.preparationControlVersion !== input.expectedVersion || order.preparationControlState === 'NORMAL') throw conflict('PREPARATION_REVIEW_VERSION_CONFLICT', 'Refresh the active case and preparation workflow');
+    if (input.outcome !== 'KEEP_PAUSED' && order.preparationNegotiationVersion > 0) throw conflict('NEGOTIATION_REVIEW_REQUIRED', 'Participant negotiation and unresolved funds facts require the separate guarded review; no reopening through ordinary recovery');
     const latestMerchant = await tx.preparationControlAudit.findFirst({ where: { orderId, action: { in: ['DECLARE_UNABLE', 'REQUEST_RECOVERY'] } }, orderBy: { version: 'desc' } });
     if (input.outcome !== 'KEEP_PAUSED' && latestMerchant?.action !== 'REQUEST_RECOVERY') throw conflict('MERCHANT_RECOVERY_REQUIRED', 'A current merchant recovery proposal must precede review');
     if (input.outcome !== 'KEEP_PAUSED' && await tx.exceptionCase.count({ where: { orderId, id: { not: current.id }, status: { notIn: ['RESOLVED', 'CLOSED'] } } })) {

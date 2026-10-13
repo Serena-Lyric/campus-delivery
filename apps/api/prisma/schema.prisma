@@ -733,6 +733,8 @@ model RiderBlockedMerchant {
 }
 
 model Order {
+  preparationNegotiationVersion Int @default(0)
+  preparationNegotiationRecords PreparationNegotiationRecord[]
   goodsChangeVersion Int @default(0)
   goodsChangeReviewPending Boolean @default(false)
   goodsChangeSourceExceptionId String? @db.Uuid
@@ -839,6 +841,25 @@ model PreparationControlAudit {
   payloadSignature String
   createdAt DateTime @default(now())
 
+  @@unique([orderId, version])
+  @@unique([orderId, requestKey])
+}
+
+model PreparationNegotiationRecord {
+  id String @id @default(uuid()) @db.Uuid
+  orderId String @db.Uuid
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  version Int
+  kind String
+  actorId String @db.Uuid
+  actorRole UserRole
+  proposalVersion Int?
+  refundMinor Int?
+  text String
+  reviewOutcome String?
+  requestKey String @db.Uuid
+  payloadSignature String
+  createdAt DateTime @default(now())
   @@unique([orderId, version])
   @@unique([orderId, requestKey])
 }

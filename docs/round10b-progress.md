@@ -8,8 +8,8 @@
 | A | 已完成并验证 | 0b14d758673964204c9033ad7ec8aaea502eed08；61unit/234PG，CI38347218417完整成功，现场重新核实headSha/conclusion |
 | B | 已完成并验证 | 0d68bb10c978ab3a95980969b76a67ec88e10d1d；64unit/243PG，CI38360085758完整成功；终态缺结束节点修复及只读复查完成 |
 | C | 已完成并验证 | dce1882332664dbb670203ed14ac2cc4b9146a30；64unit/263PG、typecheck/build、003/004升级/空库/双Seed通过；CI38371930121成功；双案件恢复绕过RED→GREEN，审查闭环 |
-| D | 本地完整验证与复审通过，待本阶段提交/CI | 64unit/283PG、typecheck/build通过；005升级/空库/双Seed通过；20项针对性含真实锁竞争、双域/待审退出组合、事件闭环、旧证据绑定及原骑手时间线隐私；复审P1/P2已关闭 |
-| E | 尚未开始 | 整单协商记录/分离退款事实/合法处理人简化核查待实现；真实渠道未选，不能伪造到账或复用旧退款代码制造结算 |
+| D | 已完成并验证 | fd172b19baa3276b413040392e57e1694dfb9b19；64unit/283PG、typecheck/build、005升级/空库/双Seed通过；CI38394905905成功；20项针对性/复审闭环 |
+| E | 本地完整验收及复审通过，待提交/CI | 64unit/298PG、typecheck/build通过；15项针对性、006升级/空库/双Seed通过；整单协议/分离退款陈述/合法handler三版本核查；formalTerminationAvailable=false，按E3保留正式终止阻断，未调用旧退款/造收入 |
 | F | 尚未完成 | 每阶段新SHA的CI、完整验收映射及最终CODEX_REPORT待完成 |
 
 恢复现场：本地/远端main均0b14d758，保留所有B未提交文件。Docker CLI/Desktop健康；已批准删除对象均不存在，不重复清理。主应用原容器、B test/restore/restore-archive及两个B卷保留。集成/Seed仅使用127.0.0.1:55442的独立测试库；升级仅55443恢复副本/新空库。原5432主库不迁移、不Seed。

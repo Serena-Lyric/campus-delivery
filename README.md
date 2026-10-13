@@ -4,7 +4,7 @@ campus-delivery 是面向校园半封闭场景的即时配送平台工程。当�
 
 ## 当前阶段
 
-第十轮A历史工程整理见 [归档报告](CODEX_REPORT_2026-10-13_ROUND10A.md) / [PostgreSQL盘点](docs/local-postgres-inventory-2026-10-13.md)。第十轮B已执行A/B/C并有对应SHA绿色CI，D变更告知正在验收、E协商流程随后执行；任务及真实连续证据见 [CODEX_TASK.md](CODEX_TASK.md) / [进度](docs/round10b-progress.md)。不能把文档或数据字段本身算作功能交付。
+第十轮A历史工程整理见 [归档报告](CODEX_REPORT_2026-10-13_ROUND10A.md) / [PostgreSQL盘点](docs/local-postgres-inventory-2026-10-13.md)。第十轮B的A–D已有对应SHA绿色CI，E协议/安全人工核查正在验收，正式终止/真实退款按E3受阻；任务及真实连续证据见 [CODEX_TASK.md](CODEX_TASK.md) / [进度](docs/round10b-progress.md)。不能把文档或数据字段本身算作功能交付。
 
 本阶段仍是模块化单体 REST API。第四轮报价及第五轮财务安全基础已有完成记录；商家基础报价仅作定价参考、商品佣金可配置且默认0%均已确认。代码能力和当前应用配置不同，历史报告只说明其记录的提交与验证，不代表所有产品规则已上线。
 
@@ -476,3 +476,5 @@ claim 事务锁定 Rider 后计算阶段/override/global cap 并统计 CLAIMED/P
 ## 第十轮B订单变更接口
 
 三态自报通知、当前骑手自愿知悉与商品变更异议见 [接口与安全边界](docs/round10b-change-api.md)。新增/未知核心易损保持人工核查，原价格/风险与照片/短码不变。运行状态以第十轮B连续记录和最终报告为准；新代码只用明确的隔离DATABASE_URL，原应用5432库仍未升级。
+
+整单无法制作协商、双方确认、分离退款陈述与当前handler三版本核查见 [协商API](docs/round10b-negotiation-api.md)。没有可信支付渠道/安全分离终止能力，formalTerminationAvailable=false，不把商家/用户陈述当到账，不借旧退款逻辑产生收入或补偿。

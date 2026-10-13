@@ -115,6 +115,8 @@ export async function getExceptionCaseForAdmin(prisma: PrismaClient, actor: Acto
           goodsChangeReviewPending: true,
           changeNotices: { select: { id: true, version: true, content: true, riskDeclaration: true, merchantNameSnapshot: true, createdAt: true }, orderBy: { version: 'desc' }, take: 100 },
           preparationControlVersion: true,
+          preparationNegotiationVersion: true,
+          preparationNegotiationRecords: { select: { id: true, version: true, kind: true, actorRole: true, proposalVersion: true, refundMinor: true, text: true, reviewOutcome: true, createdAt: true }, orderBy: { version: 'asc' } },
           preparationReportedAssignmentId: true,
           status: true,
           shortCode: true,

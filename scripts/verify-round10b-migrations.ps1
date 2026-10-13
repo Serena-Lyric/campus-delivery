@@ -5,7 +5,7 @@ $savedUrl = $env:DATABASE_URL
 $snapshot = @'
 \set ON_ERROR_STOP on
 SET default_transaction_read_only = on;
-SELECT format($sql$SELECT json_build_object('table', %L, 'rows', count(*), 'hash', md5(COALESCE(string_agg((to_jsonb(t) - ARRAY['merchantEstimatedReadyAt','merchantPreparationEstimateVersion','merchantArrivedAt','preparationControlState','preparationControlVersion','preparationControlReason','preparationControlUpdatedAt','preparationSourceExceptionId','preparationReportedAssignmentId','temporaryPersonalCapacityRelease','noFaultExitStatus','goodsChangeVersion','goodsChangeReviewPending','goodsChangeSourceExceptionId'])::text, '' ORDER BY (to_jsonb(t) - ARRAY['merchantEstimatedReadyAt','merchantPreparationEstimateVersion','merchantArrivedAt','preparationControlState','preparationControlVersion','preparationControlReason','preparationControlUpdatedAt','preparationSourceExceptionId','preparationReportedAssignmentId','temporaryPersonalCapacityRelease','noFaultExitStatus','goodsChangeVersion','goodsChangeReviewPending','goodsChangeSourceExceptionId'])::text), ''))) FROM %I.%I t;$sql$, tablename, schemaname, tablename)
+SELECT format($sql$SELECT json_build_object('table', %L, 'rows', count(*), 'hash', md5(COALESCE(string_agg((to_jsonb(t) - ARRAY['merchantEstimatedReadyAt','merchantPreparationEstimateVersion','merchantArrivedAt','preparationControlState','preparationControlVersion','preparationControlReason','preparationControlUpdatedAt','preparationSourceExceptionId','preparationReportedAssignmentId','temporaryPersonalCapacityRelease','noFaultExitStatus','goodsChangeVersion','goodsChangeReviewPending','goodsChangeSourceExceptionId','preparationNegotiationVersion'])::text, '' ORDER BY (to_jsonb(t) - ARRAY['merchantEstimatedReadyAt','merchantPreparationEstimateVersion','merchantArrivedAt','preparationControlState','preparationControlVersion','preparationControlReason','preparationControlUpdatedAt','preparationSourceExceptionId','preparationReportedAssignmentId','temporaryPersonalCapacityRelease','noFaultExitStatus','goodsChangeVersion','goodsChangeReviewPending','goodsChangeSourceExceptionId','preparationNegotiationVersion'])::text), ''))) FROM %I.%I t;$sql$, tablename, schemaname, tablename)
 FROM pg_tables WHERE schemaname='public' AND tablename <> '_prisma_migrations' ORDER BY tablename
 \gexec
 '@
@@ -42,7 +42,7 @@ try {
   $reseeded = @(Snapshot 'campus-round10b-test' $EmptyDatabase)
   # Seed may refresh demo profile/product presentation timestamps; it must preserve all order/fund/audit facts.
   $stable = @('Order', 'OrderItem', 'OrderPricing', 'OrderEvent', 'DeliveryTask', 'DeliveryAssignment', 'Settlement', 'RiderSettlement',
-    'MerchantPreparationEstimateAudit', 'PreparationControlAudit', 'OrderChangeNotice', 'OrderChangeAcknowledgement', 'GoodsChangeAction', 'PickupHandoff', 'PickupCustodyDispute', 'CompensationObligation', 'CompensationAllocation',
+    'MerchantPreparationEstimateAudit', 'PreparationControlAudit', 'OrderChangeNotice', 'OrderChangeAcknowledgement', 'GoodsChangeAction', 'PreparationNegotiationRecord', 'PickupHandoff', 'PickupCustodyDispute', 'CompensationObligation', 'CompensationAllocation',
     'ExceptionCase', 'ExceptionCaseAction', 'ExceptionEvent', 'RemakeProposal', 'MerchantDeliveryQuote', 'MerchantRescueContributionEvent', 'RiderTipEvent', 'SubsidyRecord')
   foreach ($table in $stable) {
     $prior = @($seeded | Where-Object { ($_ | ConvertFrom-Json).table -eq $table })
